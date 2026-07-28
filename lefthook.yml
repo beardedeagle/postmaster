@@ -1,0 +1,15 @@
+# Git lifecycle hooks. Each command delegates to a `just` recipe so local hooks
+# and GitHub CI run the exact same gates. Install with `lefthook install`.
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-check:
+      run: just fmt-check
+    lint:
+      run: just clippy
+
+pre-push:
+  commands:
+    ci-rust:
+      run: just ci-rust

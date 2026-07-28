@@ -1,0 +1,22 @@
+# Normalize all text to LF in the repo and check out LF on every platform.
+# This keeps Rust sources, shell scripts, and Nix files consistent across macOS,
+# Linux, and Windows checkouts.
+* text=auto eol=lf
+
+*.rs        text eol=lf
+*.sh        text eol=lf
+*.nix       text eol=lf
+*.toml      text eol=lf
+
+# Windows-native scripts stay CRLF.
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# Never normalize binaries and generated assets.
+*.png       binary
+*.gif       binary
+*.ico       binary
+*.exe       binary
+*.zip       binary
+docs/book/  binary

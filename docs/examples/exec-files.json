@@ -1,0 +1,17 @@
+{
+  "mode": "files",
+  "keys": [
+    {
+      "file": "/run/envelope/myapp.env.keys"
+    }
+  ],
+  "env_files": [
+    "/nix/store/example-dotenvx-env-myapp/.env.production"
+  ],
+  "strict": true,
+  "overload": false,
+  "secrets_dir": "/run/dotenvx/myapp",
+  "passthrough": [
+    "RUST_LOG"
+  ]
+}

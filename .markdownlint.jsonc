@@ -1,0 +1,16 @@
+{
+  // Prose is wrapped at 80; tables and code blocks legitimately exceed any fixed
+  // width (a multi-column row or a CLI line can't be 80 chars) and render fine.
+  "MD013": { "line_length": 80, "tables": false, "code_blocks": false },
+  // Keep a Changelog repeats `### Added`/`### Changed` etc. under each release;
+  // allow same-named headings that are not siblings.
+  "MD024": { "siblings_only": true },
+  // CLI blocks with `$` prompts that show expected output are fine.
+  "MD014": false,
+  // Mermaid blocks don't have a language tag.
+  "MD040": { "allowed_languages": ["mermaid", "", "text", "json", "nix", "console", "ini", "sh", "bash"] },
+  // SUMMARY.md uses multiple `#` section headers for mdBook navigation.
+  "MD025": false,
+  // Table column style — reference docs use compact tables.
+  "MD060": false
+}

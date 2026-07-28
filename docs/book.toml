@@ -1,0 +1,24 @@
+[book]
+title = "postmaster"
+description = "A standalone, format-neutral local secret materialization engine."
+src = "src"
+language = "en"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[rust]
+edition = "2024"
+
+[output.html]
+git-repository-url = "https://github.com/beardedeagle/postmaster"
+additional-js = ["mermaid.min.js", "svg-pan-zoom.min.js", "mermaid-init.js"]
+additional-css = ["mermaid-zoom.css"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html.fold]
+enable = true
+level = 0

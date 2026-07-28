@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/beardedeagle/envelope/docs/schema/exec.schema.json",
+  "title": "postmaster exec.json",
+  "description": "Public launcher configuration for the current dotenvx-shaped postmaster materialization ABI instance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["env", "files", "credentials"]
+    },
+    "keys": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/key_source"
+      }
+    },
+    "env_files": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "strict": {
+      "type": "boolean",
+      "default": true
+    },
+    "overload": {
+      "type": "boolean",
+      "default": false
+    },
+    "secrets_dir": {
+      "type": ["string", "null"],
+      "default": null
+    },
+    "passthrough": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "credential_keys": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "sockets": {
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "verify_ramdisk": {
+      "type": ["string", "null"],
+      "default": null
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "env" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["keys", "env_files"],
+        "properties": {
+          "keys": { "minItems": 1 },
+          "env_files": { "minItems": 1 },
+          "secrets_dir": { "const": null },
+          "credential_keys": { "maxItems": 0 },
+          "sockets": { "maxProperties": 0 },
+          "verify_ramdisk": { "const": null },
+          "passthrough": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "files" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["keys", "env_files", "secrets_dir"],
+        "properties": {
+          "keys": { "minItems": 1 },
+          "env_files": { "minItems": 1 },
+          "secrets_dir": { "type": "string" },
+          "credential_keys": { "maxItems": 0 },
+          "sockets": { "maxProperties": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "credentials" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["credential_keys"],
+        "properties": {
+          "credential_keys": { "minItems": 1 },
+          "keys": { "maxItems": 0 },
+          "env_files": { "maxItems": 0 },
+          "overload": { "const": false },
+          "passthrough": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": { "const": "credentials" },
+          "sockets": {
+            "type": "object",
+            "minProperties": 1
+          }
+        },
+        "required": ["mode", "sockets"]
+      },
+      "then": {
+        "required": ["secrets_dir"],
+        "properties": {
+          "secrets_dir": { "type": "string" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "credential_name": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "enum": [".", ".."]
+      },
+      "pattern": "^[^/]+$"
+    },
+    "key_source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["credential"],
+          "properties": {
+            "credential": {
+              "$ref": "#/$defs/credential_name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": {
+              "type": "string",
+              "not": {
+                "pattern": "^/nix/store(/|$)"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keychain"],
+          "properties": {
+            "keychain": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "const": "environment"
+        }
+      ]
+    }
+  }
+}

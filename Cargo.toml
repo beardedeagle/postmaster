@@ -1,0 +1,125 @@
+[package]
+name = "postmaster"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.1"
+description = "standalone, format-neutral local secret materialization engine"
+license = "MIT"
+repository = "https://github.com/beardedeagle/postmaster"
+
+# Standalone crate: stop cargo's upward workspace discovery at this manifest
+# (the repo root is a flake, not a cargo workspace).
+[workspace]
+
+# We use a fairly strict set of lints. One deliberate deviation: we allow
+# `unsafe_code` (some stricter projects deny it outright). postmaster is a
+# syscall-level socket-activation daemon and needs a handful of justified
+# `unsafe` blocks (getpeereid(2), best-effort mlock()-style hardening, and
+# UnixListener::from_raw_fd on the one inherited systemd fd) — each site in
+# src/main.rs carries a SAFETY comment, so `unsafe_code` is left at rustc's
+# default (allow) rather than denied or blanket-warned.
+[lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+ambiguous_negative_literals = "warn"
+closure_returning_async_block = "warn"
+explicit_outlives_requirements = "warn"
+if_let_rescope = "warn"
+impl_trait_overcaptures = "warn"
+impl_trait_redundant_captures = "warn"
+# `let _ = …` is postmaster's deliberate best-effort idiom: hardening calls
+# (mlockall-style, non-dumpable, core limits, ptrace-deny) and cleanup paths
+# (socket shutdown, stale-socket unlink, thread join at teardown) may
+# legitimately fail, and the adjacent comments explain why that's acceptable.
+# Converting them to unwrap/expect/error handling would CHANGE behavior in a
+# fail-closed daemon, so the lint stays off.
+let_underscore_drop = "allow"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+noop_method_call = "warn"
+non_ascii_idents = "warn"
+redundant_lifetimes = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unsafe_attr_outside_unsafe = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+unused_macro_rules = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+default_union_representation = "deny"
+exit = "deny"
+lossy_float_literal = "deny"
+mem_forget = "deny"
+multiple_inherent_impl = "deny"
+mut_mut = "deny"
+ptr_as_ptr = "deny"
+unwrap_in_result = "deny"
+unwrap_used = "deny"
+wildcard_dependencies = "deny"
+dbg_macro = "warn"
+empty_drop = "warn"
+fallible_impl_from = "warn"
+inefficient_to_string = "warn"
+macro_use_imports = "warn"
+match_same_arms = "warn"
+no_effect_underscore_binding = "warn"
+panic = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+same_name_method = "warn"
+single_char_lifetime_names = "warn"
+implicit_clone = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+unimplemented = "warn"
+unneeded_field_pattern = "warn"
+unseparated_literal_suffix = "warn"
+used_underscore_binding = "warn"
+
+[dependencies]
+# Wire-compatible with eciesjs (dotenvx's crypto): secp256k1 + HKDF-SHA256 +
+# AES-256-GCM with the ecies family's 16-byte nonce default. `pure` selects
+# the RustCrypto AES backend — no openssl in the closure.
+ecies = { version = "0.2.11", default-features = false, features = ["pure", "secp256k1", "std"] }
+dotenvy = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+hex = "0.4"
+zeroize = "1"
+# Syscall layer: rustix's default linux_raw backend issues raw syscalls from
+# Rust — no libc FFI in these paths, and the unsafe surface collapses to the
+# single fd-ownership assertion at the systemd socket-activation boundary.
+rustix = { version = "1", features = ["net", "process", "mm", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Darwin's stable kernel ABI *is* libc (raw syscalls are unsupported there;
+# rustix itself calls through libc on darwin). Two narrow calls use it
+# directly: getpeereid for the peer check and PT_DENY_ATTACH hardening.
+libc = "0.2"
+
+[profile.release]
+# Everything here is stable-toolchain and arch-agnostic: safe under nixpkgs
+# rustPlatform on any Linux target. Microarch tuning (-C target-cpu=…) does
+# NOT belong here — do that per-fleet via an overrideAttrs RUSTFLAGS.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# Arithmetic bugs become panic → abort → Restart=on-failure: fail closed,
+# never a wrong answer. Cost is ~nil (crypto deps use wrapping intrinsics).
+overflow-checks = true
+# A panicking worker thread must not leave a half-alive daemon: abort the
+# whole process, let systemd Restart=on-failure decide. Consumers see
+# connection-refused (⇒ LoadCredential fails ⇒ unit fails), never an empty
+# credential. Deliberately NOT nightly panic=immediate-abort: that strips
+# the panic message, and this process must say why it died.
+panic = "abort"

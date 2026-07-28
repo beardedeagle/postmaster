@@ -1,0 +1,14 @@
+{
+  "mode": "env",
+  "keys": [
+    {
+      "credential": "dotenvx-myapp"
+    },
+    "environment"
+  ],
+  "env_files": [
+    "/nix/store/example-dotenvx-env-myapp/.env.production"
+  ],
+  "strict": true,
+  "overload": false
+}

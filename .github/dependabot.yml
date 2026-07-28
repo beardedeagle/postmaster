@@ -1,0 +1,40 @@
+# Dependabot version updates for postmaster.
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # Rust crates — the Cargo workspace at the repository root.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    groups:
+      # Roll routine minor/patch bumps into one weekly PR; major bumps stay
+      # separate so a breaking change gets its own focused review.
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions — workflows pin third-party actions to commit SHAs;
+  # Dependabot keeps those SHAs current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

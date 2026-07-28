@@ -1,0 +1,41 @@
+# cargo-deny configuration for envelope / postmaster.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Check all features to catch issues in optional dependencies.
+all-features = true
+
+[advisories]
+# RustSec advisory IDs to ignore (with justification). Keep empty by default.
+ignore = [
+    # Add entries here only when a legitimate, low-risk advisory affects
+    # postmaster's dependency tree and we have a documented reason to ignore it.
+    # Example:
+    # "RUSTSEC-XXXX-XXXX",  # short justification + link to upstream fix plan
+]
+
+[licenses]
+# Allowed licenses. Keep this list in sync with what the actual dependency
+# tree (postmaster + any future workspace crates) pulls in.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+# The postmaster crate is the only member today.
+[licenses.private]
+ignore = true

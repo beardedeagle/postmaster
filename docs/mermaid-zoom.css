@@ -1,0 +1,38 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.mermaid-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    max-height: 72vh;
+    margin: 1rem 0;
+    overflow: hidden;
+    background: var(--quote-bg);
+    border: 1px solid var(--quote-border);
+    border-radius: 4px;
+}
+
+.mermaid-wrapper .mermaid {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    cursor: grab;
+}
+
+.mermaid-wrapper .mermaid:active {
+    cursor: grabbing;
+}
+
+.mermaid-wrapper .mermaid svg {
+    width: 100%;
+    height: 100%;
+    max-width: none !important;
+    max-height: none !important;
+}
