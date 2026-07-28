@@ -92,7 +92,7 @@ ecies = { version = "0.2.11", default-features = false, features = ["pure", "sec
 dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
 zeroize = "1"
 # Syscall layer: rustix's default linux_raw backend issues raw syscalls from
