@@ -1,0 +1,2321 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>postmaster</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="A standalone, format-neutral local secret materialization engine.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-0392ca55.css">
+        <link rel="stylesheet" href="css/chrome-fc474251.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="mermaid-zoom-d48efa7d.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-c86cb699.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-586c1afa.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">postmaster</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/beardedeagle/postmaster" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
+<p>postmaster is a <strong>standalone, format-neutral local secret materialization
+engine</strong>. It decrypts encrypted secret inputs at process launch time and
+injects them into a child process via environment variables, files, or
+systemd credentials — then <code>execvp</code>s the target binary directly. No Node,
+no shell, no separate CLI process in the runtime path.</p>
+<h2 id="audience-quickstart-plain-language"><a class="header" href="#audience-quickstart-plain-language">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> a tool that takes encrypted secrets (like database
+passwords and API tokens) and safely puts them into your service’s
+environment at startup — without writing plaintext to disk, without
+running a shell, and without keeping a long-lived parent process that
+holds secrets in memory.</p>
+<h3 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take from this docs</th></tr>
+</thead>
+<tbody>
+<tr><td>New user / junior engineer</td><td>The introduction and <a href="#quick-start">Quick start</a>; then <a href="#injection-modes">Injection modes</a></td></tr>
+<tr><td>Platform / SRE</td><td><a href="#key-provisioning--rotation">Key provisioning</a> and the <a href="#threat-model">Threat model</a></td></tr>
+<tr><td>Security engineer</td><td>The <a href="#threat-model">Threat model</a> and <a href="#materialization-abi">Materialization ABI</a></td></tr>
+<tr><td>Integration author</td><td>The <a href="#launcher-contract-execjson">Launcher contract</a> and <a href="#cli-reference">CLI reference</a></td></tr>
+<tr><td>Product / project manager</td><td>This introduction and the <a href="#postmaster-the-secret-materialization-engine">postmaster</a> overview</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary"><a class="header" href="#quick-glossary">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Materialization</strong></td><td>Decrypting secrets and putting them where your app can read them (env vars, files, or credentials)</td></tr>
+<tr><td><strong>execvp</strong></td><td>A Unix system call that replaces the current process with a new binary — postmaster becomes your app</td></tr>
+<tr><td><strong>ECIES</strong></td><td>Elliptic Curve Integrated Encryption Scheme — the crypto used to encrypt individual secret values</td></tr>
+<tr><td><strong>exec.json</strong></td><td>A JSON config file that tells postmaster what to decrypt, how to inject, and what binary to launch</td></tr>
+<tr><td><strong>Key source</strong></td><td>Where the decryption key comes from (a file, systemd credentials, macOS keychain, or environment)</td></tr>
+<tr><td><strong>Injection mode</strong></td><td>How decrypted secrets reach the child: <code>env</code> (environment variables), <code>files</code> (one file per secret), or <code>credentials</code> (systemd credentials)</td></tr>
+<tr><td><strong>Ciphertext</strong></td><td>Encrypted data — safe to store in git, the Nix store, or any world-readable location</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="the-core-problem"><a class="header" href="#the-core-problem">The Core Problem</a></h2>
+<p>Deploying secrets to production services is hard. The secrets need to
+be present at runtime, but they must not be stored in plaintext on disk,
+in the container image, or in the deployment manifest. Common approaches
+each have tradeoffs:</p>
+<ul>
+<li><strong>Shell wrappers</strong> run a script that <code>eval</code>s secrets — vulnerable to
+command injection if a secret contains <code>$(...)</code> or backticks.</li>
+<li><strong>External CLIs</strong> (Node, Python) stay alive as a parent process —
+secrets persist in the parent’s heap for the service’s entire lifetime.</li>
+<li><strong>Sidecar containers</strong> inject secrets over the network — adds a
+network dependency to the startup path.</li>
+<li><strong>Manual env vars</strong> put plaintext secrets in the systemd unit file or
+the container spec — visible in <code>ps</code>, <code>systemctl cat</code>, and crash dumps.</li>
+</ul>
+<p>Postmaster takes a different approach: decrypt locally, inject directly,
+replace the process image. The secret material exists in process memory
+for a brief window, never touches persistent disk, and the process that
+held the secrets is gone the moment your binary starts.</p>
+<h2 id="what-postmaster-does"><a class="header" href="#what-postmaster-does">What postmaster Does</a></h2>
+<ol>
+<li>
+<p><strong>Decrypts</strong> encrypted <code>.env</code> files (or <code>postmaster_bundle</code> JSON
+containers) using the <code>ecies</code> crate — native Rust, no network calls,
+no external CLIs, no shell.</p>
+</li>
+<li>
+<p><strong>Injects</strong> decrypted values into the child via one of three modes:</p>
+<ul>
+<li><code>env</code> — environment variables (12-factor apps)</li>
+<li><code>files</code> — one file per secret on a RAM-backed filesystem (Docker
+secrets convention, <code>KEY_FILE</code> pointers)</li>
+<li><code>credentials</code> — systemd credentials (strongest hygiene)</li>
+</ul>
+</li>
+<li>
+<p><strong>Launches</strong> the target binary via <code>execvp</code> — postmaster is replaced
+by your binary. The child process IS <code>MainPID</code> from its first
+instruction. No parent process holds secrets.</p>
+</li>
+<li>
+<p><strong>Cleans up</strong> — <code>postmaster cleanup</code> removes plaintext secret files
+after the child exits, wired to <code>ExecStopPost</code> in systemd.</p>
+</li>
+</ol>
+<h2 id="how-postmaster-works"><a class="header" href="#how-postmaster-works">How postmaster Works</a></h2>
+<pre class="mermaid">flowchart LR
+    store["Encrypted .env file\n(nix store / git / artifact)"]
+    keys["Private key\n(systemd cred / file / keychain)"]
+    pm["postmaster exec"]
+    child["Your binary\n(MainPID)"]
+
+    store --&gt; pm
+    keys --&gt; pm
+    pm --&gt;|decrypt + inject| child
+    pm -.-&gt;|execvp replaces\npostmaster| child
+</pre>
+
+<p>The ciphertext is designed to be public. Every value is
+ECIES/secp256k1-encrypted individually — the public key embedded in
+the file only permits encrypting new values, never decrypting existing
+ones. So the world-readable Nix store, git repo, or artifact registry
+stops being an adversary. The entire secret surface collapses to one
+64-hex private key per environment.</p>
+<h2 id="the-secret-pipeline"><a class="header" href="#the-secret-pipeline">The Secret Pipeline</a></h2>
+<p>Postmaster owns exactly one stage in a 5-stage pipeline. Understanding
+which stage each system owns is the key to understanding what postmaster
+is (and is not).</p>
+<pre class="mermaid">flowchart LR
+    subgraph s1["1. Custody"]
+        vault["Vault / SSM /\n1Password / TPM2"]
+    end
+    subgraph s2["2. Rendering"]
+        nix["Nix / Terraform /\nCDK / Ansible"]
+    end
+    subgraph s3["3. Delivery"]
+        cred["systemd cred /\nfile / keychain"]
+    end
+    subgraph s4["4. Materialization"]
+        pm["postmaster\ndecrypt + inject"]
+    end
+    subgraph s5["5. Launch"]
+        exec["execvp\nchild = MainPID"]
+    end
+
+    vault --&gt; nix
+    nix --&gt; cred
+    cred --&gt; pm
+    pm --&gt; exec
+</pre>
+
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Stage</th><th>Who owns it</th><th>What happens</th></tr>
+</thead>
+<tbody>
+<tr><td>1. Custody</td><td>Vault, AWS SSM, 1Password, TPM2</td><td>Private keys live in a source/custody system</td></tr>
+<tr><td>2. Rendering</td><td>Nix, Terraform, CDK, Ansible, Salt, Puppet</td><td>Encrypted artifacts + key material + service wiring get onto the host</td></tr>
+<tr><td>3. Delivery</td><td>systemd, files, keychain, env</td><td>Key material reaches postmaster at runtime via local sources</td></tr>
+<tr><td>4. Materialization</td><td><strong>postmaster</strong></td><td>Postmaster decrypts and injects — this is the only stage it owns</td></tr>
+<tr><td>5. Launch</td><td>execvp</td><td>Process image replaced; child binary is MainPID</td></tr>
+</tbody>
+</table>
+</div>
+<p>Postmaster does not participate in stages 1-3. It does not fetch from
+remote systems, does not deploy infrastructure, and does not supervise
+the child process. It decrypts, injects, and gets out of the way.</p>
+<h2 id="capability-horizon"><a class="header" href="#capability-horizon">Capability Horizon</a></h2>
+<ul>
+<li><code>.env</code> adapter (wire-compatible with dotenvx), <code>postmaster_bundle</code>
+JSON container, three injection modes, four key sources (systemd
+credentials, files, keychain, environment), <code>--verify-keys</code> freshness
+check, <code>setup</code> command, <code>cleanup</code> command.</li>
+<li><strong>Non-goals:</strong> postmaster will never become a network client for Vault,
+SSM, or any remote secret store. It will not add a plugin system, an
+async runtime, or a CLI parsing library.</li>
+</ul>
+<h2 id="first-input-adapter"><a class="header" href="#first-input-adapter">First input adapter</a></h2>
+<p>The first input adapter is wire-compatible with
+<a href="https://github.com/dotenvx/dotenvx">dotenvx</a>-encrypted <code>.env</code> files
+(same ECIES/secp256k1 + HKDF-SHA256 + AES-256-GCM crypto path), so
+existing <code>.env</code> files encrypted with the dotenvx CLI decrypt byte-exact
+through postmaster’s native Rust implementation.</p>
+<p>dotenvx is one adapter, not the ceiling — the architecture supports
+file-based (<code>.env</code>), HashiCorp Vault, AWS SSM, and other secret providers
+as source/custody backends. But those systems deliver key material to
+local terminal sources; postmaster reads from those local sources and
+never reaches across the network.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="quick-start"><a class="header" href="#quick-start">Quick start</a></h1>
+<p>This page shows how to get postmaster running with an encrypted <code>.env</code>
+file in under 10 minutes.</p>
+<h2 id="audience-quickstart"><a class="header" href="#audience-quickstart">Audience Quickstart</a></h2>
+<p><strong>What this is:</strong> a hands-on walkthrough of the simplest path —
+encrypting secrets, provisioning keys, and launching a service with
+postmaster.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>A Rust toolchain (<code>rustup</code>, stable)</li>
+<li><a href="https://github.com/dotenvx/dotenvx">dotenvx CLI</a> (or any tool producing
+the same ECIES format) for encrypting secrets</li>
+<li>postmaster built from source (or from the Nix flake)</li>
+</ul>
+<h2 id="step-1-author-secrets"><a class="header" href="#step-1-author-secrets">Step 1: Author secrets</a></h2>
+<p>Create a <code>.env</code> file and encrypt it:</p>
+<pre><code class="language-console">$ dotenvx set DATABASE_URL 'postgres://user:pass@localhost:5432/myapp' \
+    -f secrets/.env.production
+$ dotenvx set API_TOKEN 'secret-token-here' \
+    -f secrets/.env.production
+</code></pre>
+<p>The <code>.env.production</code> file now contains encrypted values. It is safe to
+commit to git — the ciphertext is public, the private key is the real
+secret.</p>
+<pre><code class="language-ini">DOTENV_PUBLIC_KEY="0x04a1b2c3..."
+DATABASE_URL="encrypted:BGAAAAAADWzz..."
+API_TOKEN="encrypted:BGAAAAAADWyy..."
+</code></pre>
+<h2 id="step-2-provision-keys"><a class="header" href="#step-2-provision-keys">Step 2: Provision keys</a></h2>
+<p>Postmaster needs the private key to decrypt the values. The key lives in
+a <code>.env.keys</code> file:</p>
+<pre><code class="language-console">$ dotenvx keys -f secrets/.env.production
+DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
+</code></pre>
+<p>Place the keys file on the host (Linux):</p>
+<pre><code class="language-console">$ sudo install -d -m 0700 /var/lib/postmaster
+$ sudo install -m 0400 /dev/stdin /var/lib/postmaster/.env.keys &lt;&lt;'EOF'
+DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
+EOF
+</code></pre>
+<p>On macOS, you can also use the keychain:</p>
+<pre><code class="language-console">$ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
+    -s postmaster -w "a1b2c3d4e5f6..."
+</code></pre>
+<h2 id="step-3-create-execjson"><a class="header" href="#step-3-create-execjson">Step 3: Create exec.json</a></h2>
+<p>Postmaster reads an <code>exec.json</code> config that specifies what to decrypt,
+how to inject, and what binary to launch:</p>
+<pre><code class="language-json">{
+  "mode": "env",
+  "env_files": ["/path/to/.env.production"],
+  "keys": [
+    {"file": "/var/lib/postmaster/.env.keys"}
+  ]
+}
+</code></pre>
+<p>See the <a href="#launcher-contract-execjson">Launcher contract</a> for all
+config fields and modes.</p>
+<h2 id="step-4-validate-config"><a class="header" href="#step-4-validate-config">Step 4: Validate config</a></h2>
+<pre><code class="language-console">$ postmaster exec --config exec.json --check
+</code></pre>
+<p>This validates the config shape without decrypting, reading key
+material, or launching anything. Use it in CI.</p>
+<p>To verify key sources are accessible on the host without decrypting:</p>
+<pre><code class="language-console">$ postmaster setup --config exec.json --recheck
+</code></pre>
+<h2 id="step-5-launch"><a class="header" href="#step-5-launch">Step 5: Launch</a></h2>
+<pre><code class="language-console">$ postmaster exec --config exec.json -- /usr/bin/env
+DATABASE_URL=postgres://user:pass@localhost:5432/myapp
+API_TOKEN=secret-token-here
+</code></pre>
+<p>Postmaster decrypted the values, injected them as environment variables,
+and <code>execvp</code>’d <code>/usr/bin/env</code> — which printed them. In a real deployment,
+the service manager (systemd or launchd) runs postmaster, which
+replaces itself with your binary.</p>
+<pre class="mermaid">flowchart TB
+    cfg["exec.json"]
+    env["encrypted .env"]
+    keys[".env.keys"]
+    pm["postmaster exec"]
+    child["your binary"]
+
+    cfg --&gt; pm
+    env --&gt; pm
+    keys --&gt; pm
+    pm --&gt;|decrypt and inject| child
+    pm -.-&gt;|execvp| child
+</pre>
+
+<h2 id="next-steps"><a class="header" href="#next-steps">Next steps</a></h2>
+<ul>
+<li><a href="#cli-reference">CLI reference</a> — all commands, flags, and exit
+codes</li>
+<li><a href="#launcher-contract-execjson">Launcher contract</a> — the full
+<code>exec.json</code> specification</li>
+<li><a href="#threat-model">Threat model</a> — what postmaster
+protects and what it cannot prevent</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="injection-modes"><a class="header" href="#injection-modes">Injection modes</a></h1>
+<p>Postmaster supports three ways to deliver decrypted secrets to the child
+process. Each mode makes a different tradeoff between convenience and
+security.</p>
+<h2 id="audience-quickstart-1"><a class="header" href="#audience-quickstart-1">Audience Quickstart</a></h2>
+<p><strong>What this is:</strong> choosing how secrets reach your application — as
+environment variables, as files, or as systemd credentials.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Mode</th><th>Best for</th><th>Secrets in environ?</th><th>Hygiene</th></tr>
+</thead>
+<tbody>
+<tr><td><code>env</code> (default)</td><td>12-factor apps, simple services</td><td>Yes</td><td>Lowest — same-UID processes can read <code>/proc/PID/environ</code></td></tr>
+<tr><td><code>files</code></td><td>Apps that read <code>KEY_FILE</code> pointers (Docker secrets convention)</td><td>No — only <code>_FILE</code> pointers</td><td>Medium — secrets absent from environ, <code>ps</code>, crash dumps</td></tr>
+<tr><td><code>credentials</code></td><td>systemd services wanting strongest isolation</td><td>No — reads <code>$CREDENTIALS_DIRECTORY</code></td><td>Highest — unit-private unswappable ramfs</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="mode-comparison"><a class="header" href="#mode-comparison">Mode comparison</a></h2>
+<pre class="mermaid">flowchart TB
+    subgraph env["mode: env"]
+        pm_env["postmaster"] --&gt;|KEY=value\nin environ| child_env["your binary"]
+    end
+    subgraph files["mode: files"]
+        pm_files["postmaster"] --&gt;|write 0600 file| tmpfs["tmpfs / ramdisk"]
+        tmpfs --&gt;|KEY_FILE=/run/.../KEY| child_files["your binary"]
+    end
+    subgraph cred["mode: credentials"]
+        systemd["systemd"] --&gt;|LoadCredential=| ramfs["ramfs\n$CREDENTIALS_DIR"]
+        pm_cred["postmaster"] --&gt;|decrypt + write| ramfs
+        ramfs --&gt;|KEY_FILE=$CREDENTIALS_DIR/KEY| child_cred["your binary"]
+    end
+</pre>
+
+<h2 id="mode--env-default"><a class="header" href="#mode--env-default"><code>mode = "env"</code> (default)</a></h2>
+<p>Decrypted values are exported into the process environment and the
+wrapper <code>exec</code>s your binary. Correct for 12-factor apps.</p>
+<p><strong>Exposure:</strong> environment variables are readable via
+<code>/proc/&lt;pid&gt;/environ</code> by root and the same UID, inherited by every child,
+and prone to appearing in crash dumps and debug output.</p>
+<p><strong>Mitigations:</strong> <code>DynamicUser=true</code> (a fresh UID per service — “same UID”
+means “this service only”), <code>ProtectProc</code> hardening (hides other
+processes’ <code>/proc</code> entries), and ultimately switching to <code>files</code> mode.</p>
+<p><strong>No shell expansion:</strong> postmaster performs no <code>${VAR}</code>/<code>$(…)</code> expansion
+anywhere in the decrypt-and-inject path, in any mode. A repo contributor
+who commits <code>KEY=$(cmd)</code> gets the literal string, never a command
+execution at service start.</p>
+<h2 id="mode--files"><a class="header" href="#mode--files"><code>mode = "files"</code></a></h2>
+<p>Values are written one-file-per-key onto a namespace-private tmpfs
+(<code>TemporaryFileSystem=/run/postmaster</code>; on macOS, a per-service directory
+on an HFS RAM disk) and only <code>&lt;KEY&gt;_FILE</code> pointer variables are exported
+— the Docker-secrets convention
+(<code>DATABASE_URL_FILE=/run/postmaster/DATABASE_URL</code>) that many daemons
+support natively.</p>
+<p>Secrets are absent from environ, <code>ps e</code>, crash-dump environment sections,
+and ambient child inheritance. The mount is invisible outside the unit’s
+mount namespace on Linux (root needs <code>nsenter</code>) and is destroyed with
+the unit. On macOS, the RAM disk is protected by ownership (<code>0700</code>), not
+invisibility — macOS has no mount namespaces.</p>
+<p>Each secret file is written with <code>O_NOFOLLOW | O_CREAT | O_TRUNC</code> and
+<code>fchmod</code>’d to <code>0600</code> on the file descriptor (no TOCTOU window between
+open and chmod).</p>
+<p>For a mostly-file-capable app with a straggler that needs an env var:</p>
+<pre><code class="language-json">{
+  "mode": "files",
+  "env_files": ["secrets/.env.production"],
+  "secrets_dir": "/run/postmaster",
+  "passthrough": ["RUST_LOG"]
+}
+</code></pre>
+<p>Keys in <code>passthrough</code> are also exported as real env vars (subject to NUL
+rejection, since they become environment variables).</p>
+<h2 id="mode--credentials"><a class="header" href="#mode--credentials"><code>mode = "credentials"</code></a></h2>
+<p>Real systemd credentials, served on demand by the postmaster daemon.
+The consumer’s unit gets
+<code>LoadCredential=&lt;KEY&gt;:/run/postmaster-credd/&lt;svc&gt;/&lt;KEY&gt;.sock</code> per key and
+the app reads <code>$CREDENTIALS_DIRECTORY/&lt;KEY&gt;</code> from unit-private,
+<strong>unswappable</strong> ramfs.</p>
+<p>No Node, no jq, no shell anywhere in the consumer’s start path. The
+optional wrapper only exports non-secret <code>&lt;KEY&gt;_FILE</code> pointers.
+Strongest hygiene of the three.</p>
+<p>On macOS, postmaster runs <code>--bind</code> (owns its sockets), the wrapper
+<code>postmaster fetch</code>es each key onto the RAM disk, and exports
+<code>$CREDENTIALS_DIRECTORY</code> set to <code>secrets_dir</code> — same path convention as
+systemd credentials, so app code is unchanged.</p>
+<h2 id="fail-closed-rules"><a class="header" href="#fail-closed-rules">Fail-closed rules</a></h2>
+<ul>
+<li><strong><code>strict</code> (default <code>true</code>):</strong> if any value fails to decrypt, the
+entire exec aborts before the child runs. Nothing partial is injected.</li>
+<li><strong>NUL in env values:</strong> rejected in <code>env</code> mode and for <code>passthrough</code>
+values in <code>files</code> mode. In <code>files</code> mode’s primary write path, NUL is
+not restricted — the exact bytes reach the file.</li>
+<li><strong>Empty fetch response:</strong> (<code>credentials</code> mode, macOS socket path):
+treated as a refusal, fails closed.</li>
+<li><strong>Missing <code>$CREDENTIALS_DIRECTORY</code>:</strong> fails closed in credentials mode
+(systemd path).</li>
+</ul>
+<p>See the <a href="#launcher-contract-execjson">Launcher contract</a> for the
+complete specification of each mode’s fields, validation rules, and
+per-mode injected variables.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="key-provisioning--rotation"><a class="header" href="#key-provisioning--rotation">Key provisioning &amp; rotation</a></h1>
+<p>This page covers how to get private keys onto hosts and how to rotate
+them without downtime.</p>
+<h2 id="audience-quickstart-2"><a class="header" href="#audience-quickstart-2">Audience Quickstart</a></h2>
+<p><strong>What this is:</strong> the operational side of postmaster — how the
+decryption key gets to the host, and how to rotate it safely.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>Operator / SRE</td><td>All sections — this is your playbook</td></tr>
+<tr><td>Security engineer</td><td>The rotation window and fail-closed behavior</td></tr>
+<tr><td>New user</td><td>Skim strategies A and B, come back when you deploy</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-source-overview"><a class="header" href="#key-source-overview">Key source overview</a></h2>
+<p>Postmaster reads private keys from local terminal sources only. It never
+fetches from remote systems.</p>
+<pre class="mermaid">flowchart TB
+    subgraph sources["Key sources (local only)"]
+        cred["systemd credentials\n(LoadCredential=)"]
+        file["file\n(.env.keys on disk)"]
+        kc["keychain\n(macOS only)"]
+        env["environment\n(DOTENV_PRIVATE_KEY*)"]
+    end
+
+    pm["postmaster"]
+    sources --&gt; pm
+</pre>
+
+<h2 id="strategy-a-manual-keyfile-default"><a class="header" href="#strategy-a-manual-keyfile-default">Strategy A: Manual keyfile (default)</a></h2>
+<p>One-time per host:</p>
+<pre><code class="language-console">$ sudo install -d -m 0700 /var/lib/postmaster
+$ sudo install -m 0400 /dev/stdin /var/lib/postmaster/.env.keys &lt;&lt;'EOF'
+DOTENV_PRIVATE_KEY_PRODUCTION="&lt;64-hex from your local .env.keys&gt;"
+EOF
+</code></pre>
+<p>systemd treats an absolute-path credential as mandatory: missing file
+means the unit fails to start. Fail-closed.</p>
+<h2 id="strategy-b-tpm2--host-sealed-blob"><a class="header" href="#strategy-b-tpm2--host-sealed-blob">Strategy B: TPM2 / host-sealed blob</a></h2>
+<p>Fully declarative — the key is sealed to the host’s TPM2 and can only
+be decrypted on that specific machine:</p>
+<pre><code class="language-console"># on the target host, once (--name MUST match postmaster-&lt;service&gt;)
+$ sudo systemd-creds encrypt --with-key=host+tpm2 \
+    --name=postmaster-myapp - myapp-myhost.cred &lt;&lt;'EOF'
+DOTENV_PRIVATE_KEY_PRODUCTION="&lt;64-hex&gt;"
+EOF
+# copy myapp-myhost.cred back into the repo
+</code></pre>
+<p>Reference the sealed blob in your config:</p>
+<pre><code class="language-json">{
+  "keys": [
+    {"file": "/nix/store/...-myapp.cred"}
+  ]
+}
+</code></pre>
+<p>Blobs are per-host. Without a TPM, <code>--with-key=host</code> binds to
+<code>/var/lib/systemd/credential.secret</code>.</p>
+<h2 id="strategy-c-deployment-tool-key-push"><a class="header" href="#strategy-c-deployment-tool-key-push">Strategy C: Deployment-tool key push</a></h2>
+<p>Using colmena or similar:</p>
+<pre><code class="language-nix">deployment.keys."myapp.env.keys" = {
+  keyFile = ./deployer-only/myapp.env.keys;
+  destDir = "/var/lib/postmaster";
+  user = "root"; group = "root"; permissions = "0400";
+};
+</code></pre>
+<h2 id="strategy-d-macos-keychain"><a class="header" href="#strategy-d-macos-keychain">Strategy D: macOS Keychain</a></h2>
+<pre><code class="language-console">$ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
+    -s postmaster -w "&lt;64-hex&gt;"
+</code></pre>
+<p>No file on disk — keys live as generic-password items in the System
+keychain. Postmaster reads them natively via <code>security(1)</code>.</p>
+<h2 id="rotation"><a class="header" href="#rotation">Rotation</a></h2>
+<p>No <code>rotate</code> subcommand exists. The flow is manual, but
+<code>DOTENV_PRIVATE_KEY*</code> accepts <strong>comma-separated keys</strong> for a
+zero-downtime window:</p>
+<pre class="mermaid">flowchart TD
+    step1["Step 1: Author new keypair locally\nDecrypt env, delete old pub key, re-encrypt with fresh keypair"]
+    step2["Step 2: Set DOTENV_PRIVATE_KEY=new,old\nBoth keys accepted; restarts decrypt either generation"]
+    step3["Step 3: Deploy new ciphertext\nnixos-rebuild switch — new units decrypt with new key\nOld units still running on old key"]
+    step4["Step 4: Drop old key (after rollback horizon)\nSet DOTENV_PRIVATE_KEY=new only\nOld generations + new-only key = broken restarts"]
+
+    step1 --&gt; step2
+    step2 --&gt; step3
+    step3 --&gt; step4
+</pre>
+
+<ol>
+<li>Locally: decrypt the env file, delete the old public key and
+<code>.env.keys</code> entry, re-encrypt with a fresh keypair.</li>
+<li>On hosts: set <code>DOTENV_PRIVATE_KEY_PRODUCTION="&lt;new&gt;,&lt;old&gt;"</code> (re-seal
+the blob in strategy B). Running units are untouched; restarts
+decrypt either generation.</li>
+<li>Deploy the new ciphertext (<code>nixos-rebuild switch</code>).</li>
+<li>Drop <code>&lt;old&gt;</code> once past your rollback horizon — an old generation plus
+a new-only key means broken restarts.</li>
+</ol>
+<p>Use <code>--verify-keys</code> to catch stale keys before they cause a silent
+failure:</p>
+<pre><code class="language-console">$ postmaster exec --config exec.json --verify-keys -- /bin/true
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="postmaster-the-secret-materialization-engine"><a class="header" href="#postmaster-the-secret-materialization-engine">postmaster: the secret materialization engine</a></h1>
+<p>Postmaster is a standalone Rust binary that does exactly one thing:
+decrypt encrypted secret inputs at process launch time and inject
+them into a child process, then replace its own process image with
+the target binary via <code>execvp</code>.</p>
+<p>It is not a library. It is not a plugin host. It is not a daemon
+framework. It is a single binary with a fixed, local, offline
+contract.</p>
+<h2 id="audience-quickstart-plain-language-1"><a class="header" href="#audience-quickstart-plain-language-1">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> the architecture of postmaster — what it does,
+what it owns, and where it fits in the secret delivery pipeline.</p>
+<h3 id="who-this-is-for-1"><a class="header" href="#who-this-is-for-1">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>New user / junior engineer</td><td>“What postmaster owns” and “The secret pipeline” — understand the scope</td></tr>
+<tr><td>Platform / SRE</td><td>“Implementation” and “Dependency policy” — what you’re deploying</td></tr>
+<tr><td>Security engineer</td><td>The entire page — this defines the security boundary</td></tr>
+<tr><td>Integration author</td><td>“What postmaster does NOT own” and the <a href="#launcher-contract-execjson">Launcher contract</a></td></tr>
+<tr><td>Product / project manager</td><td>“What postmaster owns” and the pipeline diagram — the 30-second summary</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary-1"><a class="header" href="#quick-glossary-1">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Materialization</strong></td><td>Decrypting secrets and putting them where your app reads them</td></tr>
+<tr><td><strong>execvp</strong></td><td>Unix call that replaces the current process — postmaster becomes your app</td></tr>
+<tr><td><strong>ECIES</strong></td><td>The encryption scheme used for individual secret values</td></tr>
+<tr><td><strong>Ciphertext</strong></td><td>Encrypted data — safe to store in git or the Nix store</td></tr>
+<tr><td><strong>MainPID</strong></td><td>The process systemd considers “the service” — with execvp, it’s your binary from instruction one</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-postmaster-owns"><a class="header" href="#what-postmaster-owns">What postmaster owns</a></h2>
+<p>Postmaster owns the runtime secret path — everything that happens
+between “encrypted artifact exists on disk” and “child process has
+plaintext in its environment or files”:</p>
+<ol>
+<li>
+<p><strong>Decryption.</strong> Postmaster decrypts encrypted inputs using the
+<code>ecies</code> crate (secp256k1 + HKDF-SHA256 + AES-256-GCM). No network
+calls. No external CLIs. No shell.</p>
+</li>
+<li>
+<p><strong>Injection.</strong> Postmaster injects decrypted values into the child
+via one of three modes: environment variables (<code>env</code>), files on a
+RAM-backed filesystem (<code>files</code>), or systemd credentials
+(<code>credentials</code>).</p>
+</li>
+<li>
+<p><strong>Launch.</strong> Postmaster calls <code>execvp</code> to replace its process image
+with the target binary. The child IS <code>MainPID</code> from its first
+instruction.</p>
+</li>
+<li>
+<p><strong>Cleanup.</strong> Postmaster provides a <code>cleanup</code> subcommand that
+removes plaintext secret files from the secrets directory after
+the child exits. Wired to <code>ExecStopPost</code> in systemd; the ramdisk
+destruction handles this on macOS.</p>
+</li>
+<li>
+<p><strong>Validation.</strong> Postmaster provides <code>exec --check</code> for config shape
+validation (CI) and <code>setup --recheck</code> for runtime environment
+verification (host). Both run without decrypting secrets.</p>
+</li>
+<li>
+<p><strong>Setup.</strong> Postmaster provides an interactive <code>setup</code> command
+that creates keys directories, verifies permissions, optionally
+seeds keychain items (macOS), and validates the environment —
+idempotently.</p>
+</li>
+</ol>
+<h2 id="what-postmaster-does-not-own"><a class="header" href="#what-postmaster-does-not-own">What postmaster does NOT own</a></h2>
+<p>Postmaster does NOT own anything that happens before the encrypted
+artifact exists or after the child process starts:</p>
+<ul>
+<li>
+<p><strong>Secret authoring.</strong> Encrypting secrets is done by workstation
+tooling (dotenvx CLI, or any tool producing the same ECIES
+format). Postmaster does not encrypt.</p>
+</li>
+<li>
+<p><strong>Secret custody.</strong> Where private keys live before they reach the
+host is a source/custody system concern. Vault, AWS SSM, 1Password
+— these systems hold the private key material and deliver it to a
+local terminal source. Postmaster reads it locally; it does not
+fetch it remotely.</p>
+</li>
+<li>
+<p><strong>Infrastructure rendering.</strong> How the encrypted artifacts, key
+material, <code>exec.json</code>, and service wiring get onto the host is an
+automation renderer concern. Nix, Terraform, CDK, Ansible,
+SaltStack, Puppet — these tools render the deployment artifacts and
+wire the service manager. Postmaster does not deploy.</p>
+</li>
+<li>
+<p><strong>Service supervision.</strong> Postmaster does not supervise the child
+process. The service manager (systemd on Linux, launchd on macOS)
+starts, monitors, and stops the service. Postmaster’s job is done
+the moment <code>execvp</code> fires.</p>
+</li>
+<li>
+<p><strong>Child behavior.</strong> What the child process does with its secrets —
+reading from environment variables, files, or credentials — is the
+application’s concern. Postmaster guarantees the secrets are
+delivered; it does not guarantee the application handles them
+correctly.</p>
+</li>
+</ul>
+<h2 id="the-secret-pipeline-1"><a class="header" href="#the-secret-pipeline-1">The secret pipeline</a></h2>
+<p>The full secret lifecycle is a pipeline of distinct stages, each
+owned by a different system. Postmaster owns exactly one stage.</p>
+<pre class="mermaid">flowchart LR
+    subgraph s1["1. Custody"]
+        vault["Vault / SSM /\n1Password / TPM2"]
+    end
+    subgraph s2["2. Rendering"]
+        nix["Nix / Terraform /\nCDK / Ansible"]
+    end
+    subgraph s3["3. Delivery"]
+        cred["systemd cred /\nfile / keychain"]
+    end
+    subgraph s4["4. Materialization"]
+        pm["postmaster\ndecrypt + inject"]
+    end
+    subgraph s5["5. Launch"]
+        exec["execvp\nchild = MainPID"]
+    end
+
+    vault --&gt; nix
+    nix --&gt; cred
+    cred --&gt; pm
+    pm --&gt; exec
+</pre>
+
+<h3 id="stage-1-custody-source-systems"><a class="header" href="#stage-1-custody-source-systems">Stage 1: Custody (source systems)</a></h3>
+<p>Where private key material lives before it reaches the host.</p>
+<ul>
+<li><strong>HashiCorp Vault</strong> — stores private keys; a Vault Agent template
+renders a <code>.env.keys</code>-format file locally</li>
+<li><strong>AWS SSM Parameter Store</strong> — stores private keys; cloud-init or a
+oneshot unit materializes them locally</li>
+<li><strong>1Password</strong> — stores private keys; a bootstrap process delivers
+them to a local terminal source</li>
+<li><strong>TPM2 / host-sealed blobs</strong> — private keys sealed to the host’s
+TPM2 (or host key) via <code>systemd-creds encrypt --with-key=host+tpm2</code>,
+producing a sealed credential file that can only be decrypted on
+that specific host</li>
+<li><strong>Manual</strong> — operator places <code>.env.keys</code> on the host directly</li>
+</ul>
+<p>Postmaster does not participate in this stage. These systems deliver
+key material to local terminal sources (files, credentials,
+keychain). Postmaster reads from those local sources.</p>
+<h3 id="stage-2-rendering-automation-tools"><a class="header" href="#stage-2-rendering-automation-tools">Stage 2: Rendering (automation tools)</a></h3>
+<p>How encrypted artifacts, key material, <code>exec.json</code>, and service
+wiring get onto the host.</p>
+<ul>
+<li><strong>Nix</strong> — builds encrypted <code>.env</code> files into the Nix
+store, generates <code>exec.json</code>, wires systemd/launchd units</li>
+<li><strong>Terraform / OpenTofu</strong> — renders infrastructure, deploys
+artifacts, wires service units</li>
+<li><strong>AWS CDK</strong> — renders CloudFormation, deploys artifacts, wires
+service units</li>
+<li><strong>Ansible</strong> — renders config, deploys artifacts, wires service
+units</li>
+<li><strong>SaltStack</strong> — renders config, deploys artifacts, wires service
+units</li>
+<li><strong>Puppet</strong> — renders config, deploys artifacts, wires service units</li>
+</ul>
+<p>Postmaster does not participate in this stage. These tools produce
+the local artifacts and wiring that postmaster consumes.</p>
+<h3 id="stage-3-delivery-local-key-sources"><a class="header" href="#stage-3-delivery-local-key-sources">Stage 3: Delivery (local key sources)</a></h3>
+<p>How key material reaches postmaster at runtime.</p>
+<ul>
+<li><strong>systemd credentials</strong> (<code>LoadCredential=</code>) — PID 1 places key
+material in <code>$CREDENTIALS_DIRECTORY</code> before postmaster starts.
+This includes TPM2/host-sealed credentials via
+<code>LoadCredentialEncrypted=</code> — systemd decrypts the sealed blob
+with the host’s TPM2 before placing it in the credentials directory</li>
+<li><strong>Files</strong> — a <code>.env.keys</code>-format file on local disk (not in the
+Nix store)</li>
+<li><strong>macOS Keychain</strong> — key material stored as generic-password items,
+read natively by postmaster via <code>security(1)</code></li>
+<li><strong>Environment</strong> — <code>DOTENV_PRIVATE_KEY*</code> variables in the process
+environment (set by the service manager)</li>
+</ul>
+<p>Postmaster reads from these local sources. It does not fetch from
+remote systems.</p>
+<h3 id="stage-4-materialization-postmaster"><a class="header" href="#stage-4-materialization-postmaster">Stage 4: Materialization (postmaster)</a></h3>
+<p>Postmaster decrypts encrypted inputs and injects them into the child
+context. This is the only stage postmaster owns.</p>
+<ul>
+<li>Decrypts <code>.env</code> files via the <code>ecies</code> crate (native Rust, offline)</li>
+<li>Decrypts <code>postmaster_bundle</code> files via the same crypto path</li>
+<li>Injects via <code>env</code>, <code>files</code>, or <code>credentials</code> mode</li>
+<li>Zeroizes decrypted values and private keys before <code>execvp</code></li>
+<li>Fails closed if any value cannot decrypt</li>
+</ul>
+<h3 id="stage-5-launch-execvp"><a class="header" href="#stage-5-launch-execvp">Stage 5: Launch (execvp)</a></h3>
+<p>Postmaster calls <code>execvp</code>. The process image is replaced. The child
+binary IS <code>MainPID</code>. Postmaster is gone.</p>
+<p>The service manager (systemd/launchd) supervises the child from this
+point. <code>ExecStopPost</code> runs <code>postmaster cleanup</code> to remove plaintext
+files after the child exits (Linux). The ramdisk is destroyed when
+the launchd job stops (macOS).</p>
+<h2 id="implementation"><a class="header" href="#implementation">Implementation</a></h2>
+<p><code>postmaster/</code> contains a dependency-lean Rust binary (edition
+2024; pure-Rust crypto, no openssl; no async runtime; syscalls via
+rustix’s <code>linux_raw</code> backend rather than libc FFI on Linux, leaving
+one <code>unsafe</code> block for the fd-ownership assertion at the systemd
+socket-activation boundary; on macOS, <code>libc</code> is used for <code>getpeereid</code>
+and <code>PT_DENY_ATTACH</code> hardening — each <code>unsafe</code> site carries a SAFETY
+comment) that materializes decrypted secret values as systemd
+<code>LoadCredential=</code> AF_UNIX sources or directly injects them via
+<code>execvp</code>. systemd’s documented contract for socket credential sources
+is minimal — the manager connects once at process invocation and reads
+until EOF, with no request metadata in-band — so the request is encoded
+in the <em>path</em>: one socket per (service, key). The module generates a
+single <code>postmaster-credd.socket</code> unit carrying N <code>ListenStream=</code>
+entries; postmaster maps each inherited fd back to its path via
+<code>getsockname(2)</code>.</p>
+<p>On Linux, postmaster is socket-activated: the <code>postmaster-credd.socket</code>
+unit owns the sockets and the daemon inherits them via <code>sd_listen_fds</code>.
+On macOS it runs <code>--bind</code> (launchd has no socket-credential contract),
+owning the same per-(service,key) socket paths itself; the syscall layer
+is <code>cfg</code>-gated (<code>SO_PEERCRED</code>→<code>getpeereid</code>, <code>prctl</code>/<code>mlockall</code>→core-limit +
+<code>PT_DENY_ATTACH</code>).</p>
+<p>The binary has five entry points: the default daemon (<code>--bind</code>/
+socket-activated <code>serve</code>), <code>fetch</code> (the darwin fetch client), <code>exec</code>
+(decrypt + inject + <code>execvp</code>), <code>setup</code> (idempotent environment
+verification and key provisioning), and <code>cleanup</code> (plaintext file
+removal for <code>ExecStopPost</code>). Its config schema, key-source precedence,
+and per-mode injection rules are the cross-binding contract at
+<a href="#launcher-contract-execjson">Launcher contract</a>.</p>
+<h2 id="dependency-policy"><a class="header" href="#dependency-policy">Dependency policy</a></h2>
+<p>Postmaster has 8 dependencies:</p>
+<ul>
+<li><code>ecies</code> — crypto (secp256k1 + AES-256-GCM)</li>
+<li><code>dotenvy</code> — <code>.env</code> file parser</li>
+<li><code>serde</code> + <code>serde_json</code> — JSON config deserialization</li>
+<li><code>base64</code> — ciphertext decoding</li>
+<li><code>hex</code> — key parsing</li>
+<li><code>rustix</code> — syscalls (no libc FFI on Linux)</li>
+<li><code>libc</code> — macOS only (for <code>getpeereid</code> and <code>PT_DENY_ATTACH</code>)</li>
+<li><code>zeroize</code> — secret memory wiping</li>
+</ul>
+<p>No CLI parsing library (clap, etc.). No async runtime. No OpenSSL.
+No network client. No plugin system. The dependency set is
+intentionally minimal: smaller binary, smaller attack surface,
+faster startup, fewer supply-chain risks.</p>
+<p>New dependencies are rejected unless they are strictly necessary
+for the core decrypt-inject-execvp path and cannot be implemented in
+a few lines of stdlib + rustix.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="materialization-abi"><a class="header" href="#materialization-abi">Materialization ABI</a></h1>
+<p><code>postmaster</code> is the local secret materialization engine. Its ABI is the
+contract between public deployment artifacts, local private key material,
+and the process that receives plaintext at runtime.</p>
+<h2 id="audience-quickstart-plain-language-2"><a class="header" href="#audience-quickstart-plain-language-2">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> the contract that every integration (Nix, Terraform,
+CDK, Ansible, etc.) must follow when wiring postmaster. If you’re writing
+a binding or evaluating whether a generated config is correct, this is
+your page.</p>
+<h3 id="who-this-is-for-2"><a class="header" href="#who-this-is-for-2">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>Integration author</td><td>The entire page — this is your contract</td></tr>
+<tr><td>Security engineer</td><td>“Non-goals” and “Resolution” — what postmaster will never do</td></tr>
+<tr><td>New user</td><td>“Current ABI instance” and the exec.json example — the 60-second tour</td></tr>
+<tr><td>Platform / SRE</td><td>“Key sources” and “Validation” — what the host needs</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary-2"><a class="header" href="#quick-glossary-2">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>ABI</strong></td><td>Application Binary Interface — the contract between config files, key material, and the launcher</td></tr>
+<tr><td><strong>exec.json</strong></td><td>A JSON file that tells postmaster what to decrypt, how to inject, and what to launch</td></tr>
+<tr><td><strong>Projection</strong></td><td>Where decrypted secrets go — env vars, files, or systemd credentials</td></tr>
+<tr><td><strong>Adapter</strong></td><td>An input format (.env, postmaster_bundle) — postmaster supports multiple, not just one</td></tr>
+</tbody>
+</table>
+</div>
+<p>The ABI is deliberately local:</p>
+<ul>
+<li>encrypted secret artifacts may be public and declarative</li>
+<li>private key material arrives through local terminal sources</li>
+<li><code>postmaster</code> decrypts and projects plaintext on the host</li>
+<li>plaintext is handed to the target process through one selected projection</li>
+<li>failure happens before <code>exec</code>, not after a partially configured launch</li>
+</ul>
+<p>This page describes the ABI and how <code>exec.json</code> fits inside it. It is a
+contract for bindings and documentation recipes, not an invitation to put
+provider clients into <code>postmaster</code>.</p>
+<h2 id="non-goals"><a class="header" href="#non-goals">Non-goals</a></h2>
+<p><code>postmaster</code> must not become:</p>
+<ul>
+<li>an AWS SSM client</li>
+<li>a Vault client</li>
+<li>a Terraform/OpenTofu/CDK/Ansible/Salt/Puppet plugin host</li>
+<li>a general remote secret-store SDK wrapper</li>
+<li>a process that fetches secrets over the network in the secret path</li>
+</ul>
+<p>Vault, AWS SSM, 1Password, and other centralized stores are source or
+custody systems. Automation tools (Nix, CDK, Ansible, SaltStack, Puppet,
+Terraform, OpenTofu) are renderers and installers. Their job is to deliver
+local artifacts, local key material, config, and service wiring around the
+ABI. Runtime decrypt and injection remain inside <code>postmaster</code>.</p>
+<h2 id="contract-layers"><a class="header" href="#contract-layers">Contract layers</a></h2>
+<p>The ABI has five layers.</p>
+<pre class="mermaid">flowchart TD
+    art["1. Artifact descriptors\nidentify encrypted local inputs"]
+    key["2. Key-source descriptors\nidentify local private key material"]
+    res["3. Resolution rules\nturn encrypted entries into plaintext"]
+    proj["4. Projection policy\ndecides where bytes appear"]
+    launch["5. Launch semantics\nexecvp replaces postmaster with target"]
+
+    art --&gt; res
+    key --&gt; res
+    res --&gt; proj
+    proj --&gt; launch
+</pre>
+
+<ol>
+<li>Artifact descriptors identify encrypted local inputs.</li>
+<li>Key-source descriptors identify local private key material.</li>
+<li>Resolution rules turn encrypted entries into named plaintext byte values.</li>
+<li>Projection policy decides where those bytes may appear.</li>
+<li>Launch semantics replace the wrapper process with the target command only
+after validation and materialization succeed.</li>
+</ol>
+<p>All ABI data intended for generated config must be safe to store in the Nix
+store or an equivalent world-readable deployment artifact. Secret bytes and
+private keys are never config fields.</p>
+<h2 id="current-abi-instance"><a class="header" href="#current-abi-instance">Current ABI instance</a></h2>
+<p><code>exec.json</code> is the first ABI instance. It is implicitly:</p>
+<ul>
+<li>ABI version: <code>0</code></li>
+<li>input adapter: <code>.env</code> (wire-compatible with dotenvx-encrypted files)</li>
+<li>artifact shape: <code>env_files</code></li>
+<li>key material shape: <code>.env.keys</code> / <code>DOTENV_PRIVATE_KEY*</code></li>
+<li>projection modes: <code>env</code>, <code>files</code>, and <code>credentials</code></li>
+</ul>
+<p>The current parser does not accept explicit <code>version</code> or <code>adapter</code> fields.
+Bindings must not emit those fields until the Rust parser and schema define
+them.</p>
+<p>The current shape is:</p>
+<pre><code class="language-json">{
+  "mode": "files",
+  "keys": [{ "credential": "postmaster-myapp" }, "environment"],
+  "env_files": ["/nix/store/.../.env.production"],
+  "strict": true,
+  "overload": false,
+  "secrets_dir": "/run/postmaster",
+  "passthrough": ["RUST_LOG"]
+}
+</code></pre>
+<p><code>env_files</code> are encrypted <code>.env</code> files, wire-compatible with dotenvx. They
+must follow the <code>.env[.&lt;environment&gt;]</code> basename convention because the
+filename selects the private key variable:</p>
+<ul>
+<li><code>.env</code> maps to <code>DOTENV_PRIVATE_KEY</code></li>
+<li><code>.env.production</code> maps to <code>DOTENV_PRIVATE_KEY_PRODUCTION</code></li>
+<li>non-alphanumeric environment suffix bytes normalize to <code>_</code></li>
+</ul>
+<p>The <code>.env</code> adapter is the first adapter, not the ceiling of the system.</p>
+<h2 id="neutral-bundle-adapter"><a class="header" href="#neutral-bundle-adapter">Neutral bundle adapter</a></h2>
+<p>The <code>postmaster_bundle</code> adapter is a second input format, not a replacement
+for <code>.env</code>. Its job is to let non-<code>.env</code> ecosystems produce a public
+encrypted artifact without pretending their native model is an <code>.env</code> file.</p>
+<p>The on-disk format is a JSON container. JSON keeps generated artifacts easy
+for Terraform, OpenTofu, CDK, Ansible, Salt, Puppet, and Nix to render and
+diff, while encrypted values remain opaque base64 strings.</p>
+<pre><code class="language-json">{
+  "format": "postmaster.bundle",
+  "version": 1,
+  "profile": "production",
+  "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+  "recipients": [
+    {
+      "id": "host:api-01",
+      "public_key": "02..."
+    }
+  ],
+  "entries": {
+    "DATABASE_URL": {
+      "encoding": "utf8",
+      "ciphertext": "base64..."
+    },
+    "TLS_KEY": {
+      "encoding": "bytes",
+      "ciphertext": "base64..."
+    }
+  }
+}
+</code></pre>
+<p>All fields above are public metadata except <code>ciphertext</code>, which is encrypted
+and authenticated. The metadata that affects interpretation must be covered
+by authentication so a store or repo adversary cannot rename a key, change a
+profile, change a recipient id, switch an encoding, or replay a value between
+profiles without detection.</p>
+<p>The design constraints are:</p>
+<ul>
+<li><code>format</code> and integer <code>version</code> are mandatory and fail closed on unknown
+values.</li>
+<li><code>suite</code> is mandatory so cryptographic suites can be explicit rather
+than inferred from payload length.</li>
+<li><code>profile</code> is optional public selection metadata; it is not a secret.</li>
+<li><code>recipients[*].id</code> is public routing metadata used to select local private
+key material.</li>
+<li><code>entries</code> keys must use the same identifier rule as <code>.env</code>-derived keys:
+<code>[A-Za-z_][A-Za-z0-9_]*</code>.</li>
+<li><code>encoding</code> is either <code>utf8</code> or <code>bytes</code>. <code>env</code> projection rejects bytes that
+cannot become a POSIX environment value; <code>files</code> and <code>credentials</code> preserve
+byte-exact values.</li>
+<li>The canonical serialized bytes for authenticated metadata must be specified
+before implementation. Generated artifacts need deterministic bytes for
+reproducible builds and stable test vectors.</li>
+<li>A bundle can contain many entries for one projection, but it does not
+encode service-manager policy. Projection remains in the <code>postmaster</code>
+config, not inside the encrypted artifact.</li>
+</ul>
+<p>The bundle preserves the same runtime invariants: local-only resolution,
+no network egress, no plaintext config fields, deterministic failure before
+launch, and the same output projection semantics as <code>.env</code> values.</p>
+<p>The implementation ships with conformance vectors for:</p>
+<ul>
+<li>minimal valid bundle</li>
+<li>multiple recipients</li>
+<li>binary value projected to files</li>
+<li>invalid key name</li>
+<li>unknown version</li>
+<li>tampered authenticated metadata</li>
+<li>wrong local private key</li>
+<li>replayed ciphertext under a different entry name or profile</li>
+</ul>
+<h2 id="key-sources"><a class="header" href="#key-sources">Key sources</a></h2>
+<p>Implemented launcher key sources are local and terminal:</p>
+<ul>
+<li><code>{"credential": "&lt;name&gt;"}</code> reads from <code>$CREDENTIALS_DIRECTORY/&lt;name&gt;</code> and
+is skippable when absent, so generated configs can fall through to another
+source. The name must be a single relative path component.</li>
+<li><code>{"file": "/path/to/.env.keys"}</code> reads a local file and fails closed if the
+file is unavailable or under <code>/nix/store</code>.</li>
+<li><code>{"keychain": "&lt;service&gt;"}</code> reads from macOS Keychain and is terminal.</li>
+<li><code>"environment"</code> reads <code>DOTENV_PRIVATE_KEY*</code> from the process environment
+and is terminal.</li>
+</ul>
+<p>Provider names such as <code>aws_ssm</code> and <code>vault</code> are reserved contract language,
+but they are not implemented key sources. A Vault Agent, cloud-init step,
+systemd oneshot, <code>systemd-creds</code> workflow, or platform bootstrap process can
+fetch or seal material before launch and hand it to one of the implemented
+local sources.</p>
+<h2 id="resolution"><a class="header" href="#resolution">Resolution</a></h2>
+<p>Resolution must:</p>
+<ul>
+<li>parse every configured encrypted artifact before launching the target</li>
+<li>build the wanted private-key set from artifact metadata</li>
+<li>load key material from the ordered local sources</li>
+<li>decrypt with the selected adapter</li>
+<li>reject malformed key names</li>
+<li>respect <code>strict</code> fail-closed behavior</li>
+<li>respect <code>overload</code> precedence</li>
+<li>keep plaintext out of stdout, generated config, and persistent public
+artifacts</li>
+</ul>
+<p>For the <code>.env</code> adapter, this is implemented by <code>resolve_all</code> and the same
+native ECIES path used by the credential daemon.</p>
+<h2 id="diagnostics-and-redaction"><a class="header" href="#diagnostics-and-redaction">Diagnostics and redaction</a></h2>
+<p>Failures identify the field, artifact, key name, or projection that failed
+without printing decrypted values, private keys, or secret-bearing command
+output. Diagnostics may include public paths, key names, mode names, source
+kinds, and parser errors. They must not include plaintext secret bytes,
+<code>.env.keys</code> contents, ECIES private keys, or values fetched from postmaster
+sockets.</p>
+<p>Bindings follow the same rule. Generated validation logs and CI output can
+show which config failed and why, but not the material that would allow
+decryption or disclose the decrypted result.</p>
+<h2 id="projection-modes"><a class="header" href="#projection-modes">Projection modes</a></h2>
+<p>Projection modes are shared ABI behavior.</p>
+<h3 id="env"><a class="header" href="#env"><code>env</code></a></h3>
+<p>All resolved values are exported as real environment variables, then the
+target command is executed directly. Values containing NUL bytes are rejected
+because POSIX environment variables cannot carry them safely.</p>
+<h3 id="files"><a class="header" href="#files"><code>files</code></a></h3>
+<p>Each resolved value is written as a <code>0600</code> file under <code>secrets_dir</code>.
+<code>postmaster</code> exports <code>&lt;KEY&gt;_FILE</code> pointers for each secret.</p>
+<p>The launcher refuses to follow symlinks when writing secret files. On macOS,
+when <code>verify_ramdisk</code> is set, it verifies the configured mount before writing
+plaintext.</p>
+<p><code>passthrough</code> may additionally export selected keys as real environment
+variables. Passthrough values containing NUL bytes are rejected.</p>
+<h3 id="credentials"><a class="header" href="#credentials"><code>credentials</code></a></h3>
+<p>On systemd, PID 1 has already materialized credentials and the launcher only
+exports <code>&lt;KEY&gt;_FILE</code> pointers into <code>$CREDENTIALS_DIRECTORY</code>.</p>
+<p>On launchd, the launcher can fetch configured keys from local postmaster
+sockets, write them into the verified RAM disk directory, and export
+credential-style pointers.</p>
+<p>Every <code>credential_keys</code> entry must be a valid identifier before any fetch or
+write occurs.</p>
+<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
+<p>The ABI needs two validation surfaces:</p>
+<ul>
+<li>JSON Schema for generated config and documentation fixtures</li>
+<li><code>postmaster exec --check</code> for parser-authoritative structural validation</li>
+</ul>
+<p>The current <code>exec.json</code> schema lives at <code>docs/schema/exec.schema.json</code>.
+Fixture examples live under <code>docs/examples/</code> and are exercised by the Rust
+test suite, so documentation examples cannot silently drift from the parser.</p>
+<p><code>--check</code> reads only the config file. It rejects malformed JSON, unknown
+fields, unknown modes or key-source kinds, missing mode-required fields,
+invalid env-file basenames, invalid identifier fields, forbidden
+private-key paths under <code>/nix/store</code>, and incomplete credential socket maps.
+It does not resolve keys, decrypt values, read local key files, inspect
+<code>secrets_dir</code>, probe sockets, mount-check ramdisks, contact remote systems, or
+depend on host-specific secret state. That makes it suitable for CI and for
+automation tools that want to validate generated config before deployment.</p>
+<p><strong>Limitation:</strong> <code>--check</code> validates config shape only, not key source
+accessibility. A config can pass <code>--check</code> in CI but fail at runtime because
+the key file is missing, the keychain item is absent, or the credential
+source is not provisioned. The launcher’s fail-closed behavior is the
+runtime guarantee; <code>--check</code> cannot substitute for it.</p>
+<p><code>postmaster setup --config &lt;exec.json&gt; --recheck</code> provides runtime
+environment verification — it probes the filesystem and keychain to
+confirm that key material is actually accessible at the configured paths,
+without decrypting any secrets. It complements <code>--check</code>: run <code>--check</code>
+in CI for config correctness, run <code>setup --recheck</code> on the host for
+environment readiness.</p>
+<p>The full <code>postmaster setup</code> command goes beyond verification: it
+creates the keys directory with 0700 permissions, verifies or creates
+keys files with 0600, optionally seeds keychain items (macOS, interactive),
+and validates platform prerequisites. It is idempotent — each step checks
+whether the target state is already present and correct, and skips if it
+is. Flags: <code>--recheck</code> (verification only), <code>--unattended</code> (non-interactive,
+fail closed), <code>--force</code> (re-create/re-seed), <code>--keys-dir &lt;path&gt;</code> (override
+default path).</p>
+<h2 id="integration-responsibilities"><a class="header" href="#integration-responsibilities">Integration responsibilities</a></h2>
+<p>Bindings and recipes are correct when they produce local ABI inputs and prove
+them before launch.</p>
+<p>Source or custody systems should document:</p>
+<ul>
+<li>where private key material lives</li>
+<li>how it is delivered to a local terminal source</li>
+<li>rotation behavior</li>
+<li>audit behavior</li>
+<li>failure behavior</li>
+</ul>
+<p>Automation systems should document:</p>
+<ul>
+<li>how encrypted artifacts are installed</li>
+<li>how <code>exec.json</code> or its successor is rendered</li>
+<li>how service manager wiring invokes <code>postmaster</code></li>
+<li>how <code>postmaster exec --check</code> is run</li>
+<li>how plaintext persistence is avoided</li>
+</ul>
+<p>No integration should reimplement decrypt/inject semantics. If an external
+tool needs to participate, it should chain through the ABI.</p>
+<h2 id="conformance"><a class="header" href="#conformance">Conformance</a></h2>
+<p>Each supported adapter has conformance fixtures:</p>
+<ul>
+<li>valid minimal config</li>
+<li>valid full config per projection mode</li>
+<li>invalid unknown source kind</li>
+<li>invalid unknown mode</li>
+<li>invalid identifier</li>
+<li>missing required mode fields</li>
+<li>adapter-specific malformed artifact</li>
+<li>strict undecryptable value behavior</li>
+<li>precedence behavior for <code>overload</code></li>
+</ul>
+<p>Provider or automation repositories claim compatibility by showing that
+their generated artifacts pass the schema, <code>--check</code>, and the shared fixture
+suite without adding provider logic to <code>postmaster</code>.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="threat-model"><a class="header" href="#threat-model">Threat model</a></h1>
+<h2 id="audience-quickstart-plain-language-3"><a class="header" href="#audience-quickstart-plain-language-3">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> what postmaster protects, what it cannot prevent,
+and why it’s built this way. This is the security reference.</p>
+<h3 id="who-this-is-for-3"><a class="header" href="#who-this-is-for-3">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>Security engineer</td><td>The entire page — every claim is about the security boundary</td></tr>
+<tr><td>Platform / SRE</td><td>“Swap and core dumps” and “Hardening inheritance” — what to configure</td></tr>
+<tr><td>Integration author</td><td>“Why a native launcher” — understand the design constraints</td></tr>
+<tr><td>New user</td><td>“Secrets at rest” and “Fail-closed” — the 30-second security summary</td></tr>
+<tr><td>Product / project manager</td><td>The residuals table — what postmaster does NOT protect against</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary-3"><a class="header" href="#quick-glossary-3">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>execvp</strong></td><td>Replaces the current process — no parent holds secrets after launch</td></tr>
+<tr><td><strong>Fail-closed</strong></td><td>If anything fails, the service does NOT start — no partial secrets</td></tr>
+<tr><td><strong>Zeroize</strong></td><td>Overwrite secret memory with zeros before it’s freed</td></tr>
+<tr><td><strong>mlockall</strong></td><td>Pin memory in RAM so the kernel can’t swap it to disk</td></tr>
+<tr><td><strong>TOCTOU</strong></td><td>Time-of-check to time-of-use — a race between verifying and using a file</td></tr>
+<tr><td><strong>Residual</strong></td><td>A risk that postmaster cannot fully eliminate</td></tr>
+<tr><td><strong>Non-goal</strong></td><td>Something postmaster deliberately does not attempt to mitigate</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="security-posture-at-a-glance"><a class="header" href="#security-posture-at-a-glance">Security posture at a glance</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Category</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Secrets at rest (ciphertext in git/Nix store)</td><td>Safe — ciphertext is public</td></tr>
+<tr><td>Plaintext on persistent disk</td><td>Prevented — only RAM-backed filesystems</td></tr>
+<tr><td>Plaintext in swap</td><td>Mitigated — mlockall + MemorySwapMax=0</td></tr>
+<tr><td>Core dumps</td><td>Mitigated — PR_SET_DUMPABLE=0, RLIMIT_CORE=0</td></tr>
+<tr><td>Shell injection</td><td>Prevented — no shell anywhere in the path</td></tr>
+<tr><td>Symlink attacks on key files</td><td>Prevented — O_NOFOLLOW + fstat</td></tr>
+<tr><td>Same-UID env var exposure (env mode)</td><td>Residual — use files or credentials mode</td></tr>
+<tr><td>Root on the host</td><td>Residual — root is always game over</td></tr>
+<tr><td>VM/hypervisor inspection</td><td>Residual — outside the trust boundary</td></tr>
+<tr><td>CPU cache/register residue</td><td>Non-goal — no mitigation available</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="why-a-native-launcher-not-a-shell-wrapper"><a class="header" href="#why-a-native-launcher-not-a-shell-wrapper">Why a native launcher, not a shell wrapper</a></h2>
+<p>Postmaster is a native Rust binary, not a shell wrapper around an
+external CLI. This decision is driven by three security properties that
+a shell-based approach cannot provide.</p>
+<h3 id="process-identity-execvp-not-spawn"><a class="header" href="#process-identity-execvp-not-spawn">Process identity: execvp, not spawn</a></h3>
+<p>When postmaster launches your service, it uses <code>execvp</code> — the system
+call that replaces the current process image with the target binary.
+The process ID (PID) does not change. The service binary is <code>MainPID</code>
+from its first instruction.</p>
+<p>A shell wrapper or Node.js parent process would <code>spawn</code> a child
+instead. The parent stays alive as <code>MainPID</code>, which breaks:</p>
+<ul>
+<li><strong>systemd readiness notifications</strong> (<code>Type=notify</code>, <code>sd_notify</code>):
+systemd expects <code>MainPID</code> to send <code>READY=1</code>. A parent process that
+spawns the real service means the wrong process is notifying.</li>
+<li><strong>Cgroup memory accounting</strong>: the parent’s memory (including private
+key material) is counted against the service unit’s cgroup.</li>
+<li><strong>Secret lifetime</strong>: the parent process holds private keys and
+decrypted values in its heap for the entire lifetime of the service.
+With <code>execvp</code>, postmaster’s process image is replaced — all heap
+memory is released and the kernel zeroes the pages before reuse.</li>
+</ul>
+<h3 id="no-shell-interpolation"><a class="header" href="#no-shell-interpolation">No shell interpolation</a></h3>
+<p>A shell-based launcher would use <code>eval</code> or source-based injection to
+set environment variables. That leaves <code>$(…)</code> and backticks live
+inside double quotes. Combined with a public key embedded in the
+repository (which lets any repo writer add or replace encrypted
+values), this would be remote code execution at service start for
+anyone who can commit to the repo.</p>
+<p>Postmaster never shells out or evals. Decrypted values move directly
+into the child’s environment array or a file write. No shell sits
+between decryption and injection to reinterpret the values.</p>
+<h3 id="offline-decryption"><a class="header" href="#offline-decryption">Offline decryption</a></h3>
+<p>Postmaster’s decryption uses the <code>ecies</code> library — a native Rust
+implementation of the same crypto path as dotenvx. It makes no network
+calls of any kind. There is no update check, no telemetry, no CLI
+settings directory to manage.</p>
+<p>This is an invariant of the secret path: postmaster must not become an
+AWS SSM client, a Vault client, or a general secret-store plugin host.
+Centralized secret stores (Vault, AWS SSM, 1Password, etc.) are
+source/custody systems that deliver key material to postmaster through
+local terminal sources such as systemd credentials, out-of-store
+files, macOS keychain items, or a deliberately managed process
+environment. Postmaster materializes secrets locally; it does not
+fetch them remotely.</p>
+<h2 id="what-postmaster-protects"><a class="header" href="#what-postmaster-protects">What postmaster protects</a></h2>
+<h3 id="trust-boundary-overview"><a class="header" href="#trust-boundary-overview">Trust boundary overview</a></h3>
+<pre class="mermaid">flowchart TB
+    subgraph trusted["Trusted zone"]
+        keys["Private key material\n(systemd cred / file / keychain)"]
+        pm["postmaster\n(decrypt + inject)"]
+        child["Child process\n(your binary)"]
+    end
+    subgraph untrusted["Public zone"]
+        ciphertext["Encrypted .env\n(git / Nix store / artifact)"]
+    end
+    subgraph outside["Outside trust boundary"]
+        root["Root on host"]
+        vm["VM / hypervisor"]
+        cpu["CPU cache / registers"]
+    end
+
+    ciphertext --&gt; pm
+    keys --&gt; pm
+    pm --&gt;|execvp| child
+    pm -.-&gt;|cannot stop| root
+    pm -.-&gt;|cannot stop| vm
+    pm -.-&gt;|cannot stop| cpu
+</pre>
+
+<h3 id="secrets-at-rest"><a class="header" href="#secrets-at-rest">Secrets at rest</a></h3>
+<p>Encrypted <code>.env</code> files and <code>postmaster_bundle</code> files are safe to store
+in git, the Nix store, binary caches, and deploy artifacts. The
+ciphertext is public — the matching private key is the real secret.
+Only someone with the private key can decrypt the values.</p>
+<p>A teammate who has repository access (and thus the public key) can add
+or replace encrypted secrets, but cannot read existing ones.</p>
+<h3 id="plaintext-never-on-persistent-disk"><a class="header" href="#plaintext-never-on-persistent-disk">Plaintext never on persistent disk</a></h3>
+<p>Decrypted values exist only in:</p>
+<ul>
+<li><strong>Process memory</strong> (anonymous heap, zeroized after use)</li>
+<li><strong>RAM-backed filesystems</strong> (Linux tmpfs, macOS ramdisk — destroyed
+when the service unit stops)</li>
+</ul>
+<p>They are never written to a file on persistent disk. The tmpfs is
+namespace-private (invisible outside the unit’s mount namespace on
+Linux) and unswappable (via <code>mlockall</code> on Linux and the service
+manager’s cgroup-level <code>MemorySwapMax=0</code> setting).</p>
+<h3 id="fail-closed-by-default"><a class="header" href="#fail-closed-by-default">Fail-closed by default</a></h3>
+<p>If any value fails to decrypt (wrong key, corrupted ciphertext, stale
+key file), the entire launch aborts before the child process starts.
+Nothing partial is injected. This is controlled by the <code>strict</code>
+setting, which defaults to <code>true</code>.</p>
+<h3 id="symlink-attacks-on-key-files-and-secret-paths"><a class="header" href="#symlink-attacks-on-key-files-and-secret-paths">Symlink attacks on key files and secret paths</a></h3>
+<p>Postmaster rejects symlinks at every point where secret material is
+read or written:</p>
+<ul>
+<li><strong>Key files</strong> are opened with <code>O_NOFOLLOW</code> — a symlinked <code>.env.keys</code>
+file is rejected at the kernel level. The file descriptor is then
+<code>fstat</code>-ed to verify that permissions are <code>0o077</code> (no group or world
+access) and that the owner matches the current effective user ID.
+This fd-based approach eliminates the TOCTOU window between open
+and permission check.</li>
+<li><strong>Credential source paths</strong> are checked with <code>symlink_metadata</code>
+before loading, rejecting symlinks at the path level. The
+<code>O_NOFOLLOW</code> open in <code>KeyRing::load</code> provides defense-in-depth at
+the fd level.</li>
+<li><strong>Secret files</strong> are written with <code>O_NOFOLLOW | O_CREAT | O_TRUNC</code>
+— a symlink planted at the target path is rejected, not followed.</li>
+<li><strong>Secrets directory</strong> is checked with <code>symlink_metadata</code> even on
+Linux where <code>verify_ramdisk</code> is not used, rejecting a symlinked
+<code>secrets_dir</code> that could redirect plaintext to persistent disk.</li>
+<li><strong>Socket permissions</strong> are set via <code>fchmod</code> on the file descriptor,
+not <code>set_permissions</code> on the path, eliminating the TOCTOU window
+between <code>bind</code> and <code>chmod</code>.</li>
+</ul>
+<h3 id="external-binary-verification"><a class="header" href="#external-binary-verification">External binary verification</a></h3>
+<p>Postmaster verifies the integrity of external binaries before
+invoking them in the secret path:</p>
+<ul>
+<li><strong>macOS:</strong> <code>/usr/bin/security</code> is verified via <code>codesign -v</code> before
+being invoked for keychain access. This ensures the binary has a
+valid Apple code signature and has not been tampered with or
+replaced.</li>
+<li><strong>Linux:</strong> External binaries are verified as regular files owned
+by root (uid 0) and not world-writable.</li>
+</ul>
+<h3 id="input-validation"><a class="header" href="#input-validation">Input validation</a></h3>
+<p>Postmaster validates all externally-authored input before it enters
+the secret path:</p>
+<ul>
+<li><strong>NUL byte rejection:</strong> Environment variable values containing NUL
+bytes are rejected in <code>env</code> mode (NUL cannot appear in a POSIX
+environment variable) and in <code>passthrough</code> values in <code>files</code> mode.
+Credential source names are checked for NUL bytes before any path
+operation.</li>
+<li><strong>Path traversal rejection:</strong> Credential source names must be a
+single relative path component — <code>.</code>, <code>..</code>, absolute paths, and
+slash-containing paths are rejected.</li>
+<li><strong>Identifier validation:</strong> All key names must match
+<code>[A-Za-z_][A-Za-z0-9_]*</code> — this is enforced before any value from
+that file is used, since a key name becomes a shell-visible env-var
+name or a filename component.</li>
+<li><strong>No shell expansion:</strong> Postmaster performs no <code>${VAR}</code> or <code>$(…)</code>
+expansion anywhere in the decrypt-and-inject path. Values are
+opaque bytes end to end. A repo contributor who commits
+<code>KEY=$(cmd)</code> gets the literal string, never a command execution at
+service start.</li>
+</ul>
+<h3 id="key-freshness-verification"><a class="header" href="#key-freshness-verification">Key freshness verification</a></h3>
+<p>Postmaster provides <code>--verify-keys</code> on <code>exec</code> to detect stale keys
+from a previous rotation cycle. After loading and decrypting, if the
+resolved values are empty but the env files contain <code>encrypted:</code>
+values, the keys are stale and the exec aborts with a clear error.
+This catches the <code>strict: false</code> case where stale keys would silently
+skip undecryptable values and launch the child with no secrets.</p>
+<h2 id="residuals-what-postmaster-cannot-fully-prevent"><a class="header" href="#residuals-what-postmaster-cannot-fully-prevent">Residuals: what postmaster cannot fully prevent</a></h2>
+<h3 id="environment-variables-are-visible-to-same-uid-processes-env-mode"><a class="header" href="#environment-variables-are-visible-to-same-uid-processes-env-mode">Environment variables are visible to same-UID processes (env mode)</a></h3>
+<p>In <code>env</code> mode, decrypted values are injected as environment variables.
+Any process running as the same user can read them via <code>/proc/PID/environ</code>,
+<code>ps e</code>, or environment dump tools. This is a fundamental Unix property —
+environment variables are not secret from same-UID processes.</p>
+<p>Mitigations: <code>DynamicUser</code> (a fresh UID per service), <code>ProtectProc</code>
+hardening (hides other processes’ <code>/proc</code> entries), and ultimately
+switching to <code>files</code> mode (where values are written to files, not
+environment variables).</p>
+<p>On the BEAM (Erlang/Elixir), <code>os:getenv/1</code> is reachable from any code
+in the node, including a remote shell. Files mode with read-once-at-boot
+into guarded state (and <code>process_flag(sensitive, true)</code> on the holder)
+is strictly better than leaving secrets in the environment for the
+node’s lifetime.</p>
+<h3 id="root-on-the-host"><a class="header" href="#root-on-the-host">Root on the host</a></h3>
+<p>A process running as root can read any other process’s memory via
+<code>/proc/PID/mem</code> or <code>ptrace</code>. This is the Unix trust boundary — root is
+always game over. Postmaster’s <code>PR_SET_DUMPABLE=0</code> and <code>PT_DENY_ATTACH</code>
+prevent non-privileged peers from attaching, but cannot stop root.</p>
+<h3 id="swap-and-core-dumps"><a class="header" href="#swap-and-core-dumps">Swap and core dumps</a></h3>
+<p>Swap and core dumps are the two ways plaintext can leak from memory to
+persistent disk.</p>
+<p><strong>Core dumps</strong> are disabled at both the process level
+(<code>PR_SET_DUMPABLE=0</code> on Linux, <code>RLIMIT_CORE=0</code> on macOS) and the unit
+level (<code>LimitCORE=0</code>, <code>CoredumpFilter=0</code> in the Nix module). For
+host-wide coverage, set
+<code>systemd.coredump.extraConfig = "Storage=none"</code>.</p>
+<p><strong>Swap</strong> is addressed on two layers:</p>
+<ul>
+<li>Per-unit: the service manager (systemd) can set <code>MemorySwapMax=0</code> on
+the unit, preventing the kernel from swapping the unit’s pages.
+Postmaster also calls <code>mlockall(MCL_CURRENT | MCL_FUTURE)</code> on Linux
+(best-effort, may fail under <code>RLIMIT_MEMLOCK</code>). On macOS,
+<code>mlockall(2)</code> does not exist, but macOS encrypts swap by default, so
+swapped pages are ciphertext at rest.</li>
+<li>Host-wide: encrypted swap or zram keeps all swap off persistent disk.
+On NixOS, this is a one-liner:
+<a href="https://search.nixos.org/options?show=swapDevices.*.randomEncryption.enable"><code>swapDevices.*.randomEncryption</code></a>
+for dm-crypt with an ephemeral key, or
+<a href="https://search.nixos.org/options?show=zramSwap.enable"><code>zramSwap.enable</code></a>
+to keep swap in compressed RAM (background:
+<a href="https://wiki.archlinux.org/title/Dm-crypt/Swap_encryption">Arch wiki, dm-crypt swap encryption</a>).</li>
+</ul>
+<h3 id="hardening-inheritance-across-execvp"><a class="header" href="#hardening-inheritance-across-execvp">Hardening inheritance across execvp</a></h3>
+<p>Postmaster calls <code>harden_process()</code> at startup, which sets process-level
+hardening (<code>PR_SET_DUMPABLE=0</code>, <code>mlockall</code>, <code>RLIMIT_CORE=0</code>). After
+<code>execvp</code>, the child process gets a fresh address space. Some settings
+survive <code>execvp</code>, some do not:</p>
+<ul>
+<li><strong><code>RLIMIT_CORE</code></strong>: preserved across <code>execve</code> (kernel guarantee). The
+child inherits <code>LimitCORE=0</code> from the systemd unit. Core dumps stay
+disabled.</li>
+<li><strong><code>PR_SET_DUMPABLE</code></strong>: preserved across <code>execve</code> for non-setuid
+binaries. The child inherits non-dumpable status unless it is a
+setuid/setgid/capability-bearing binary (which would be unusual for
+a service).</li>
+<li><strong><code>MemorySwapMax=0</code></strong>: cgroup-level, not process-level. The child
+stays in the same cgroup, so the swap limit applies to the child’s
+pages too. This is the primary swap protection for the child. The
+Nix module sets this via <code>preventSwap = true</code> by default.</li>
+<li><strong><code>mlockall</code></strong>: does NOT survive <code>execvp</code> — the child’s fresh address
+space is not pinned in RAM. This gap is covered by the cgroup-level
+<code>MemorySwapMax=0</code>.</li>
+</ul>
+<h2 id="memory-residency"><a class="header" href="#memory-residency">Memory residency</a></h2>
+<p>Plaintext secrets exist in process memory between decryption and
+consumption. This section documents where plaintext lives, what
+postmaster mitigates, what remains as a residual, and what is
+explicitly a non-goal.</p>
+<h3 id="anonymous-memory-heap-stack--mitigated"><a class="header" href="#anonymous-memory-heap-stack--mitigated">Anonymous memory (heap, stack) — Mitigated</a></h3>
+<p>Postmaster’s decrypted values, key material, and resolved environment
+pairs all live in anonymous memory — heap allocations wrapped in
+<code>Zeroizing&lt;Vec&lt;u8&gt;&gt;</code> that zero the buffer on drop. The child process
+receives plaintext via its environment array (env mode) or reads it
+from files on a tmpfs/ramdisk (files/credentials mode).</p>
+<p><strong>Paging/swap:</strong> Anonymous pages can be swapped out by the kernel.
+Postmaster mitigates this on Linux with <code>mlockall(MCL_CURRENT | MCL_FUTURE)</code> (best-effort, may fail under <code>RLIMIT_MEMLOCK</code>) and the
+service manager’s cgroup knob <code>MemorySwapMax=0</code> (wired by <code>preventSwap</code>
+in the Nix module). On macOS, <code>mlockall(2)</code> does not exist, but macOS
+encrypts swap by default, so swapped pages are ciphertext at rest.
+Host-wide encrypted swap or zram on Linux provides the same guarantee
+without per-unit configuration.</p>
+<p><strong>Core dumps:</strong> Disabled at the process level (<code>PR_SET_DUMPABLE=0</code> on
+Linux, <code>RLIMIT_CORE=0</code> on macOS) and at the unit level
+(<code>LimitCORE=0</code>, <code>CoredumpFilter=0</code> in the Nix module). Host-wide
+<code>systemd.coredump.extraConfig = "Storage=none"</code> is a belt for all
+units.</p>
+<p><strong>Pre-execvp zeroization:</strong> Private keys (the <code>KeyRing</code>) are zeroized
+when <code>decrypt()</code> returns and the <code>ring</code> local goes out of scope —
+each <code>Zeroizing&lt;[u8; 32]&gt;</code> wipes its 32 bytes on drop. Decrypted
+values (<code>Resolved</code>, a <code>Vec&lt;(String, Zeroizing&lt;Vec&lt;u8&gt;&gt;)&gt;</code>) are
+explicitly <code>drop</code>ped immediately after they are consumed, before
+<code>execvp</code> is called. In env mode, <code>resolved</code> is dropped after
+<code>env_pairs</code> extracts the <code>OsString</code> pairs the kernel needs. In
+files mode, <code>resolved</code> is dropped after the secret files are written.
+Only the <code>extra</code> vector (env array for env mode, file paths for files
+mode) survives to <code>execvp</code> — and in files mode, <code>extra</code> contains only
+paths, not plaintext.</p>
+<h3 id="post-execvp-heap-lifetime--residual-mitigated-as-far-as-possible"><a class="header" href="#post-execvp-heap-lifetime--residual-mitigated-as-far-as-possible">Post-execvp heap lifetime — Residual (mitigated as far as possible)</a></h3>
+<p>After <code>execvp</code>, the process image is replaced. The <code>Zeroizing</code> drop
+handlers for the <code>resolved</code> values have already fired (via explicit
+<code>drop</code>), but the <code>extra</code> vector (env mode) holds plaintext as
+<code>OsString</code> pairs that the kernel needs to build the child’s environ.
+The kernel copies these into the new process’s environment and the
+old process’s heap pages are released. The kernel zeroes anonymous
+pages before reusing them, so the plaintext exists only in freed
+pages until the kernel reclaims them — a transient window, not a
+persistent risk.</p>
+<p>No further mitigation is possible: the kernel needs the env array
+to be intact at the moment of <code>execvp</code>, and <code>execvp</code> replaces the
+process image without running destructors. Fork+wait would keep
+secrets in a long-lived parent heap (strictly worse) and was rejected.</p>
+<h3 id="file-backed-memory-page-cache--mitigated-by-design"><a class="header" href="#file-backed-memory-page-cache--mitigated-by-design">File-backed memory (page cache) — Mitigated by design</a></h3>
+<p>Postmaster does not <code>mmap</code> secret files. Secret files on Linux tmpfs
+and macOS ramdisk are kernel-resident RAM — they are never on
+persistent disk and never enter the page cache for a backing file.
+The <code>.env</code> and <code>.env.keys</code> source files are read via <code>dotenvy</code>’s
+<code>from_read_iter</code> which uses <code>read(2)</code>, not <code>mmap(2)</code> — their contents
+enter anonymous memory, not file-backed pages.</p>
+<p>The distinction matters: file-backed pages (e.g., a secret stored in a
+regular file on an ext4 volume) persist in the kernel page cache after
+the file is closed and the process exits. Postmaster avoids this by
+writing secrets only to tmpfs/ramdisk (RAM-backed, no page cache for a
+backing file) and by using <code>read(2)</code> for source files (anonymous
+memory, not mapped).</p>
+<h3 id="container-swap-enforcement--mitigated"><a class="header" href="#container-swap-enforcement--mitigated">Container swap enforcement — Mitigated</a></h3>
+<p><code>MemorySwapMax=0</code> can be wired by the service manager (systemd) or the
+Nix module via <code>preventSwap</code>. This enforces the cgroup’s swap limit —
+the kernel will not swap the unit’s pages even under host memory
+pressure. The residual is only if the host kernel itself is
+compromised, which falls under “root on the host is always game over.”
+Host-wide encrypted swap is recommended as defense-in-depth for the
+entire host, not just postmaster’s cgroup.</p>
+<h3 id="vm-and-hypervisor-inspection--residual-no-mitigation-available"><a class="header" href="#vm-and-hypervisor-inspection--residual-no-mitigation-available">VM and hypervisor inspection — Residual (no mitigation available)</a></h3>
+<p>A hypervisor can inspect guest memory, take snapshots, or
+live-migrate VMs to other hosts. Postmaster’s <code>mlockall</code> and
+<code>MemorySwapMax=0</code> operate inside the guest kernel; the hypervisor is
+outside the trust boundary. The only defense is confidential computing
+hardware (AMD SEV-SNP, Intel TDX, AWS Nitro Enclaves), which is
+outside postmaster’s scope and dependency set.</p>
+<h3 id="cpu-registers-and-cache--non-goal-no-mitigation-available"><a class="header" href="#cpu-registers-and-cache--non-goal-no-mitigation-available">CPU registers and cache — Non-goal (no mitigation available)</a></h3>
+<p>Plaintext secrets pass through CPU registers and L1/L2/L3 cache
+during decryption and injection. Postmaster does not attempt to flush
+cache lines or zero registers after use. This is a non-goal:
+mitigating cache-line side channels and register residue requires
+constant-time crypto implementations and hardware support (e.g., TSX
+memory scrubbing, <code>wbinvd</code> instruction) that are outside postmaster’s
+scope. The crypto library (<code>ecies</code>) uses <code>secp256k1</code> and <code>AES-256-GCM</code>
+primitives that are not guaranteed constant-time on all targets; this
+is a property of the crypto library, not postmaster.</p>
+<h3 id="privileged-ptrace--residual-no-mitigation-available"><a class="header" href="#privileged-ptrace--residual-no-mitigation-available">Privileged ptrace — Residual (no mitigation available)</a></h3>
+<p><code>PR_SET_DUMPABLE=0</code> (Linux) and <code>PT_DENY_ATTACH</code> (macOS release builds)
+prevent non-privileged peers from attaching. A privileged process
+(root, or a process with <code>CAP_SYS_PTRACE</code>) can still read process
+memory — this is unavoidable and the same trust boundary as “root on
+the host is always game over.” No software mitigation exists for
+privileged memory inspection within the same kernel.</p>
+<h3 id="plaintext-file-persistence-window-files-mode--mitigated"><a class="header" href="#plaintext-file-persistence-window-files-mode--mitigated">Plaintext file persistence window (files mode) — Mitigated</a></h3>
+<p>Secret files written to the tmpfs/ramdisk are removed by <code>postmaster cleanup --config &lt;exec.json&gt;</code>, wired to <code>ExecStopPost</code> in the systemd
+Nix module — it runs immediately after the child exits. On macOS, the
+ramdisk is destroyed when the <code>postmaster-ramdisk</code> launchd job stops.
+The <code>prune_stale</code> function also removes stale files from prior
+launches before writing new ones.</p>
+<h3 id="ramdisk-mount-verification-macos--mitigated"><a class="header" href="#ramdisk-mount-verification-macos--mitigated">Ramdisk mount verification (macOS) — Mitigated</a></h3>
+<p><code>verify_ramdisk</code> verifies the mount is RAM-backed by parsing
+<code>hdiutil info</code> for the device’s <code>image-path</code> starting with <code>ram://</code>.
+Fails closed if the device isn’t found or isn’t RAM-backed, preventing
+plaintext from being written to a file-backed HFS image masquerading
+as the ramdisk.</p>
+<h3 id="fd-closure-before-execvp--mitigated"><a class="header" href="#fd-closure-before-execvp--mitigated">fd closure before execvp — Mitigated</a></h3>
+<p><code>OFlags::CLOEXEC</code> is set on all <code>rustix::fs::open</code> calls (5 sites) —
+the kernel automatically closes these on execvp, preventing the child
+from inheriting postmaster’s open file descriptors. Third-party code
+(e.g., dotenvy) may open fds without <code>CLOEXEC</code>; a <code>pre_exec</code> hook to
+close those was considered but not implemented because it requires
+unsafe code or a new cross-platform dependency. Postmaster’s own fds
+are fully covered.</p>
+<h3 id="secrets-directory-path-exposure--mitigated"><a class="header" href="#secrets-directory-path-exposure--mitigated">Secrets directory path exposure — Mitigated</a></h3>
+<p>The child receives secrets via <code>$KEY_FILE</code> pointers (Docker secrets
+convention, systemd credentials convention, 12-factor <code>_FILE</code>
+pattern). The secrets directory path is not separately exported as
+an environment variable. <code>CREDENTIALS_DIRECTORY</code> is exported in
+credentials mode because it is a systemd standard that the child
+uses to locate credential files.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cli-reference"><a class="header" href="#cli-reference">CLI reference</a></h1>
+<p>All postmaster commands, flags, and exit codes. The CLI is hand-rolled
+with no external parsing library — every flag below is the complete
+set, directly from the argument parser in <code>config.rs</code>.</p>
+<h2 id="synopsis"><a class="header" href="#synopsis">Synopsis</a></h2>
+<pre><code class="language-console">$ postmaster --config &lt;file.json&gt; [--bind] [--allow-nonroot]
+$ postmaster exec --config &lt;exec.json&gt; [--check] [--verify-keys] -- &lt;command&gt; [args…]
+$ postmaster setup --config &lt;exec.json&gt; [--recheck] [--unattended] [--force] [--keys-dir &lt;path&gt;]
+$ postmaster cleanup --config &lt;exec.json&gt;
+$ postmaster fetch &lt;socket-path&gt;
+$ postmaster help [subcommand]
+$ postmaster --version
+$ postmaster --help
+</code></pre>
+<h2 id="global-flags"><a class="header" href="#global-flags">Global flags</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--help</code>, <code>-h</code></td><td>Print top-level help and exit</td></tr>
+<tr><td><code>--version</code>, <code>-V</code></td><td>Print version and exit</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="default-mode-serve"><a class="header" href="#default-mode-serve">Default mode (serve)</a></h2>
+<p>When no subcommand is given, postmaster enters daemon (serve) mode. This
+is the credential server used in credentials injection mode —
+socket-activated on Linux, self-binding on macOS.</p>
+<pre><code class="language-console">$ postmaster --config &lt;file.json&gt; [--bind] [--allow-nonroot]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--config &lt;path&gt;</code></td><td>Configuration file (required)</td></tr>
+<tr><td><code>--bind</code></td><td>Bind listener sockets even if not socket-activated (macOS)</td></tr>
+<tr><td><code>--allow-nonroot</code></td><td>Allow non-root connections (dangerous)</td></tr>
+</tbody>
+</table>
+</div>
+<p>On Linux, postmaster is socket-activated: the <code>postmaster-credd.socket</code>
+unit owns the sockets and the daemon inherits them via
+<code>sd_listen_fds</code>. On macOS, <code>--bind</code> causes postmaster to create its own
+listener sockets.</p>
+<h2 id="exec"><a class="header" href="#exec">exec</a></h2>
+<p>Decrypt and inject secrets, then <code>execvp</code> the target binary.</p>
+<pre><code class="language-console">$ postmaster exec --config &lt;exec.json&gt; [--check] [--verify-keys] -- &lt;command&gt; [args…]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Required</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--config &lt;path&gt;</code></td><td>Yes</td><td>Path to <code>exec.json</code> (before <code>--</code>)</td></tr>
+<tr><td><code>--check</code></td><td>No</td><td>Validate config shape only, no decryption (for CI)</td></tr>
+<tr><td><code>--verify-keys</code></td><td>No</td><td>Preflight decryption to catch stale keys</td></tr>
+<tr><td><code>--</code></td><td>Yes (unless <code>--check</code>)</td><td>Separator; everything after is the child argv</td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li>On success the process image is replaced (<code>execvp</code>); postmaster never
+returns.</li>
+<li>On failure the error is logged and the process exits non-zero.</li>
+<li><code>--check</code> does not accept a command after <code>--</code>.</li>
+<li><code>--verify-keys</code> performs a preflight check: after loading and
+decrypting, if the resolved values are empty but the env files
+contain <code>encrypted:</code> values, the keys are stale and the exec
+aborts. This catches the <code>strict: false</code> case where stale keys
+would silently skip undecryptable values.</li>
+</ul>
+<p>Exit codes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Code</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td><code>--check</code> passed (or exec succeeded — but exec replaces the process)</td></tr>
+<tr><td>1</td><td>Config error, parse failure, decryption failure</td></tr>
+<tr><td>2</td><td>Missing arguments, bad usage</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="setup"><a class="header" href="#setup">setup</a></h2>
+<p>Create keys directory, verify permissions, optionally seed keychain
+(macOS), validate environment. Idempotent — skips steps that are
+already correct.</p>
+<pre><code class="language-console">$ postmaster setup --config &lt;exec.json&gt; [--recheck] [--unattended] [--force] [--keys-dir &lt;path&gt;]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--config &lt;path&gt;</code></td><td>Path to <code>exec.json</code> (required)</td></tr>
+<tr><td><code>--recheck</code></td><td>Verification-only — no creation or seeding</td></tr>
+<tr><td><code>--unattended</code></td><td>Fail closed without prompting (for CI/automation). Alias: <code>--non-interactive</code></td></tr>
+<tr><td><code>--force</code></td><td>Re-create/re-seed even if already correct</td></tr>
+<tr><td><code>--keys-dir &lt;path&gt;</code></td><td>Override default keys directory</td></tr>
+</tbody>
+</table>
+</div>
+<p>Default keys directory:</p>
+<ul>
+<li>Linux: <code>/var/lib/postmaster</code></li>
+<li>macOS: <code>~/Library/Application Support/postmaster</code></li>
+</ul>
+<h2 id="cleanup"><a class="header" href="#cleanup">cleanup</a></h2>
+<p>Remove plaintext secret files from the secrets directory after the
+child exits.</p>
+<pre><code class="language-console">$ postmaster cleanup --config &lt;exec.json&gt;
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--config &lt;path&gt;</code></td><td>Path to <code>exec.json</code> (reads <code>secrets_dir</code> from config)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Wired to <code>ExecStopPost</code> in systemd by the Nix module. On macOS, the
+ramdisk destruction handles cleanup automatically when the launchd job
+stops.</p>
+<h2 id="fetch"><a class="header" href="#fetch">fetch</a></h2>
+<p>macOS credential fetch client — connects to a postmaster socket and
+reads the decrypted value to EOF.</p>
+<pre><code class="language-console">$ postmaster fetch /run/postmaster-credd/myapp/DATABASE_URL.sock
+</code></pre>
+<p>Used internally by the wrapper in credentials mode on macOS. Not
+typically called directly.</p>
+<h2 id="help"><a class="header" href="#help">help</a></h2>
+<p>Print help text for a subcommand or the top-level help.</p>
+<pre><code class="language-console">$ postmaster help           # top-level help
+$ postmaster help exec       # exec subcommand help
+$ postmaster help setup      # setup subcommand help
+$ postmaster help cleanup    # cleanup subcommand help
+$ postmaster help fetch      # fetch subcommand help
+</code></pre>
+<h2 id="version"><a class="header" href="#version">version</a></h2>
+<pre><code class="language-console">$ postmaster --version
+$ postmaster -V
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="launcher-contract-execjson"><a class="header" href="#launcher-contract-execjson">Launcher contract (exec.json)</a></h1>
+<h2 id="audience-quickstart-plain-language-4"><a class="header" href="#audience-quickstart-plain-language-4">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> the complete specification of <code>exec.json</code> — every
+field, every mode, every validation rule. This is the contract a
+binding (Nix, Terraform, CDK, Ansible) must produce.</p>
+<h3 id="who-this-is-for-4"><a class="header" href="#who-this-is-for-4">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>Integration author</td><td>The entire page — your binding must produce this exact format</td></tr>
+<tr><td>Security engineer</td><td>“Fail-closed rules” and per-mode validation</td></tr>
+<tr><td>New user</td><td>“Invocation” and the config example — enough to get started</td></tr>
+<tr><td>Platform / SRE</td><td>“Invocation” and <code>--check</code> / <code>--recheck</code> validation commands</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary-4"><a class="header" href="#quick-glossary-4">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>exec.json</strong></td><td>JSON config that tells postmaster what to decrypt and how to launch</td></tr>
+<tr><td><strong>Projection mode</strong></td><td>How secrets reach the child: env, files, or credentials</td></tr>
+<tr><td><strong>Key source</strong></td><td>Where the decryption key comes from (file, credential, keychain, env)</td></tr>
+<tr><td><strong>Strict</strong></td><td>If true (default), any decryption failure aborts the launch</td></tr>
+<tr><td><strong>Passthrough</strong></td><td>In files mode, specific keys also exported as env vars</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>postmaster exec</code> is the concrete instance of the
+<a href="#materialization-abi">materialization ABI</a>.
+The current config shape is
+the <code>.env</code> adapter: encrypted inputs are <code>env_files</code>, private key material uses
+the <code>.env.keys</code> / <code>DOTENV_PRIVATE_KEY*</code> convention, and output projection is
+selected with <code>mode</code>. This page documents the committed parser and launcher
+behavior; the ABI page records how this contract fits into the broader
+format-neutral architecture.</p>
+<p><code>postmaster exec</code> is a second entry point alongside the credential daemon:
+instead of serving decrypted values over a socket, it decrypts once, injects
+them into a child process by one of three modes, and <code>execvp</code>s a target
+command. It exists so that bindings that cannot rely on systemd’s
+<code>LoadCredential=</code> socket contract — Ansible, Puppet, Terraform/CDK,
+hand-rolled process supervisors, or nix-darwin’s launchd — get the
+same decrypt-and-inject semantics as the Linux daemon path, without
+templating shell or re-implementing the crypto.</p>
+<p>This page is <strong>the</strong> cross-binding contract. The Nix module is the first
+binding to emit <code>exec.json</code>; it is not privileged over any other binding.
+<strong>A binding is correct if and only if the <code>exec.json</code> it emits is
+described by this document and passes the conformance suite.</strong>
+Nothing here documents intent or a roadmap; every claim below is true
+of the committed parser and launcher (<code>src/config.rs</code>,
+<code>src/launcher.rs</code>, <code>src/keys.rs</code>) as of this writing.</p>
+<h3 id="config-to-launch-flow"><a class="header" href="#config-to-launch-flow">Config to launch flow</a></h3>
+<pre class="mermaid">flowchart TD
+    cfg["exec.json\n(mode, keys, env_files)"]
+    check["--check\nconfig shape only"]
+    recheck["setup --recheck\nkey source accessible?"]
+    resolve["resolve_all\ndecrypt + resolve"]
+    verify["--verify-keys\nstale key check"]
+    inject["inject\n(env / files / credentials)"]
+    execvp["execvp\nchild = MainPID"]
+
+    cfg --&gt; check
+    cfg --&gt; recheck
+    cfg --&gt; resolve
+    resolve --&gt; verify
+    resolve --&gt; inject
+    inject --&gt; execvp
+</pre>
+
+<h2 id="reference-implementation"><a class="header" href="#reference-implementation">Reference implementation</a></h2>
+<p>The <code>.env</code> semantics this contract mirrors — encrypted-value format,
+<code>.env.keys</code> rotation via comma-separated candidates, <code>DOTENV_PRIVATE_KEY*</code>
+naming, <code>--strict</code>/<code>--overload</code> precedence — are wire-compatible with
+<a href="https://github.com/dotenvx/dotenvx">dotenvx</a>-encrypted <code>.env</code> files.
+<code>postmaster exec</code> does not shell out to any external CLI at all — it
+implements the decrypt path natively in Rust (same <code>ecies</code> crate the
+daemon uses) — but wherever this document describes a precedence or
+filtering rule, it describes the wire-compatible behavior, not a
+postmaster-only invention.</p>
+<h2 id="invocation"><a class="header" href="#invocation">Invocation</a></h2>
+<pre><code class="language-console">$ postmaster exec --config &lt;exec.json&gt; -- &lt;command&gt; [args…]
+$ postmaster exec --config &lt;exec.json&gt; --check
+$ postmaster exec --config &lt;exec.json&gt; [--verify-keys] -- &lt;command&gt; [args…]
+$ postmaster setup --config &lt;exec.json&gt; [--recheck] [--unattended] [--force] [--keys-dir &lt;path&gt;]
+$ postmaster cleanup --config &lt;exec.json&gt;
+</code></pre>
+<ul>
+<li><code>--config &lt;path&gt;</code> is required and must come before <code>--</code>.</li>
+<li>Everything after <code>--</code> is the argv of the child process; it must be
+non-empty (<code>exec: missing command after</code> <code>`--`</code> otherwise).</li>
+<li><code>--check</code> validates the public config shape and exits without decrypting,
+reading key material, checking the filesystem, fetching sockets, or
+launching the child command. It does not accept a command after <code>--</code>.</li>
+<li><code>--verify-keys</code> performs a preflight check: after loading and decrypting,
+if the resolved values are empty but the env files contain <code>encrypted:</code>
+values, the keys are stale (from a previous rotation cycle) and the exec
+aborts with a clear error. This catches the <code>strict: false</code> case where
+stale keys would silently skip undecryptable values and launch the child
+with no secrets.</li>
+<li><code>setup</code> verifies platform prerequisites, creates keys directory with
+0700, verifies/creates keys files with 0600, optionally seeds keychain
+items (macOS), and validates the environment. Idempotent. <code>--recheck</code>
+is verification-only. <code>--unattended</code> fails closed without prompting.
+<code>--force</code> re-creates/re-seeds even if correct. <code>--keys-dir</code> overrides
+the default path (<code>/var/lib/postmaster</code> on Linux,
+<code>~/Library/Application Support/postmaster</code> on macOS).
+<strong><code>--check</code> validates config shape only, not key source accessibility:</strong>
+a config can pass <code>--check</code> in CI but fail at runtime because the key
+file is missing, the keychain item is absent, or the credential source
+is not provisioned. Runtime key source accessibility is verified by the
+launcher itself (fail-closed on missing/unreadable keys); <code>--check</code>
+cannot guarantee the handoff will work, only that the config is
+well-formed.</li>
+<li>On success the process image is replaced (<code>execvp</code>); postmaster never
+returns. On failure to exec the target binary itself, the error is logged
+and returned as a non-zero exit — nothing beyond this point is
+fail-open.</li>
+</ul>
+<h2 id="execconfig-fields"><a class="header" href="#execconfig-fields"><code>ExecConfig</code> fields</a></h2>
+<p><code>exec.json</code> deserializes into this struct (<code>src/config.rs</code>).
+Unknown root fields are rejected. ABI fields such as <code>version</code> or
+<code>adapter</code> must not be emitted until the parser and schema explicitly define
+them. A machine-readable JSON Schema for this current shape is kept at
+<code>docs/schema/exec.schema.json</code>, with parser-checked examples under
+<code>docs/examples/</code>.
+Every field except <code>mode</code> has a default, so a minimal config is just
+<code>{"mode": "credentials", "credential_keys": ["DB_URL"]}</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>mode</code></td><td><code>"env" | "files" | "credentials"</code></td><td>— (required)</td><td>Injection mode; see below.</td></tr>
+<tr><td><code>keys</code></td><td>array of key-source specs</td><td><code>[]</code></td><td>Ordered list of where to obtain <code>DOTENV_PRIVATE_KEY*</code> material. Unused in <code>credentials</code> mode.</td></tr>
+<tr><td><code>env_files</code></td><td>array of paths</td><td><code>[]</code></td><td>Encrypted <code>.env[.&lt;environment&gt;]</code> files, in precedence order (first file wins unless <code>overload</code>). Required (non-empty) for <code>env</code>/<code>files</code> modes.</td></tr>
+<tr><td><code>bundle_files</code></td><td>array of paths</td><td><code>[]</code></td><td>Encrypted <code>postmaster_bundle</code> JSON containers, in precedence order. Entries are merged with <code>env_files</code>; bundle keys use the same identifier rule and injection modes.</td></tr>
+<tr><td><code>strict</code></td><td>bool</td><td><strong><code>true</code></strong></td><td>Any value that fails to decrypt aborts the whole exec before the child runs.</td></tr>
+<tr><td><code>overload</code></td><td>bool</td><td><code>false</code></td><td>File-derived values override the process environment; later files override earlier ones.</td></tr>
+<tr><td><code>secrets_dir</code></td><td>path or <code>null</code></td><td><code>null</code></td><td><code>files</code> mode, and <code>credentials</code> mode on the launchd/fetch path: directory plaintext files are written into.</td></tr>
+<tr><td><code>passthrough</code></td><td>array of strings</td><td><code>[]</code></td><td><code>files</code> mode only: these keys are <em>also</em> exported as real env vars, in addition to their <code>_FILE</code> pointer.</td></tr>
+<tr><td><code>credential_keys</code></td><td>array of strings</td><td><code>[]</code></td><td><code>credentials</code> mode: keys to expose as <code>$CREDENTIALS_DIRECTORY/&lt;KEY&gt;</code>. Required (non-empty) for that mode.</td></tr>
+<tr><td><code>sockets</code></td><td>map of key → socket path</td><td><code>{}</code></td><td><code>credentials</code> mode: postmaster socket to fetch <code>&lt;KEY&gt;</code> from. Non-empty selects the darwin/launchd fetch path; empty means systemd already materialized the credentials via <code>LoadCredential=</code>.</td></tr>
+<tr><td><code>verify_ramdisk</code></td><td>path or <code>null</code></td><td><code>null</code></td><td>darwin only: refuse to write plaintext unless this mount point is the HFS ramdisk and <code>secrets_dir</code> is a directory owned by the current euid.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Note the field name is <code>verify_ramdisk</code>, not <code>ramdisk</code> or <code>ramdisk_mount</code> —
+match it exactly.</p>
+<p>Mode-required fields are enforced by <code>postmaster exec --check</code> and again
+before a real launch:</p>
+<ul>
+<li><code>env</code> requires non-empty <code>keys</code> and non-empty <code>env_files</code>.</li>
+<li><code>files</code> requires non-empty <code>keys</code>, non-empty <code>env_files</code>, and
+<code>secrets_dir</code>.</li>
+<li><code>credentials</code> requires non-empty <code>credential_keys</code>. If <code>sockets</code> is
+non-empty, it also requires <code>secrets_dir</code> and a socket mapping for every
+credential key.</li>
+</ul>
+<p><code>--check</code> also validates env-file basenames, rejects private-key
+<code>file</code> sources under <code>/nix/store</code>, rejects path-like <code>credential</code> source
+names, and applies identifier validation to <code>passthrough</code> and
+<code>credential_keys</code>.</p>
+<p><strong>Mode-irrelevant fields are rejected.</strong> <code>--check</code> and the pre-launch
+validation fail fast if a config includes fields that do not belong to the
+selected mode — before any secret material transits. This catches binding
+bugs where a config generator accidentally emits, for example, <code>env_files</code>
+in a credentials-mode config or <code>credential_keys</code> in an env-mode config.
+Default/empty values (empty arrays, <code>null</code>, <code>false</code>) are accepted, since
+serde fills those in even when the generator omits the field.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Mode</th><th>Rejected if present (non-default)</th></tr>
+</thead>
+<tbody>
+<tr><td><code>env</code></td><td><code>secrets_dir</code>, <code>credential_keys</code>, <code>sockets</code>, <code>verify_ramdisk</code>, <code>passthrough</code></td></tr>
+<tr><td><code>files</code></td><td><code>credential_keys</code>, <code>sockets</code></td></tr>
+<tr><td><code>credentials</code></td><td><code>keys</code>, <code>env_files</code>, <code>overload</code>, <code>passthrough</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="key-source-list-keys"><a class="header" href="#key-source-list-keys">Key-source list (<code>keys</code>)</a></h2>
+<p>Each entry in <code>keys</code> is one externally-tagged JSON shape:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>JSON</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>{"credential": "&lt;name&gt;"}</code></td><td><code>$CREDENTIALS_DIRECTORY/&lt;name&gt;</code> (the launcher’s <em>own</em> <code>LoadCredential</code>, i.e. <code>.env.keys</code> handed to it the same way postmaster’s daemon receives its own). <code>&lt;name&gt;</code> must be a single relative path component, not <code>.</code>, <code>..</code>, an absolute path, or a slash-containing path.</td></tr>
+<tr><td><code>{"file": "&lt;path&gt;"}</code></td><td>An out-of-store <code>.env.keys</code>-format file read directly. Rejected outright if the path starts with <code>/nix/store</code> — private keys must never live in the world-readable store.</td></tr>
+<tr><td><code>{"keychain": "&lt;service&gt;"}</code></td><td>macOS System keychain; one generic-password item per <code>DOTENV_PRIVATE_KEY[_&lt;ENV&gt;]</code> account, service name as given. Only the variables actually needed (derived from <code>env_files</code>) are fetched. Any other target: error, “only available on macOS”.</td></tr>
+<tr><td><code>"environment"</code></td><td>The unit-variant source — note it is a bare JSON string, not an object, because it carries no data. Reads <code>DOTENV_PRIVATE_KEY*</code> straight from postmaster’s own process environment.</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Selection contract</strong>, evaluated in list order:</p>
+<ul>
+<li><code>credential</code> is <strong>skippable</strong>: if <code>$CREDENTIALS_DIRECTORY</code> is unset, or
+the named file doesn’t exist under it, the launcher falls through to the
+next entry in <code>keys</code>. If the file <em>does</em> exist, whatever
+<code>KeyRing::load</code> returns (success or parse error) is final — a bad
+keys file under an existing credential does not fall through.</li>
+<li><code>file</code>, <code>keychain</code>, and <code>environment</code> are <strong>terminal</strong>: the first time
+one of these is reached, its result — success or failure — is the
+result of key-ring selection. There is no fallback past a terminal
+source.</li>
+<li>If every entry in <code>keys</code> is exhausted without returning (i.e. every
+entry was a skippable, absent <code>credential</code>), or <code>keys</code> is empty:
+<code>"no usable key source (configure keys=[…] or set DOTENV_PRIVATE_KEY*)"</code>.</li>
+</ul>
+<p><code>credentials</code> mode never touches <code>keys</code> or <code>env_files</code> at all — no
+decryption happens in that mode; see below.</p>
+<h2 id="precedence-contract"><a class="header" href="#precedence-contract">Precedence contract</a></h2>
+<p>This is the contract <code>resolve_all</code> (<code>src/keys.rs</code>) implements,
+verbatim:</p>
+<ul>
+<li><strong>Within one file, the last assignment wins</strong> — ordinary dotenv
+semantics. <code>A=1</code> followed later in the same file by <code>A=2</code> yields <code>2</code>.</li>
+<li><strong>Across files, the first file that defines a key wins</strong>, in the order
+<code>env_files</code> lists them — <em>unless</em> <code>overload</code> is <code>true</code>, in which case
+the <strong>last</strong> file defining the key wins. Note: which file wins does not
+change the <em>position</em> a key is emitted in; a key’s slot is fixed by
+the first file that introduces it, <code>overload</code> only changes which
+file’s value fills that slot.</li>
+<li><strong>Process-environment presence suppresses the file-derived value</strong>,
+but only when <code>overload</code> is <code>false</code>: if the variable is already set
+in postmaster’s process environment, it is dropped from the resolved
+set entirely (the child inherits the parent’s existing value
+unmodified, since <code>exec()</code> only <em>adds</em> the resolved pairs on top of an
+inherited environment). When <code>overload</code> is <code>true</code>, process environment
+is not consulted at all — file values always win.</li>
+</ul>
+<h2 id="dotenv_-filtering-and-identifier-validation"><a class="header" href="#dotenv_-filtering-and-identifier-validation"><code>DOTENV_</code> filtering and identifier validation</a></h2>
+<ul>
+<li>Any raw key beginning with <code>DOTENV_</code> (not just the private/public key
+vars) is dropped during parsing — metadata, never a value to inject.</li>
+<li>Every remaining key must match <code>[A-Za-z_][A-Za-z0-9_]*</code>
+(<code>crate::keys::is_ident</code>) — ASCII letters/digits/underscore, first
+character not a digit. A key that fails this is a hard parse error
+(<code>"&lt;file&gt;: refusing non-identifier key &lt;k&gt;"</code>), not a skip: a key from
+an encrypted file will end up as a shell-visible env-var name or a
+filename component, so this is enforced before any value from that
+file is used at all.</li>
+<li><code>credential_keys</code> (used only in <code>credentials</code> mode, where there is no
+<code>resolve_all</code> pass) is validated against the same <code>is_ident</code> rule
+up front, before any file is written or any socket is fetched
+(<code>validate_credential_keys</code>) — a bad key later in the list (e.g.
+<code>"../evil"</code>, an absolute path, or a name containing <code>/</code>) can’t leave a
+partial plaintext write behind, and can’t be used to escape
+<code>secrets_dir</code> or forge an arbitrary env-var name.</li>
+</ul>
+<h2 id="encrypted-value-format"><a class="header" href="#encrypted-value-format">Encrypted-value format</a></h2>
+<p>A raw value that does not start with <code>encrypted:</code> is passed through
+verbatim as opaque bytes (this is how plaintext values reach the child —
+no decryption attempted). A value that does start with <code>encrypted:</code> has the
+following payload base64-decoded and decrypted with <code>ecies</code> against each
+candidate key under the matching <code>DOTENV_PRIVATE_KEY*</code> name
+(comma-separated rotation candidates in <code>.env.keys</code> are tried in order;
+first one that decrypts wins).</p>
+<p><strong>Lenient base64 decoding:</strong> the payload after <code>encrypted:</code> may contain
+ASCII whitespace (spaces, tabs, newlines, carriage returns). If any is
+present, it is stripped before decoding, so a value that has been
+line-wrapped decodes identically to the same value on one line. This
+matches the wire-compatible behavior for line-wrapped encrypted values and
+is exercised directly in <code>tests/exec_conformance.rs</code>
+(<code>wrapped_base64_ciphertext_decrypts</code>).</p>
+<p><code>key_var_for</code> maps an env-file name to the private-key variable it needs:
+<code>.env</code> → <code>DOTENV_PRIVATE_KEY</code>; <code>.env.production</code> →
+<code>DOTENV_PRIVATE_KEY_PRODUCTION</code>; non-alphanumeric characters in the
+environment suffix become <code>_</code> and the whole suffix is upper-cased. A file
+name that doesn’t start with <code>.env</code> is a hard parse error.</p>
+<h2 id="per-mode-injected-variables"><a class="header" href="#per-mode-injected-variables">Per-mode injected variables</a></h2>
+<p><strong><code>mode: "env"</code>.</strong> Decrypts <code>env_files</code> through the key ring in <code>keys</code>,
+then exports every resolved <code>KEY=value</code> pair directly into the child’s
+environment. No pointer files, no <code>secrets_dir</code>. A resolved value
+containing a NUL byte is a hard error
+(<code>"&lt;key&gt;: value contains a NUL byte; cannot be an environment variable (use files mode)"</code>) — environment variables cannot hold NUL, so this fails
+closed rather than silently truncating.</p>
+<p><strong><code>mode: "files"</code>.</strong> Requires <code>secrets_dir</code>. If <code>verify_ramdisk</code> is set,
+the ramdisk guard (below) runs first; otherwise <code>secrets_dir</code> merely has
+to exist and be a directory. Each resolved value is written to
+<code>&lt;secrets_dir&gt;/&lt;KEY&gt;</code> with permissions forced to <code>0600</code> (via <code>fchmod</code> on
+the file descriptor after <code>O_NOFOLLOW | O_CREAT | O_TRUNC</code> open, so the
+permission is set atomically without a TOCTOU window) — unlike <code>env</code> mode,
+values here may contain NUL; the file is written byte-exact. For each key
+the launcher exports <code>&lt;KEY&gt;_FILE</code> pointing at that path; if the key is
+also listed in <code>passthrough</code>, it is <em>additionally</em> exported as a real
+<code>&lt;KEY&gt;=value</code> env var (and <em>that</em> copy is subject to the same NUL-rejection
+rule as <code>env</code> mode, since it becomes a real env var).</p>
+<p><strong><code>mode: "credentials"</code>.</strong> Requires non-empty <code>credential_keys</code>
+(validated as identifiers up front, see above). No decryption occurs in
+this mode — it dispatches on whether <code>sockets</code> is empty:</p>
+<ul>
+<li><strong><code>sockets</code> empty (systemd path):</strong> pid 1 has already materialized the
+credentials via <code>LoadCredential=</code> before the unit’s <code>ExecStart</code> runs.
+Requires <code>$CREDENTIALS_DIRECTORY</code> to be set in the <em>process</em>
+environment (<code>"postmaster credentials expected but CREDENTIALS_DIRECTORY is unset"</code> otherwise — a fail-closed guard
+against running this mode outside systemd). For each key, exports
+<code>&lt;KEY&gt;_FILE=$CREDENTIALS_DIRECTORY/&lt;KEY&gt;</code> — no reading, no
+permission changes; systemd already owns that file.</li>
+<li><strong><code>sockets</code> non-empty (darwin/launchd fetch path):</strong> requires
+<code>secrets_dir</code>; runs the ramdisk guard if <code>verify_ramdisk</code> is set. For
+each key, looks up its socket in <code>sockets</code> (missing entry is an error),
+connects and reads to EOF via the same client path <code>postmaster fetch</code>
+uses, writes the bytes to <code>&lt;secrets_dir&gt;/&lt;KEY&gt;</code> at <code>0600</code>, and exports
+<code>&lt;KEY&gt;_FILE</code>. After all keys, exports <strong>both</strong>
+<code>CREDENTIALS_DIRECTORY</code> set to <code>secrets_dir</code>
+— unlike the systemd branch, there is no real <code>LoadCredential</code>
+mechanism on darwin, so the launcher has to tell the consumer that
+<code>secrets_dir</code> <em>is</em> its credentials directory.</li>
+</ul>
+<h2 id="fail-closed-rules-1"><a class="header" href="#fail-closed-rules-1">Fail-closed rules</a></h2>
+<ul>
+<li><strong><code>strict</code> (default <code>true</code>).</strong> In <code>env</code>/<code>files</code> modes, if any value
+fails to decrypt (bad key, wrong key, malformed ciphertext), the whole
+exec aborts before the child runs — nothing partial is injected. With
+<code>strict: false</code>, an undecryptable value is logged and simply omitted
+from the resolved set (never served as an error string or empty value).</li>
+<li><strong>NUL in an environment value</strong> is refused in <code>env</code> mode and for
+<code>passthrough</code> values in <code>files</code> mode (see above); in <code>files</code> mode’s
+primary write path (the pointer-file contents), NUL is not restricted
+— the exact bytes reach the file.</li>
+<li><strong>Empty fetch response</strong> (<code>credentials</code> mode, darwin socket path):
+<code>fetch_bytes</code> treats a zero-byte read as the server having refused to
+serve, and fails closed with <code>"&lt;path&gt;: server sent zero bytes (refused to serve); failing closed"</code> rather than writing an empty credential
+file.</li>
+<li><strong>Missing <code>$CREDENTIALS_DIRECTORY</code></strong> in <code>credentials</code> mode’s systemd
+branch fails closed rather than silently exporting nothing.</li>
+<li><strong>Private keys never come from the Nix store.</strong> A <code>{"file": …}</code> key
+source under <code>/nix/store</code> is refused outright, even before attempting
+to read it — the store is world-readable, so a private key living
+there is not private.</li>
+<li><strong>Keys file permissions and ownership.</strong> <code>KeyRing::load</code> opens the
+keys file with <code>O_NOFOLLOW</code> and <code>fstat</code>s the fd to verify: no
+group/world access (<code>mode &amp; 0o077 == 0</code>), and owned by the current
+euid. A world-readable or symlinked keys file fails closed.</li>
+<li><strong>External binary verification.</strong> On macOS, <code>from_keychain</code> verifies
+the code signature of <code>/usr/bin/security</code> via <code>codesign -v</code> before
+invoking it. On Linux, external binaries are verified as regular files
+owned by root (uid 0) and not world-writable.</li>
+<li><strong><code>verify_ramdisk</code> (darwin ramdisk guard).</strong> When set, before any
+plaintext is written the launcher runs two checks: it shells out to
+<code>/sbin/mount</code> and requires the configured mount point to appear as an
+<code>hfs</code> filesystem, then runs <code>hdiutil info</code> and requires the device’s
+<code>image-path</code> to start with <code>ram://</code> (confirming RAM backing, not a
+file-backed image). It then <code>stat</code>s <code>secrets_dir</code> and requires it to
+exist, be a directory, and be owned by the launcher’s own effective
+uid. Either check failing refuses to write plaintext to what might be
+persistent disk, with an error pointing at <code>postmaster-ramdisk</code>
+health.</li>
+</ul>
+<h2 id="extensibility-boundary"><a class="header" href="#extensibility-boundary">Extensibility boundary</a></h2>
+<p><code>KeySourceSpec</code> is the boundary between postmaster and the systems around
+it. The implemented source kinds are deliberately local and terminal:
+<code>credential</code>, <code>file</code>, <code>keychain</code>, and <code>environment</code>. postmaster rejects any
+unknown key-source kind at JSON-parse time; an unknown tag is a
+deserialize error, not a silently-ignored source.</p>
+<p>Provider names such as <code>vault</code> and <code>aws_ssm</code> are reserved for the contract,
+but native network key sources are out of scope for the current threat
+model. postmaster must not become an AWS SSM client, a Vault client, or a
+general secret-store plugin host. Those systems are supported as upstream
+custody/source platforms: they deliver <code>.env.keys</code>-format private-key
+material into one of the implemented local sources, and postmaster remains
+the offline runtime decrypt/inject boundary.</p>
+<p>The obligations run in different directions for postmaster and for
+bindings:</p>
+<ul>
+<li><strong>postmaster</strong> validates the <code>exec.json</code> shape, enforces the implemented
+source semantics, decrypts locally, injects locally, and fails closed.</li>
+<li><strong>A binding</strong> must only emit source kinds it actually knows the semantics
+of. A binding that generates configs should treat an unrecognized source
+kind in its own templates as a bug in itself, not rely on postmaster to
+validate binding-author intent.</li>
+</ul>
+<h2 id="composition-recipes"><a class="header" href="#composition-recipes">Composition recipes</a></h2>
+<p>None of these need new code in postmaster, and none of them put a network
+client in postmaster’s secret path. They compose the local key sources
+with external secret-management tooling that materializes a
+<code>DOTENV_PRIVATE_KEY*</code> file, credential, or keychain item before
+<code>postmaster exec</code> runs:</p>
+<ul>
+<li><strong>Vault Agent → <code>{"file": …}</code>.</strong> Point a Vault Agent template at
+rendering a <code>.env.keys</code>-format file (owned by the service user, off
+any world-readable store path) and reference it with
+<code>{"file": "/run/vault/myapp.env.keys"}</code>. Vault Agent owns Vault auth,
+network I/O, renewal, and rotation; postmaster only ever reads the
+rendered local file.</li>
+<li><strong>AWS SSM Parameter Store → <code>{"credential": …}</code>.</strong> Materialize the
+parameter via a oneshot unit, cloud-init, an instance bootstrap step, or
+<code>systemd-creds</code> for TPM2 sealing on NixOS into the launcher’s own
+<code>LoadCredential=</code> directory, then reference it as
+<code>{"credential": "postmaster-myapp"}</code>. AWS tooling owns IAM, network I/O,
+and retrieval; postmaster inherits systemd’s local credential access
+control.</li>
+<li><strong>macOS Keychain → <code>{"keychain": "&lt;service&gt;"}</code>.</strong> No external tooling
+needed beyond what’s already documented for <code>key.keychainService</code>
+(Operational notes) — this is the existing source, not a new
+composition, but the one to reach for on darwin when a file or
+<code>LoadCredential</code> isn’t a fit.</li>
+</ul>
+<h2 id="conformance-1"><a class="header" href="#conformance-1">Conformance</a></h2>
+<p><code>tests/exec_conformance.rs</code> is the executable form of this document:
+metacharacter-laden values stay inert across all three modes,
+process-env-wins-without-overload and overload-reverses-it, rotation with
+a bogus first key, strict failure refuses to exec, <code>0600</code> pointer files
+and <code>passthrough</code>, both <code>credentials</code> branches (systemd pointer-only and
+the darwin fetch loop), first-file/last-file precedence, same-file
+last-assignment-wins, NUL-in-value handling in both <code>env</code> and <code>files</code>
+modes, stale-key detection with <code>--verify-keys</code>, and non-identifier key
+rejection at the exec boundary. Any binding — Ansible, Puppet, Salt, CDK,
+or anything else that can render JSON — is correct precisely to the extent
+that the <code>exec.json</code> it emits matches this document and that emitted
+config passes this suite.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="changelog"><a class="header" href="#changelog">Changelog</a></h1>
+<p>All notable changes to this project are documented in this file.</p>
+<p>The format is based on <a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>,
+and this project adheres to <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning</a>.</p>
+<h2 id="unreleased"><a class="header" href="#unreleased">[Unreleased]</a></h2>
+<h3 id="added"><a class="header" href="#added">Added</a></h3>
+<ul>
+<li>Standalone postmaster binary — a format-neutral local secret
+materialization engine that decrypts encrypted inputs at process
+launch time, injects them into a child process, and <code>execvp</code>s the
+target binary.</li>
+<li><code>.env</code> input adapter — wire-compatible with dotenvx-encrypted <code>.env</code>
+files (ECIES/secp256k1 + HKDF-SHA256 + AES-256-GCM).</li>
+<li><code>postmaster_bundle</code> JSON container format as a second input adapter.</li>
+<li><code>KeyNaming</code> enum (Env, Bundle) for compile-time exhaustive adapter
+dispatch — zero vtable overhead, controlled adapter set.</li>
+<li>Three injection modes: <code>env</code> (environment variables), <code>files</code>
+(one-file-per-secret on RAM-backed filesystem), <code>credentials</code>
+(systemd credentials via postmaster daemon).</li>
+<li>Four key sources: systemd credentials (<code>LoadCredential=</code>), files
+(<code>.env.keys</code> on disk), macOS keychain, environment variables.</li>
+<li><code>postmaster exec --check</code> for config shape validation (CI).</li>
+<li><code>postmaster setup --recheck</code> for runtime key source verification
+(host).</li>
+<li><code>postmaster setup</code> interactive command — idempotent, creates keys
+directory, verifies permissions, optionally seeds keychain (macOS).</li>
+<li><code>postmaster cleanup --config &lt;exec.json&gt;</code> subcommand for plaintext
+secret file removal. Wired to <code>ExecStopPost</code> in systemd.</li>
+<li><code>--verify-keys</code> flag on <code>exec</code> for stale key detection after rotation.</li>
+<li><code>OFlags::CLOEXEC</code> on all <code>rustix::fs::open</code> call sites.</li>
+<li>RAM backing verification via <code>hdiutil info</code> on macOS.</li>
+<li>Pre-execvp zeroization of <code>KeyRing</code> and <code>Resolved</code> values.</li>
+<li>Symlink rejection at every secret path: <code>O_NOFOLLOW</code>, <code>fstat</code>,
+<code>symlink_metadata</code>, <code>fchmod</code> on socket fd.</li>
+<li>External binary verification: <code>codesign -v</code> on macOS, root-owned
+check on Linux.</li>
+<li>Input validation: NUL byte rejection, path traversal rejection,
+identifier validation, no shell expansion invariant.</li>
+<li>Threat model documentation covering memory residency, hardening
+inheritance across execvp, and the 5-stage secret pipeline.</li>
+<li><code>verify_key_freshness</code> uses <code>KeyNaming::Env.metadata_prefix()</code>.</li>
+<li>Two security audits conducted (provider handoff + destination
+handoff), all findings fixed.</li>
+<li>Memory hardening audit conducted, all findings fixed.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-c22b7243.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="mermaid-eefea253.min.js"></script>
+        <script src="svg-pan-zoom-f4637103.min.js"></script>
+        <script src="mermaid-init-3bcfb369.js"></script>
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

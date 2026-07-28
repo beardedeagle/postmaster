@@ -1,0 +1,638 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Threat model - postmaster</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="A standalone, format-neutral local secret materialization engine.">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-0392ca55.css">
+        <link rel="stylesheet" href="../css/chrome-fc474251.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../mermaid-zoom-d48efa7d.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-c86cb699.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-586c1afa.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">postmaster</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/beardedeagle/postmaster" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="threat-model"><a class="header" href="#threat-model">Threat model</a></h1>
+<h2 id="audience-quickstart-plain-language"><a class="header" href="#audience-quickstart-plain-language">Audience Quickstart (Plain Language)</a></h2>
+<p><strong>What this is:</strong> what postmaster protects, what it cannot prevent,
+and why it’s built this way. This is the security reference.</p>
+<h3 id="who-this-is-for"><a class="header" href="#who-this-is-for">Who this is for</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reader</th><th>What to take</th></tr>
+</thead>
+<tbody>
+<tr><td>Security engineer</td><td>The entire page — every claim is about the security boundary</td></tr>
+<tr><td>Platform / SRE</td><td>“Swap and core dumps” and “Hardening inheritance” — what to configure</td></tr>
+<tr><td>Integration author</td><td>“Why a native launcher” — understand the design constraints</td></tr>
+<tr><td>New user</td><td>“Secrets at rest” and “Fail-closed” — the 30-second security summary</td></tr>
+<tr><td>Product / project manager</td><td>The residuals table — what postmaster does NOT protect against</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="quick-glossary"><a class="header" href="#quick-glossary">Quick glossary</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Term</th><th>Plain meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>execvp</strong></td><td>Replaces the current process — no parent holds secrets after launch</td></tr>
+<tr><td><strong>Fail-closed</strong></td><td>If anything fails, the service does NOT start — no partial secrets</td></tr>
+<tr><td><strong>Zeroize</strong></td><td>Overwrite secret memory with zeros before it’s freed</td></tr>
+<tr><td><strong>mlockall</strong></td><td>Pin memory in RAM so the kernel can’t swap it to disk</td></tr>
+<tr><td><strong>TOCTOU</strong></td><td>Time-of-check to time-of-use — a race between verifying and using a file</td></tr>
+<tr><td><strong>Residual</strong></td><td>A risk that postmaster cannot fully eliminate</td></tr>
+<tr><td><strong>Non-goal</strong></td><td>Something postmaster deliberately does not attempt to mitigate</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="security-posture-at-a-glance"><a class="header" href="#security-posture-at-a-glance">Security posture at a glance</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Category</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Secrets at rest (ciphertext in git/Nix store)</td><td>Safe — ciphertext is public</td></tr>
+<tr><td>Plaintext on persistent disk</td><td>Prevented — only RAM-backed filesystems</td></tr>
+<tr><td>Plaintext in swap</td><td>Mitigated — mlockall + MemorySwapMax=0</td></tr>
+<tr><td>Core dumps</td><td>Mitigated — PR_SET_DUMPABLE=0, RLIMIT_CORE=0</td></tr>
+<tr><td>Shell injection</td><td>Prevented — no shell anywhere in the path</td></tr>
+<tr><td>Symlink attacks on key files</td><td>Prevented — O_NOFOLLOW + fstat</td></tr>
+<tr><td>Same-UID env var exposure (env mode)</td><td>Residual — use files or credentials mode</td></tr>
+<tr><td>Root on the host</td><td>Residual — root is always game over</td></tr>
+<tr><td>VM/hypervisor inspection</td><td>Residual — outside the trust boundary</td></tr>
+<tr><td>CPU cache/register residue</td><td>Non-goal — no mitigation available</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="why-a-native-launcher-not-a-shell-wrapper"><a class="header" href="#why-a-native-launcher-not-a-shell-wrapper">Why a native launcher, not a shell wrapper</a></h2>
+<p>Postmaster is a native Rust binary, not a shell wrapper around an
+external CLI. This decision is driven by three security properties that
+a shell-based approach cannot provide.</p>
+<h3 id="process-identity-execvp-not-spawn"><a class="header" href="#process-identity-execvp-not-spawn">Process identity: execvp, not spawn</a></h3>
+<p>When postmaster launches your service, it uses <code>execvp</code> — the system
+call that replaces the current process image with the target binary.
+The process ID (PID) does not change. The service binary is <code>MainPID</code>
+from its first instruction.</p>
+<p>A shell wrapper or Node.js parent process would <code>spawn</code> a child
+instead. The parent stays alive as <code>MainPID</code>, which breaks:</p>
+<ul>
+<li><strong>systemd readiness notifications</strong> (<code>Type=notify</code>, <code>sd_notify</code>):
+systemd expects <code>MainPID</code> to send <code>READY=1</code>. A parent process that
+spawns the real service means the wrong process is notifying.</li>
+<li><strong>Cgroup memory accounting</strong>: the parent’s memory (including private
+key material) is counted against the service unit’s cgroup.</li>
+<li><strong>Secret lifetime</strong>: the parent process holds private keys and
+decrypted values in its heap for the entire lifetime of the service.
+With <code>execvp</code>, postmaster’s process image is replaced — all heap
+memory is released and the kernel zeroes the pages before reuse.</li>
+</ul>
+<h3 id="no-shell-interpolation"><a class="header" href="#no-shell-interpolation">No shell interpolation</a></h3>
+<p>A shell-based launcher would use <code>eval</code> or source-based injection to
+set environment variables. That leaves <code>$(…)</code> and backticks live
+inside double quotes. Combined with a public key embedded in the
+repository (which lets any repo writer add or replace encrypted
+values), this would be remote code execution at service start for
+anyone who can commit to the repo.</p>
+<p>Postmaster never shells out or evals. Decrypted values move directly
+into the child’s environment array or a file write. No shell sits
+between decryption and injection to reinterpret the values.</p>
+<h3 id="offline-decryption"><a class="header" href="#offline-decryption">Offline decryption</a></h3>
+<p>Postmaster’s decryption uses the <code>ecies</code> library — a native Rust
+implementation of the same crypto path as dotenvx. It makes no network
+calls of any kind. There is no update check, no telemetry, no CLI
+settings directory to manage.</p>
+<p>This is an invariant of the secret path: postmaster must not become an
+AWS SSM client, a Vault client, or a general secret-store plugin host.
+Centralized secret stores (Vault, AWS SSM, 1Password, etc.) are
+source/custody systems that deliver key material to postmaster through
+local terminal sources such as systemd credentials, out-of-store
+files, macOS keychain items, or a deliberately managed process
+environment. Postmaster materializes secrets locally; it does not
+fetch them remotely.</p>
+<h2 id="what-postmaster-protects"><a class="header" href="#what-postmaster-protects">What postmaster protects</a></h2>
+<h3 id="trust-boundary-overview"><a class="header" href="#trust-boundary-overview">Trust boundary overview</a></h3>
+<pre class="mermaid">flowchart TB
+    subgraph trusted["Trusted zone"]
+        keys["Private key material\n(systemd cred / file / keychain)"]
+        pm["postmaster\n(decrypt + inject)"]
+        child["Child process\n(your binary)"]
+    end
+    subgraph untrusted["Public zone"]
+        ciphertext["Encrypted .env\n(git / Nix store / artifact)"]
+    end
+    subgraph outside["Outside trust boundary"]
+        root["Root on host"]
+        vm["VM / hypervisor"]
+        cpu["CPU cache / registers"]
+    end
+
+    ciphertext --&gt; pm
+    keys --&gt; pm
+    pm --&gt;|execvp| child
+    pm -.-&gt;|cannot stop| root
+    pm -.-&gt;|cannot stop| vm
+    pm -.-&gt;|cannot stop| cpu
+</pre>
+
+<h3 id="secrets-at-rest"><a class="header" href="#secrets-at-rest">Secrets at rest</a></h3>
+<p>Encrypted <code>.env</code> files and <code>postmaster_bundle</code> files are safe to store
+in git, the Nix store, binary caches, and deploy artifacts. The
+ciphertext is public — the matching private key is the real secret.
+Only someone with the private key can decrypt the values.</p>
+<p>A teammate who has repository access (and thus the public key) can add
+or replace encrypted secrets, but cannot read existing ones.</p>
+<h3 id="plaintext-never-on-persistent-disk"><a class="header" href="#plaintext-never-on-persistent-disk">Plaintext never on persistent disk</a></h3>
+<p>Decrypted values exist only in:</p>
+<ul>
+<li><strong>Process memory</strong> (anonymous heap, zeroized after use)</li>
+<li><strong>RAM-backed filesystems</strong> (Linux tmpfs, macOS ramdisk — destroyed
+when the service unit stops)</li>
+</ul>
+<p>They are never written to a file on persistent disk. The tmpfs is
+namespace-private (invisible outside the unit’s mount namespace on
+Linux) and unswappable (via <code>mlockall</code> on Linux and the service
+manager’s cgroup-level <code>MemorySwapMax=0</code> setting).</p>
+<h3 id="fail-closed-by-default"><a class="header" href="#fail-closed-by-default">Fail-closed by default</a></h3>
+<p>If any value fails to decrypt (wrong key, corrupted ciphertext, stale
+key file), the entire launch aborts before the child process starts.
+Nothing partial is injected. This is controlled by the <code>strict</code>
+setting, which defaults to <code>true</code>.</p>
+<h3 id="symlink-attacks-on-key-files-and-secret-paths"><a class="header" href="#symlink-attacks-on-key-files-and-secret-paths">Symlink attacks on key files and secret paths</a></h3>
+<p>Postmaster rejects symlinks at every point where secret material is
+read or written:</p>
+<ul>
+<li><strong>Key files</strong> are opened with <code>O_NOFOLLOW</code> — a symlinked <code>.env.keys</code>
+file is rejected at the kernel level. The file descriptor is then
+<code>fstat</code>-ed to verify that permissions are <code>0o077</code> (no group or world
+access) and that the owner matches the current effective user ID.
+This fd-based approach eliminates the TOCTOU window between open
+and permission check.</li>
+<li><strong>Credential source paths</strong> are checked with <code>symlink_metadata</code>
+before loading, rejecting symlinks at the path level. The
+<code>O_NOFOLLOW</code> open in <code>KeyRing::load</code> provides defense-in-depth at
+the fd level.</li>
+<li><strong>Secret files</strong> are written with <code>O_NOFOLLOW | O_CREAT | O_TRUNC</code>
+— a symlink planted at the target path is rejected, not followed.</li>
+<li><strong>Secrets directory</strong> is checked with <code>symlink_metadata</code> even on
+Linux where <code>verify_ramdisk</code> is not used, rejecting a symlinked
+<code>secrets_dir</code> that could redirect plaintext to persistent disk.</li>
+<li><strong>Socket permissions</strong> are set via <code>fchmod</code> on the file descriptor,
+not <code>set_permissions</code> on the path, eliminating the TOCTOU window
+between <code>bind</code> and <code>chmod</code>.</li>
+</ul>
+<h3 id="external-binary-verification"><a class="header" href="#external-binary-verification">External binary verification</a></h3>
+<p>Postmaster verifies the integrity of external binaries before
+invoking them in the secret path:</p>
+<ul>
+<li><strong>macOS:</strong> <code>/usr/bin/security</code> is verified via <code>codesign -v</code> before
+being invoked for keychain access. This ensures the binary has a
+valid Apple code signature and has not been tampered with or
+replaced.</li>
+<li><strong>Linux:</strong> External binaries are verified as regular files owned
+by root (uid 0) and not world-writable.</li>
+</ul>
+<h3 id="input-validation"><a class="header" href="#input-validation">Input validation</a></h3>
+<p>Postmaster validates all externally-authored input before it enters
+the secret path:</p>
+<ul>
+<li><strong>NUL byte rejection:</strong> Environment variable values containing NUL
+bytes are rejected in <code>env</code> mode (NUL cannot appear in a POSIX
+environment variable) and in <code>passthrough</code> values in <code>files</code> mode.
+Credential source names are checked for NUL bytes before any path
+operation.</li>
+<li><strong>Path traversal rejection:</strong> Credential source names must be a
+single relative path component — <code>.</code>, <code>..</code>, absolute paths, and
+slash-containing paths are rejected.</li>
+<li><strong>Identifier validation:</strong> All key names must match
+<code>[A-Za-z_][A-Za-z0-9_]*</code> — this is enforced before any value from
+that file is used, since a key name becomes a shell-visible env-var
+name or a filename component.</li>
+<li><strong>No shell expansion:</strong> Postmaster performs no <code>${VAR}</code> or <code>$(…)</code>
+expansion anywhere in the decrypt-and-inject path. Values are
+opaque bytes end to end. A repo contributor who commits
+<code>KEY=$(cmd)</code> gets the literal string, never a command execution at
+service start.</li>
+</ul>
+<h3 id="key-freshness-verification"><a class="header" href="#key-freshness-verification">Key freshness verification</a></h3>
+<p>Postmaster provides <code>--verify-keys</code> on <code>exec</code> to detect stale keys
+from a previous rotation cycle. After loading and decrypting, if the
+resolved values are empty but the env files contain <code>encrypted:</code>
+values, the keys are stale and the exec aborts with a clear error.
+This catches the <code>strict: false</code> case where stale keys would silently
+skip undecryptable values and launch the child with no secrets.</p>
+<h2 id="residuals-what-postmaster-cannot-fully-prevent"><a class="header" href="#residuals-what-postmaster-cannot-fully-prevent">Residuals: what postmaster cannot fully prevent</a></h2>
+<h3 id="environment-variables-are-visible-to-same-uid-processes-env-mode"><a class="header" href="#environment-variables-are-visible-to-same-uid-processes-env-mode">Environment variables are visible to same-UID processes (env mode)</a></h3>
+<p>In <code>env</code> mode, decrypted values are injected as environment variables.
+Any process running as the same user can read them via <code>/proc/PID/environ</code>,
+<code>ps e</code>, or environment dump tools. This is a fundamental Unix property —
+environment variables are not secret from same-UID processes.</p>
+<p>Mitigations: <code>DynamicUser</code> (a fresh UID per service), <code>ProtectProc</code>
+hardening (hides other processes’ <code>/proc</code> entries), and ultimately
+switching to <code>files</code> mode (where values are written to files, not
+environment variables).</p>
+<p>On the BEAM (Erlang/Elixir), <code>os:getenv/1</code> is reachable from any code
+in the node, including a remote shell. Files mode with read-once-at-boot
+into guarded state (and <code>process_flag(sensitive, true)</code> on the holder)
+is strictly better than leaving secrets in the environment for the
+node’s lifetime.</p>
+<h3 id="root-on-the-host"><a class="header" href="#root-on-the-host">Root on the host</a></h3>
+<p>A process running as root can read any other process’s memory via
+<code>/proc/PID/mem</code> or <code>ptrace</code>. This is the Unix trust boundary — root is
+always game over. Postmaster’s <code>PR_SET_DUMPABLE=0</code> and <code>PT_DENY_ATTACH</code>
+prevent non-privileged peers from attaching, but cannot stop root.</p>
+<h3 id="swap-and-core-dumps"><a class="header" href="#swap-and-core-dumps">Swap and core dumps</a></h3>
+<p>Swap and core dumps are the two ways plaintext can leak from memory to
+persistent disk.</p>
+<p><strong>Core dumps</strong> are disabled at both the process level
+(<code>PR_SET_DUMPABLE=0</code> on Linux, <code>RLIMIT_CORE=0</code> on macOS) and the unit
+level (<code>LimitCORE=0</code>, <code>CoredumpFilter=0</code> in the Nix module). For
+host-wide coverage, set
+<code>systemd.coredump.extraConfig = "Storage=none"</code>.</p>
+<p><strong>Swap</strong> is addressed on two layers:</p>
+<ul>
+<li>Per-unit: the service manager (systemd) can set <code>MemorySwapMax=0</code> on
+the unit, preventing the kernel from swapping the unit’s pages.
+Postmaster also calls <code>mlockall(MCL_CURRENT | MCL_FUTURE)</code> on Linux
+(best-effort, may fail under <code>RLIMIT_MEMLOCK</code>). On macOS,
+<code>mlockall(2)</code> does not exist, but macOS encrypts swap by default, so
+swapped pages are ciphertext at rest.</li>
+<li>Host-wide: encrypted swap or zram keeps all swap off persistent disk.
+On NixOS, this is a one-liner:
+<a href="https://search.nixos.org/options?show=swapDevices.*.randomEncryption.enable"><code>swapDevices.*.randomEncryption</code></a>
+for dm-crypt with an ephemeral key, or
+<a href="https://search.nixos.org/options?show=zramSwap.enable"><code>zramSwap.enable</code></a>
+to keep swap in compressed RAM (background:
+<a href="https://wiki.archlinux.org/title/Dm-crypt/Swap_encryption">Arch wiki, dm-crypt swap encryption</a>).</li>
+</ul>
+<h3 id="hardening-inheritance-across-execvp"><a class="header" href="#hardening-inheritance-across-execvp">Hardening inheritance across execvp</a></h3>
+<p>Postmaster calls <code>harden_process()</code> at startup, which sets process-level
+hardening (<code>PR_SET_DUMPABLE=0</code>, <code>mlockall</code>, <code>RLIMIT_CORE=0</code>). After
+<code>execvp</code>, the child process gets a fresh address space. Some settings
+survive <code>execvp</code>, some do not:</p>
+<ul>
+<li><strong><code>RLIMIT_CORE</code></strong>: preserved across <code>execve</code> (kernel guarantee). The
+child inherits <code>LimitCORE=0</code> from the systemd unit. Core dumps stay
+disabled.</li>
+<li><strong><code>PR_SET_DUMPABLE</code></strong>: preserved across <code>execve</code> for non-setuid
+binaries. The child inherits non-dumpable status unless it is a
+setuid/setgid/capability-bearing binary (which would be unusual for
+a service).</li>
+<li><strong><code>MemorySwapMax=0</code></strong>: cgroup-level, not process-level. The child
+stays in the same cgroup, so the swap limit applies to the child’s
+pages too. This is the primary swap protection for the child. The
+Nix module sets this via <code>preventSwap = true</code> by default.</li>
+<li><strong><code>mlockall</code></strong>: does NOT survive <code>execvp</code> — the child’s fresh address
+space is not pinned in RAM. This gap is covered by the cgroup-level
+<code>MemorySwapMax=0</code>.</li>
+</ul>
+<h2 id="memory-residency"><a class="header" href="#memory-residency">Memory residency</a></h2>
+<p>Plaintext secrets exist in process memory between decryption and
+consumption. This section documents where plaintext lives, what
+postmaster mitigates, what remains as a residual, and what is
+explicitly a non-goal.</p>
+<h3 id="anonymous-memory-heap-stack--mitigated"><a class="header" href="#anonymous-memory-heap-stack--mitigated">Anonymous memory (heap, stack) — Mitigated</a></h3>
+<p>Postmaster’s decrypted values, key material, and resolved environment
+pairs all live in anonymous memory — heap allocations wrapped in
+<code>Zeroizing&lt;Vec&lt;u8&gt;&gt;</code> that zero the buffer on drop. The child process
+receives plaintext via its environment array (env mode) or reads it
+from files on a tmpfs/ramdisk (files/credentials mode).</p>
+<p><strong>Paging/swap:</strong> Anonymous pages can be swapped out by the kernel.
+Postmaster mitigates this on Linux with <code>mlockall(MCL_CURRENT | MCL_FUTURE)</code> (best-effort, may fail under <code>RLIMIT_MEMLOCK</code>) and the
+service manager’s cgroup knob <code>MemorySwapMax=0</code> (wired by <code>preventSwap</code>
+in the Nix module). On macOS, <code>mlockall(2)</code> does not exist, but macOS
+encrypts swap by default, so swapped pages are ciphertext at rest.
+Host-wide encrypted swap or zram on Linux provides the same guarantee
+without per-unit configuration.</p>
+<p><strong>Core dumps:</strong> Disabled at the process level (<code>PR_SET_DUMPABLE=0</code> on
+Linux, <code>RLIMIT_CORE=0</code> on macOS) and at the unit level
+(<code>LimitCORE=0</code>, <code>CoredumpFilter=0</code> in the Nix module). Host-wide
+<code>systemd.coredump.extraConfig = "Storage=none"</code> is a belt for all
+units.</p>
+<p><strong>Pre-execvp zeroization:</strong> Private keys (the <code>KeyRing</code>) are zeroized
+when <code>decrypt()</code> returns and the <code>ring</code> local goes out of scope —
+each <code>Zeroizing&lt;[u8; 32]&gt;</code> wipes its 32 bytes on drop. Decrypted
+values (<code>Resolved</code>, a <code>Vec&lt;(String, Zeroizing&lt;Vec&lt;u8&gt;&gt;)&gt;</code>) are
+explicitly <code>drop</code>ped immediately after they are consumed, before
+<code>execvp</code> is called. In env mode, <code>resolved</code> is dropped after
+<code>env_pairs</code> extracts the <code>OsString</code> pairs the kernel needs. In
+files mode, <code>resolved</code> is dropped after the secret files are written.
+Only the <code>extra</code> vector (env array for env mode, file paths for files
+mode) survives to <code>execvp</code> — and in files mode, <code>extra</code> contains only
+paths, not plaintext.</p>
+<h3 id="post-execvp-heap-lifetime--residual-mitigated-as-far-as-possible"><a class="header" href="#post-execvp-heap-lifetime--residual-mitigated-as-far-as-possible">Post-execvp heap lifetime — Residual (mitigated as far as possible)</a></h3>
+<p>After <code>execvp</code>, the process image is replaced. The <code>Zeroizing</code> drop
+handlers for the <code>resolved</code> values have already fired (via explicit
+<code>drop</code>), but the <code>extra</code> vector (env mode) holds plaintext as
+<code>OsString</code> pairs that the kernel needs to build the child’s environ.
+The kernel copies these into the new process’s environment and the
+old process’s heap pages are released. The kernel zeroes anonymous
+pages before reusing them, so the plaintext exists only in freed
+pages until the kernel reclaims them — a transient window, not a
+persistent risk.</p>
+<p>No further mitigation is possible: the kernel needs the env array
+to be intact at the moment of <code>execvp</code>, and <code>execvp</code> replaces the
+process image without running destructors. Fork+wait would keep
+secrets in a long-lived parent heap (strictly worse) and was rejected.</p>
+<h3 id="file-backed-memory-page-cache--mitigated-by-design"><a class="header" href="#file-backed-memory-page-cache--mitigated-by-design">File-backed memory (page cache) — Mitigated by design</a></h3>
+<p>Postmaster does not <code>mmap</code> secret files. Secret files on Linux tmpfs
+and macOS ramdisk are kernel-resident RAM — they are never on
+persistent disk and never enter the page cache for a backing file.
+The <code>.env</code> and <code>.env.keys</code> source files are read via <code>dotenvy</code>’s
+<code>from_read_iter</code> which uses <code>read(2)</code>, not <code>mmap(2)</code> — their contents
+enter anonymous memory, not file-backed pages.</p>
+<p>The distinction matters: file-backed pages (e.g., a secret stored in a
+regular file on an ext4 volume) persist in the kernel page cache after
+the file is closed and the process exits. Postmaster avoids this by
+writing secrets only to tmpfs/ramdisk (RAM-backed, no page cache for a
+backing file) and by using <code>read(2)</code> for source files (anonymous
+memory, not mapped).</p>
+<h3 id="container-swap-enforcement--mitigated"><a class="header" href="#container-swap-enforcement--mitigated">Container swap enforcement — Mitigated</a></h3>
+<p><code>MemorySwapMax=0</code> can be wired by the service manager (systemd) or the
+Nix module via <code>preventSwap</code>. This enforces the cgroup’s swap limit —
+the kernel will not swap the unit’s pages even under host memory
+pressure. The residual is only if the host kernel itself is
+compromised, which falls under “root on the host is always game over.”
+Host-wide encrypted swap is recommended as defense-in-depth for the
+entire host, not just postmaster’s cgroup.</p>
+<h3 id="vm-and-hypervisor-inspection--residual-no-mitigation-available"><a class="header" href="#vm-and-hypervisor-inspection--residual-no-mitigation-available">VM and hypervisor inspection — Residual (no mitigation available)</a></h3>
+<p>A hypervisor can inspect guest memory, take snapshots, or
+live-migrate VMs to other hosts. Postmaster’s <code>mlockall</code> and
+<code>MemorySwapMax=0</code> operate inside the guest kernel; the hypervisor is
+outside the trust boundary. The only defense is confidential computing
+hardware (AMD SEV-SNP, Intel TDX, AWS Nitro Enclaves), which is
+outside postmaster’s scope and dependency set.</p>
+<h3 id="cpu-registers-and-cache--non-goal-no-mitigation-available"><a class="header" href="#cpu-registers-and-cache--non-goal-no-mitigation-available">CPU registers and cache — Non-goal (no mitigation available)</a></h3>
+<p>Plaintext secrets pass through CPU registers and L1/L2/L3 cache
+during decryption and injection. Postmaster does not attempt to flush
+cache lines or zero registers after use. This is a non-goal:
+mitigating cache-line side channels and register residue requires
+constant-time crypto implementations and hardware support (e.g., TSX
+memory scrubbing, <code>wbinvd</code> instruction) that are outside postmaster’s
+scope. The crypto library (<code>ecies</code>) uses <code>secp256k1</code> and <code>AES-256-GCM</code>
+primitives that are not guaranteed constant-time on all targets; this
+is a property of the crypto library, not postmaster.</p>
+<h3 id="privileged-ptrace--residual-no-mitigation-available"><a class="header" href="#privileged-ptrace--residual-no-mitigation-available">Privileged ptrace — Residual (no mitigation available)</a></h3>
+<p><code>PR_SET_DUMPABLE=0</code> (Linux) and <code>PT_DENY_ATTACH</code> (macOS release builds)
+prevent non-privileged peers from attaching. A privileged process
+(root, or a process with <code>CAP_SYS_PTRACE</code>) can still read process
+memory — this is unavoidable and the same trust boundary as “root on
+the host is always game over.” No software mitigation exists for
+privileged memory inspection within the same kernel.</p>
+<h3 id="plaintext-file-persistence-window-files-mode--mitigated"><a class="header" href="#plaintext-file-persistence-window-files-mode--mitigated">Plaintext file persistence window (files mode) — Mitigated</a></h3>
+<p>Secret files written to the tmpfs/ramdisk are removed by <code>postmaster cleanup --config &lt;exec.json&gt;</code>, wired to <code>ExecStopPost</code> in the systemd
+Nix module — it runs immediately after the child exits. On macOS, the
+ramdisk is destroyed when the <code>postmaster-ramdisk</code> launchd job stops.
+The <code>prune_stale</code> function also removes stale files from prior
+launches before writing new ones.</p>
+<h3 id="ramdisk-mount-verification-macos--mitigated"><a class="header" href="#ramdisk-mount-verification-macos--mitigated">Ramdisk mount verification (macOS) — Mitigated</a></h3>
+<p><code>verify_ramdisk</code> verifies the mount is RAM-backed by parsing
+<code>hdiutil info</code> for the device’s <code>image-path</code> starting with <code>ram://</code>.
+Fails closed if the device isn’t found or isn’t RAM-backed, preventing
+plaintext from being written to a file-backed HFS image masquerading
+as the ramdisk.</p>
+<h3 id="fd-closure-before-execvp--mitigated"><a class="header" href="#fd-closure-before-execvp--mitigated">fd closure before execvp — Mitigated</a></h3>
+<p><code>OFlags::CLOEXEC</code> is set on all <code>rustix::fs::open</code> calls (5 sites) —
+the kernel automatically closes these on execvp, preventing the child
+from inheriting postmaster’s open file descriptors. Third-party code
+(e.g., dotenvy) may open fds without <code>CLOEXEC</code>; a <code>pre_exec</code> hook to
+close those was considered but not implemented because it requires
+unsafe code or a new cross-platform dependency. Postmaster’s own fds
+are fully covered.</p>
+<h3 id="secrets-directory-path-exposure--mitigated"><a class="header" href="#secrets-directory-path-exposure--mitigated">Secrets directory path exposure — Mitigated</a></h3>
+<p>The child receives secrets via <code>$KEY_FILE</code> pointers (Docker secrets
+convention, systemd credentials convention, 12-factor <code>_FILE</code>
+pattern). The secrets directory path is not separately exported as
+an environment variable. <code>CREDENTIALS_DIRECTORY</code> is exported in
+credentials mode because it is a systemd standard that the child
+uses to locate credential files.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/materialization-abi.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../reference/cli.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/materialization-abi.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../reference/cli.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-c22b7243.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../mermaid-eefea253.min.js"></script>
+        <script src="../svg-pan-zoom-f4637103.min.js"></script>
+        <script src="../mermaid-init-3bcfb369.js"></script>
+
+
+
+    </div>
+    </body>
+</html>
