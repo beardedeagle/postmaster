@@ -39,3 +39,9 @@ confidence-threshold = 0.93
 # The postmaster crate is the only member today.
 [licenses.private]
 ignore = true
+
+[sources]
+# The ecies fork in [patch.crates-io] (audit 2026-08-02 A7) is the only
+# sanctioned git source; drop this entry together with the patch section
+# once the upstream PR ships in a crates.io release.
+allow-git = ["https://github.com/beardedeagle/rs.git"]

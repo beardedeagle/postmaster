@@ -48,7 +48,7 @@ binding to emit `exec.json`; it is not privileged over any other binding.
 **A binding is correct if and only if the `exec.json` it emits is
 described by this document and passes the conformance suite.**
 Nothing here documents intent or a roadmap; every claim below is true
-of the committed parser and launcher (`src/config.rs`,
+of the committed parser and launcher (`src/exec_config.rs`,
 `src/launcher.rs`, `src/keys.rs`) as of this writing.
 
 ### Config to launch flow
@@ -100,11 +100,13 @@ $ postmaster cleanup --config <exec.json>
   reading key material, checking the filesystem, fetching sockets, or
   launching the child command. It does not accept a command after `--`.
 - `--verify-keys` performs a preflight check: after loading and decrypting,
-  if the resolved values are empty but the env files contain `encrypted:`
-  values, the keys are stale (from a previous rotation cycle) and the exec
-  aborts with a clear error. This catches the `strict: false` case where
-  stale keys would silently skip undecryptable values and launch the child
-  with no secrets.
+  if any value was skipped because the key ring could not decrypt it
+  (stale keys from a previous rotation cycle), the exec aborts with a
+  clear error naming the key. This catches the `strict: false` case where
+  stale keys would otherwise silently skip undecryptable values and
+  launch the child with a partial or empty secret set. Bundle files need
+  no such check: bundle resolution is all-or-nothing, so a stale bundle
+  key already aborts the exec regardless of `strict`.
 - `setup` verifies platform prerequisites, creates keys directory with
   0700, verifies/creates keys files with 0600, optionally seeds keychain
   items (macOS), and validates the environment. Idempotent. `--recheck`
@@ -126,7 +128,7 @@ $ postmaster cleanup --config <exec.json>
 
 ## `ExecConfig` fields
 
-`exec.json` deserializes into this struct (`src/config.rs`).
+`exec.json` deserializes into this struct (`src/exec_config.rs`).
 Unknown root fields are rejected. ABI fields such as `version` or
 `adapter` must not be emitted until the parser and schema explicitly define
 them. A machine-readable JSON Schema for this current shape is kept at
@@ -345,10 +347,12 @@ this mode — it dispatches on whether `sockets` is empty:
   keys file with `O_NOFOLLOW` and `fstat`s the fd to verify: no
   group/world access (`mode & 0o077 == 0`), and owned by the current
   euid. A world-readable or symlinked keys file fails closed.
-- **External binary verification.** On macOS, `from_keychain` verifies
-  the code signature of `/usr/bin/security` via `codesign -v` before
-  invoking it. On Linux, external binaries are verified as regular files
-  owned by root (uid 0) and not world-writable.
+- **External binary verification.** Keychain access uses the
+  Security.framework API in-process — no external binary is invoked for
+  it. The external binaries postmaster does invoke (`/usr/bin/id`,
+  `/sbin/mount`, `/usr/bin/hdiutil` on macOS) are verified first:
+  `codesign -v` on macOS; on Linux, verified as regular files owned by
+  root (uid 0) and not world-writable.
 - **`verify_ramdisk` (darwin ramdisk guard).** When set, before any
   plaintext is written the launcher runs two checks: it shells out to
   `/sbin/mount` and requires the configured mount point to appear as an

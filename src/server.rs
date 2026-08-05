@@ -3,8 +3,6 @@
 //! This module contains the bulk of the runtime behavior while keeping
 //! main.rs thin.
 
-#![allow(missing_docs, missing_debug_implementations)]
-
 use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -31,11 +29,24 @@ const SD_LISTEN_FDS_START: RawFd = 3;
 
 // stderr IS the daemon's log transport (journald on Linux, launchd
 // StandardErrorPath on darwin) — this is the one sanctioned print site.
+/// Log a message to stderr (journald on Linux, launchd on macOS).
 #[allow(clippy::print_stderr)]
 pub fn log(msg: &str) {
     eprintln!("postmaster: {msg}");
 }
 
+/// Serve a single credential entry on a Unix socket. Handles one peer
+/// at a time (thread-per-socket); each peer must be PID 1 or an allowed
+/// service user.
+///
+/// Connection limiting (audit 2026-08-02 A25, documented decision): the
+/// loop is serialized — one connection at a time, each accepted stream
+/// closed at the end of its iteration, writes bounded by WRITE_TIMEOUT —
+/// so per-connection FDs/threads never accumulate and pending connects
+/// are bounded by the kernel backlog. A trusted peer (root or the
+/// configured peer_user) can starve the listener with slow connections;
+/// that is the authorized consumer of this socket, so no rate limiting
+/// is implemented.
 pub fn serve(
     listener: UnixListener,
     path: PathBuf,
@@ -86,16 +97,40 @@ pub fn serve(
     }
 }
 
-/// Connect, read one credential to EOF. Zero bytes means the server
-/// refused to serve — fail closed, exactly like LoadCredential failing.
-pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
-    let mut stream =
-        UnixStream::connect(path).map_err(|e| format!("{}: connect: {e}", path.display()))?;
-    let _ = stream.set_read_timeout(Some(WRITE_TIMEOUT));
-    let mut buf = Zeroizing::new(Vec::new());
-    stream
+/// Maximum bytes accepted for any single secret, bundle, or config
+/// read. These payloads are small; the cap keeps a hostile or broken
+/// peer (or a swapped-in special file) from forcing unbounded heap
+/// allocation (audit 2026-08-02 A6). 16 MiB is far above any legitimate
+/// payload.
+const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read `reader` to EOF with a hard size cap (audit 2026-08-02 A6).
+/// Fails rather than truncates when the stream exceeds the cap — a
+/// truncated secret must never be served as if complete.
+pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, String> {
+    let mut limited = reader.take(MAX_READ_BYTES + 1);
+    let mut buf = Vec::new();
+    limited
         .read_to_end(&mut buf)
         .map_err(|e| format!("{}: read: {e}", path.display()))?;
+    if buf.len() as u64 > MAX_READ_BYTES {
+        return Err(format!(
+            "{}: exceeds the {}-byte size cap",
+            path.display(),
+            MAX_READ_BYTES
+        ));
+    }
+    Ok(buf)
+}
+
+/// Connect, read one credential to EOF (hard-capped by `read_capped`).
+/// Zero bytes means the server refused to serve — fail closed, exactly
+/// like LoadCredential failing.
+pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
+    let stream =
+        UnixStream::connect(path).map_err(|e| format!("{}: connect: {e}", path.display()))?;
+    let _ = stream.set_read_timeout(Some(WRITE_TIMEOUT));
+    let buf = Zeroizing::new(read_capped(stream, path)?);
     if buf.is_empty() {
         return Err(format!(
             "{}: server sent zero bytes (refused to serve); failing closed",
@@ -157,35 +192,64 @@ fn peer_euid(stream: &UnixStream) -> std::io::Result<u32> {
     Ok(euid)
 }
 
+/// Apply process-level hardening: disable core dumps, prevent ptrace
+/// attachment, and pin memory (Linux only). Called once at startup.
 #[cfg(target_os = "linux")]
 pub fn harden_process() {
-    // No core dumps, no ptrace from non-privileged peers.
-    let _ = rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable);
+    // No core dumps, no ptrace from non-privileged peers. Best-effort by
+    // policy, but a failure is security-relevant — log it (audit
+    // 2026-08-02 A10).
+    if let Err(e) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        log(&format!(
+            "hardening: set_dumpable(NotDumpable) failed: {e} — core dumps/ptrace not disabled"
+        ));
+    }
     // Best effort: keep key material off swap even without the unit-level
-    // MemorySwapMax=0 belt (may fail under RLIMIT_MEMLOCK; that's fine).
-    let _ = rustix::mm::mlockall(
-        rustix::mm::MlockAllFlags::CURRENT | rustix::mm::MlockAllFlags::FUTURE,
-    );
+    // MemorySwapMax=0 belt (may fail under RLIMIT_MEMLOCK; that's fine —
+    // but say so).
+    if let Err(e) =
+        rustix::mm::mlockall(rustix::mm::MlockAllFlags::CURRENT | rustix::mm::MlockAllFlags::FUTURE)
+    {
+        log(&format!(
+            "hardening: mlockall failed: {e} — decrypted secrets may swap to disk (check RLIMIT_MEMLOCK)"
+        ));
+    }
 }
 
+/// Apply process-level hardening: disable core dumps and prevent ptrace
+/// attachment (macOS only). Called once at startup.
 #[cfg(target_os = "macos")]
 pub fn harden_process() {
     // Closest analog to PR_SET_DUMPABLE for dumps: no core files, ever.
-    let _ = rustix::process::setrlimit(
+    // Best-effort by policy, but failures are security-relevant — log
+    // them (audit 2026-08-02 A10).
+    if let Err(e) = rustix::process::setrlimit(
         rustix::process::Resource::Core,
         rustix::process::Rlimit {
             current: Some(0),
             maximum: Some(0),
         },
-    );
+    ) {
+        log(&format!(
+            "hardening: setrlimit(Core, 0) failed: {e} — core dumps not disabled"
+        ));
+    }
     // macOS has no mlockall(2); its swap is encrypted by default, so pages
     // that do swap out are ciphertext at rest. Deny debugger attach in
     // release builds (the ptrace-from-peers half of PR_SET_DUMPABLE).
     #[cfg(not(debug_assertions))]
-    // SAFETY: PT_DENY_ATTACH takes no pointer arguments; null addr and zero
-    // data are the documented invocation.
-    unsafe {
-        libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0);
+    {
+        // SAFETY: PT_DENY_ATTACH takes no pointer arguments; null addr and
+        // zero data are the documented invocation.
+        let rc = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            log(&format!(
+                "hardening: PT_DENY_ATTACH failed: {err} — debugger attach not denied"
+            ));
+        }
     }
 }
 
@@ -195,6 +259,12 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
     const ID: &str = "/usr/bin/id";
     #[cfg(not(target_os = "macos"))]
     const ID: &str = "id";
+    // Trust boundary (audit 2026-08-02 O2): a compromised `id` returning
+    // a wrong uid would defeat the socket peer-uid ACL. Verify before
+    // invoking where we invoke by absolute path under SIP (macOS); on
+    // Linux the lookup is PATH-relative config trust with no signing root.
+    #[cfg(target_os = "macos")]
+    crate::keys::verify_external_binary(Path::new(ID))?;
     let out = std::process::Command::new(ID)
         .args(["-u", name])
         .output()
@@ -208,9 +278,16 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
         .map_err(|_| format!("peer_user {name:?}: `id -u` output not a uid"))
 }
 
+/// Resolve the keys file path from a `KeysSource` configuration.
 pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
     match source {
         KeysSource::Credential(name) => {
+            // Same discipline as the exec-config credential source
+            // (audit 2026-08-02 A8): the name must be a single relative
+            // path component — otherwise "../../…" would escape
+            // $CREDENTIALS_DIRECTORY and read an arbitrary root-readable
+            // file as key material.
+            crate::exec_config::validate_credential_source_name(name)?;
             let dir = std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(
                 "keys.credential configured but $CREDENTIALS_DIRECTORY is unset \
                  (is LoadCredential wired on the postmaster unit?)",
@@ -229,6 +306,8 @@ pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
     }
 }
 
+/// Bind and listen on all configured credential sockets. Returns
+/// a vector of `(UnixListener, path, entry)` triples ready for serving.
 pub fn acquire_listeners(
     cfg: &Config,
     bind: bool,
@@ -247,20 +326,27 @@ pub fn acquire_listeners(
                 // only that user (and root) can even reach the socket. Only
                 // meaningful when we run privileged; dev runs skip it.
                 if am_root && let Some(uid) = expected {
-                    rustix::fs::chown(parent, Some(rustix::fs::Uid::from_raw(uid)), None)
-                        .map_err(|e| format!("{}: chown: {e}", parent.display()))?;
-                    // Audit finding #6: use fchmod on the directory fd
-                    // instead of set_permissions on the path to eliminate a
-                    // TOCTOU between chown and chmod. Open the directory
-                    // read-only with O_DIRECTORY, fchmod the fd, close.
+                    // Open the directory and operate on the fd throughout:
+                    // O_NOFOLLOW rejects a symlink at the final component
+                    // (audit 2026-08-02 A1/A2), and fchown/fchmod on the fd
+                    // act on the pinned inode, immune to path swaps
+                    // (audit finding #6).
                     let dir_fd = rustix::fs::open(
                         parent,
                         rustix::fs::OFlags::RDONLY
                             | rustix::fs::OFlags::DIRECTORY
+                            | rustix::fs::OFlags::NOFOLLOW
                             | rustix::fs::OFlags::CLOEXEC,
                         rustix::fs::Mode::empty(),
                     )
-                    .map_err(|e| format!("{}: open dir: {e}", parent.display()))?;
+                    .map_err(|e| {
+                        format!(
+                            "{}: open dir: {e} (refusing to follow a symlink)",
+                            parent.display()
+                        )
+                    })?;
+                    rustix::fs::fchown(&dir_fd, Some(rustix::fs::Uid::from_raw(uid)), None)
+                        .map_err(|e| format!("{}: fchown: {e}", parent.display()))?;
                     rustix::fs::fchmod(&dir_fd, rustix::fs::Mode::from_bits_truncate(0o500))
                         .map_err(|e| format!("{}: fchmod: {e}", parent.display()))?;
                 }
@@ -339,8 +425,13 @@ pub fn acquire_listeners(
     }
 }
 
+/// Run the credential daemon: harden the process, load keys, bind
+/// sockets, and serve credential requests. Returns on socket error
+/// or after all connections are drained (if not socket-activated).
 pub fn run(args: &Args) -> Result<(), String> {
-    let raw = fs::read(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
+    let file =
+        fs::File::open(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
+    let raw = read_capped(file, &args.config)?;
     let cfg: Config =
         serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", args.config.display()))?;
     if cfg.credentials.is_empty() {
@@ -372,7 +463,18 @@ pub fn run(args: &Args) -> Result<(), String> {
     let listeners = acquire_listeners(&cfg, args.bind, &peer_uids)?;
     let mut handles = Vec::new();
     for (listener, path) in listeners {
-        let entry = cfg.credentials.get(&path).expect("validated above").clone();
+        let entry = match cfg.credentials.get(&path) {
+            Some(e) => e.clone(),
+            // Unreachable (listeners derive from cfg.credentials), but a
+            // clear error beats an abort under panic=abort (audit
+            // 2026-08-02 A22).
+            None => {
+                return Err(format!(
+                    "{}: internal: listener path missing from config",
+                    path.display()
+                ));
+            }
+        };
         let peer_uid = peer_uids.get(&path).copied().flatten();
         let ring = Arc::clone(&ring);
         let allow = args.allow_nonroot;

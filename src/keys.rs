@@ -7,8 +7,6 @@
 //! (see `adapter.rs`), so the core logic is adapter-neutral. The `.env`
 //! adapter's `KeyNaming::Env` is the first implementation.
 
-#![allow(missing_docs, missing_debug_implementations)]
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +22,16 @@ use crate::config::Entry;
 /// comma-separated rotation convention; decryption tries each in order.
 #[derive(Debug)]
 pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
+
+/// True for exactly `PREFIX` or `PREFIX_<nonempty suffix>`. A bare
+/// prefix match would slurp unrelated variables like
+/// `DOTENV_PRIVATE_KEYFOO` as key material (audit 2026-08-02 A16).
+fn is_key_var_name(prefix: &str, name: &str) -> bool {
+    name == prefix
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.len() > 1 && rest.starts_with('_'))
+}
 
 impl KeyRing {
     /// Look up candidate keys for a given key variable name.
@@ -132,7 +140,7 @@ impl KeyRing {
         let prefix = naming.key_prefix();
         Self::from_pairs(
             std::env::vars()
-                .filter(|(k, _)| k.starts_with(prefix))
+                .filter(|(k, _)| is_key_var_name(prefix, k))
                 .map(|(k, v)| (k, Zeroizing::new(v))),
             naming,
         )
@@ -149,32 +157,23 @@ impl KeyRing {
         vars: &[String],
         naming: KeyNaming,
     ) -> Result<Self, String> {
-        // Audit finding #3: verify the integrity of /usr/bin/security
-        // before invoking it. On macOS the binary is SIP-protected, but
-        // verify the code signature at runtime as defense-in-depth rather
-        // than trusting the path implicitly.
-        verify_external_binary(Path::new("/usr/bin/security"))?;
+        // Reads go through the Security.framework API, not the
+        // /usr/bin/security CLI (F1 direction): no subprocess, no argv,
+        // and no stdout buffer holding key material — the UTF-8-failure
+        // path validates from a borrow so the error never carries the
+        // bytes (audit 2026-08-02 A17).
         let mut pairs = Vec::new();
         for var in vars {
-            let out = std::process::Command::new("/usr/bin/security")
-                .args(["find-generic-password", "-s", service, "-a", var, "-w"])
-                .output()
-                .map_err(|e| format!("security: {e}"))?;
-            if !out.status.success() {
-                return Err(format!(
-                    "keychain {service}: no item for account {var} (fail closed)"
-                ));
-            }
-            let mut val = Zeroizing::new(
-                String::from_utf8(out.stdout)
-                    .map_err(|_| format!("keychain {service}/{var}: not UTF-8"))?,
+            let bytes = Zeroizing::new(
+                security_framework::passwords::get_generic_password(service, var).map_err(
+                    |_| format!("keychain {service}: no item for account {var} (fail closed)"),
+                )?,
             );
-            // Zeroizing the trimmed copy: the value is wrapped in Zeroizing
-            // before being passed to from_pairs, so key material is zeroized
-            // on drop at every stage. No plain-String window remains.
-            let trimmed = Zeroizing::new(val.trim().to_string());
-            pairs.push((var.clone(), trimmed));
-            val.zeroize();
+            let s = std::str::from_utf8(&bytes[..])
+                .map_err(|_| format!("keychain {service}/{var}: not UTF-8"))?;
+            // from_pairs trims each comma-separated candidate itself, so
+            // no separate trim is needed here.
+            pairs.push((var.clone(), Zeroizing::new(s.to_string())));
         }
         Self::from_pairs(pairs, naming).map_err(|e| format!("keychain {service}: {e}"))
     }
@@ -193,6 +192,14 @@ impl KeyRing {
 /// and not world-writable. There is no universal code-signing mechanism
 /// on Linux, so ownership and permission checks are the practical
 /// defense-in-depth boundary.
+///
+/// Bootstrap limitation (audit 2026-08-02 O2): on macOS the verifier
+/// itself invokes `/usr/bin/codesign`. Self-verifying codesign with
+/// codesign is circular — a compromised codesign would vouch for
+/// itself — so codesign is trusted via SIP alone. Moving verification
+/// onto the Security.framework StaticCode API (the `security-framework`
+/// crate route already chosen for keychain access) would remove this
+/// residual trust gap.
 pub fn verify_external_binary(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -295,10 +302,11 @@ pub fn decrypt_value(
             return Ok(Zeroizing::new(pt));
         }
     }
+    // No candidate count in the error text — the rotation-set size is
+    // not something errors should leak (audit 2026-08-02 A15).
     Err(format!(
-        "{}: no key under {var} decrypts {key} ({} candidate(s) tried)",
-        env_file.display(),
-        candidates.len()
+        "{}: no key under {var} decrypts {key}",
+        env_file.display()
     ))
 }
 
@@ -309,8 +317,20 @@ pub fn resolve(
     ring: &KeyRing,
     naming: KeyNaming,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
-    let iter = dotenvy::from_path_iter(&entry.env_file)
-        .map_err(|e| format!("{}: {e}", entry.env_file.display()))?;
+    // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13): refuse
+    // to read through a planted symlink.
+    let fd = rustix::fs::open(
+        &entry.env_file,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|e| {
+        format!(
+            "{}: {e} (refusing to follow a symlink)",
+            entry.env_file.display()
+        )
+    })?;
+    let iter = dotenvy::from_read_iter(std::fs::File::from(fd));
     // Last assignment wins, matching dotenv semantics within one file.
     let mut found: Option<Zeroizing<String>> = None;
     for item in iter {
@@ -329,12 +349,27 @@ pub fn resolve(
 /// Resolved (name, secret-bytes) pairs, in injection order.
 pub type ResolvedVars = Vec<(String, Zeroizing<Vec<u8>>)>;
 
+/// Outcome of a [`resolve_all`] pass.
+#[derive(Debug)]
+pub struct Resolution {
+    /// Resolved (name, plaintext) pairs in injection order.
+    pub resolved: ResolvedVars,
+    /// `(name, error)` for each encrypted value that could not be
+    /// decrypted and was skipped under `strict: false`. Recorded so
+    /// `--verify-keys` can fail closed on a partial key rotation
+    /// (audit 2026-08-02 A3). Always empty under `strict: true`, where
+    /// the first failure aborts the whole pass instead.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Resolve every key across `files` per the precedence contract
 /// (see docs/src/launcher-contract.md): within one file the LAST assignment
 /// wins (dotenv semantics); across files the FIRST file defining a key wins
 /// unless `overload`; keys already present in the process environment are
 /// skipped unless `overload`. Adapter metadata keys are dropped;
 /// non-identifier keys are a hard error (they become env names/filenames).
+/// Undecryptable values abort under `strict`; otherwise they are skipped
+/// and recorded in [`Resolution::failed`].
 pub fn resolve_all(
     files: &[PathBuf],
     ring: &KeyRing,
@@ -342,12 +377,20 @@ pub fn resolve_all(
     strict: bool,
     env_has: &dyn Fn(&str) -> bool,
     naming: KeyNaming,
-) -> Result<ResolvedVars, String> {
+) -> Result<Resolution, String> {
     let metadata_prefix = naming.metadata_prefix();
     let mut order: Vec<String> = Vec::new();
     let mut merged: HashMap<String, (PathBuf, Zeroizing<String>)> = HashMap::new();
     for f in files {
-        let iter = dotenvy::from_path_iter(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13):
+        // refuse to read through a planted symlink.
+        let fd = rustix::fs::open(
+            f,
+            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", f.display()))?;
+        let iter = dotenvy::from_read_iter(std::fs::File::from(fd));
         let mut file_vals: HashMap<String, Zeroizing<String>> = HashMap::new();
         let mut file_order: Vec<String> = Vec::new();
         for item in iter {
@@ -370,7 +413,12 @@ pub fn resolve_all(
             file_vals.insert(k, v); // last assignment within a file wins
         }
         for k in file_order {
-            let v = file_vals.remove(&k).expect("key recorded in file_order");
+            // Unreachable invariant (file_order mirrors file_vals), but a
+            // clear error beats an abort under panic=abort (audit
+            // 2026-08-02 A22).
+            let Some(v) = file_vals.remove(&k) else {
+                return Err(format!("internal: {k} in file_order but not file_vals"));
+            };
             if let Some(slot) = merged.get_mut(&k) {
                 if overload {
                     *slot = (f.clone(), v); // later file wins under overload
@@ -382,22 +430,34 @@ pub fn resolve_all(
         }
     }
     let mut out = Vec::new();
+    let mut failed = Vec::new();
     for k in order {
         if !overload && env_has(&k) {
             continue; // process environment wins
         }
-        let (file, raw) = merged.remove(&k).expect("key recorded in order");
+        // Unreachable invariant (order mirrors merged), but a clear error
+        // beats an abort under panic=abort (audit 2026-08-02 A22).
+        let Some((file, raw)) = merged.remove(&k) else {
+            return Err(format!("internal: {k} in order but not merged"));
+        };
         match decrypt_value(&file, &k, &raw, ring, naming) {
             Ok(v) => out.push((k, v)),
             Err(e) if strict => return Err(e),
-            Err(e) => crate::server::log(&format!("non-strict: skipping {k}: {e}")),
+            Err(e) => {
+                crate::server::log(&format!("non-strict: skipping {k}: {e}"));
+                failed.push((k, e));
+            }
         }
     }
-    Ok(out)
+    Ok(Resolution {
+        resolved: out,
+        failed,
+    })
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
+/// Inline unit tests for key loading, resolution, and decryption.
 pub mod tests {
     use super::*;
     use crate::adapter::KeyNaming;
@@ -674,6 +734,19 @@ pub mod tests {
     }
 
     #[test]
+    fn is_key_var_name_rules() {
+        // audit 2026-08-02 A16: only `PREFIX` or `PREFIX_<suffix>` match;
+        // prefix-substring collisions are rejected.
+        let p = "DOTENV_PRIVATE_KEY";
+        assert!(is_key_var_name(p, "DOTENV_PRIVATE_KEY"));
+        assert!(is_key_var_name(p, "DOTENV_PRIVATE_KEY_PRODUCTION"));
+        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KEYFOO"));
+        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KEY_")); // empty suffix
+        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KE"));
+        assert!(!is_key_var_name(p, "XDOTENV_PRIVATE_KEY"));
+    }
+
+    #[test]
     fn resolve_all_precedence() {
         let d = tdir("prec");
         std::fs::write(
@@ -688,7 +761,11 @@ pub mod tests {
         // default: first file wins; within a file last assignment wins;
         // process-env presence suppresses; DOTENV_* filtered.
         let out = resolve_all(&files, &ring, false, true, &|k| k == "C", KeyNaming::Env).unwrap();
-        let got: Vec<(&str, &[u8])> = out.iter().map(|(k, v)| (k.as_str(), &v[..])).collect();
+        let got: Vec<(&str, &[u8])> = out
+            .resolved
+            .iter()
+            .map(|(k, v)| (k.as_str(), &v[..]))
+            .collect();
         assert_eq!(
             got,
             vec![("A", b"first".as_slice()), ("B", b"two".as_slice())]
@@ -696,7 +773,11 @@ pub mod tests {
 
         // overload: later file wins, env presence ignored.
         let out = resolve_all(&files, &ring, true, true, &|k| k == "C", KeyNaming::Env).unwrap();
-        let got: Vec<(&str, &[u8])> = out.iter().map(|(k, v)| (k.as_str(), &v[..])).collect();
+        let got: Vec<(&str, &[u8])> = out
+            .resolved
+            .iter()
+            .map(|(k, v)| (k.as_str(), &v[..]))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -743,7 +824,9 @@ pub mod tests {
             )
             .is_err()
         );
-        // non-strict: skipped, not served wrong.
+        // non-strict: skipped, not served wrong — and the skip is
+        // recorded so --verify-keys can fail closed on it (audit
+        // 2026-08-02 A3).
         let out = resolve_all(
             &[d.join(".env")],
             &ring,
@@ -753,7 +836,9 @@ pub mod tests {
             KeyNaming::Env,
         )
         .unwrap();
-        assert!(out.is_empty());
+        assert!(out.resolved.is_empty());
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(out.failed[0].0, "A");
     }
 
     #[test]

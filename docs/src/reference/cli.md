@@ -65,10 +65,10 @@ $ postmaster exec --config <exec.json> [--check] [--verify-keys] -- <command> [a
 - On failure the error is logged and the process exits non-zero.
 - `--check` does not accept a command after `--`.
 - `--verify-keys` performs a preflight check: after loading and
-  decrypting, if the resolved values are empty but the env files
-  contain `encrypted:` values, the keys are stale and the exec
-  aborts. This catches the `strict: false` case where stale keys
-  would silently skip undecryptable values.
+  decrypting, if any value was skipped because the key ring could not
+  decrypt it, the keys are stale and the exec aborts naming the key.
+  This catches the `strict: false` case where stale keys would
+  otherwise silently skip undecryptable values (partial or empty set).
 
 Exit codes:
 

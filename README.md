@@ -30,7 +30,7 @@ environment.
 
 Runtime flow per service (systemd path):
 
-```
+```text
 1. Nix store holds the encrypted .env file (ciphertext, public)
         ↓
 2. systemd LoadCredential= places key material in $CREDENTIALS_DIRECTORY
@@ -132,11 +132,16 @@ See [docs/src/SUMMARY.md](docs/src/SUMMARY.md) for the table of contents.
 ## Building
 
 ```console
-$ cargo build
-$ cargo test
-$ cargo clippy --all-targets
-$ cargo fmt --check
+$ just build           # debug build
+$ just test            # run tests
+$ just clippy          # lint
+$ just fmt-check       # format check
+$ just ci-rust         # all of the above in one command
+$ just build-matrix max macos-arm  # optimized release
 ```
+
+See `just build-help` for the full build matrix (optimization levels
+and cross-compilation targets).
 
 With Nix:
 

@@ -29,15 +29,27 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: |
-            experimental-features = nix-command flakes
+        shell: bash
+        run: |
+          if ! command -v nix >/dev/null 2>&1; then
+            curl -sSf -L https://nixos.org/nix/install | sh -s -- install --no-confirm
+          fi
+
+      - name: Enable nix-command and flakes
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/nix"
+          if ! grep -q 'experimental-features' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+            echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+          fi
+
+      - name: Install just
+        uses: ./.github/actions/setup-rust
 
       - name: Build book
-        run: nix run nixpkgs#mdbook -- build docs
+        run: just docs

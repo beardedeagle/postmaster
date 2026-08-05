@@ -32,29 +32,15 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --locked
-
-      - name: Test
-        run: cargo test --locked
+      - name: Quality gate (fmt, clippy, build, test)
+        run: just ci-rust
 
   deny:
     name: Dependency policy
@@ -63,11 +49,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
-      - name: Dependency policy (cargo-deny)
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Setup Rust, just, and cargo-deny
+        uses: ./.github/actions/setup-rust
         with:
-          manifest-path: Cargo.toml
+          install-cargo-deny: "true"
+
+      - name: Dependency policy
+        run: just deny

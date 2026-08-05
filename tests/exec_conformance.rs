@@ -660,3 +660,74 @@ fn verify_keys_aborts_on_stale_keys_with_strict_false() {
         "expected '--verify-keys failed' in stderr, got: {stderr}"
     );
 }
+
+#[test]
+fn verify_keys_aborts_on_partial_failure_with_strict_false() {
+    // Audit 2026-08-02 A3: with strict:false, resolution silently skips
+    // undecryptable values. When SOME values still decrypt, the resolved
+    // set is non-empty and the old freshness check passed — the child
+    // launched with a partial secret set. --verify-keys must now abort
+    // on any recorded skip.
+    let d = common::tmpdir("verifykeys-partial");
+    let other_sk_hex = "33".repeat(32);
+    let other_sk_bytes = hex::decode(&other_sk_hex).unwrap();
+    let other_sk = ecies::SecretKey::parse_slice(&other_sk_bytes).unwrap();
+    let other_pk = ecies::PublicKey::from_secret_key(&other_sk);
+    let stale_ct = ecies::encrypt(&other_pk.serialize_compressed(), b"stale-secret").unwrap();
+    let stale_b64 = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(stale_ct)
+    };
+    let env = common::write_env_file(
+        &d,
+        ".env.production",
+        &[
+            format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
+            // Decrypts with the keyring's key — the resolved set is
+            // non-empty, which is what fooled the old check.
+            format!("SECRET_GOOD=\"{}\"", common::enc("good-secret")),
+            // Encrypted to a key NOT in the keyring — skipped under
+            // strict:false. This is the partial-rotation case.
+            format!("SECRET_STALE=\"encrypted:{stale_b64}\""),
+        ],
+    );
+    let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"env","keys":[{{"file":"{}"}}],"env_files":["{}"],"strict":false}}"#,
+            keys.display(),
+            env.display()
+        ),
+    );
+    // Without --verify-keys the partial set launches silently:
+    // SECRET_GOOD is served, SECRET_STALE is dropped.
+    let out_no_verify = run_exec(&cfg, "test \"$SECRET_GOOD\" = good-secret", &[]);
+    assert!(
+        out_no_verify.status.success(),
+        "without --verify-keys, strict:false should silently serve the partial set: {}",
+        String::from_utf8_lossy(&out_no_verify.stderr)
+    );
+
+    // With --verify-keys, the recorded skip must abort the launch.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_postmaster"));
+    c.args(["exec", "--config"])
+        .arg(&cfg)
+        .args(["--verify-keys", "--", "true"])
+        .env_remove("SECRET_GOOD")
+        .env_remove("SECRET_STALE");
+    let out = c.output().unwrap();
+    assert!(
+        !out.status.success(),
+        "--verify-keys should abort on a partial decryption failure"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--verify-keys failed"),
+        "expected '--verify-keys failed' in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("SECRET_STALE"),
+        "expected the skipped key name in stderr, got: {stderr}"
+    );
+}

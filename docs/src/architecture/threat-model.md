@@ -181,15 +181,15 @@ read or written:
 
 ### External binary verification
 
-Postmaster verifies the integrity of external binaries before
-invoking them in the secret path:
+Keychain access on macOS uses the Security.framework API in-process —
+no external binary is invoked for it. The external binaries postmaster
+does invoke in secret-adjacent paths (`/usr/bin/id`, `/sbin/mount`,
+`/usr/bin/hdiutil`) are verified before use:
 
-- **macOS:** `/usr/bin/security` is verified via `codesign -v` before
-  being invoked for keychain access. This ensures the binary has a
-  valid Apple code signature and has not been tampered with or
-  replaced.
-- **Linux:** External binaries are verified as regular files owned
-  by root (uid 0) and not world-writable.
+- **macOS:** `codesign -v` verifies a valid Apple code signature
+  (defense-in-depth; the binaries are also SIP-protected).
+- **Linux:** verified as regular files owned by root (uid 0) and not
+  world-writable.
 
 ### Input validation
 
@@ -217,11 +217,14 @@ the secret path:
 ### Key freshness verification
 
 Postmaster provides `--verify-keys` on `exec` to detect stale keys
-from a previous rotation cycle. After loading and decrypting, if the
-resolved values are empty but the env files contain `encrypted:`
-values, the keys are stale and the exec aborts with a clear error.
-This catches the `strict: false` case where stale keys would silently
-skip undecryptable values and launch the child with no secrets.
+from a previous rotation cycle. After loading and decrypting, if any
+value was skipped because the key ring could not decrypt it, the exec
+aborts with a clear error naming the key. This catches the
+`strict: false` case where stale keys would otherwise silently skip
+undecryptable values and launch the child with a partial or empty
+secret set. Bundle files need no such check: bundle resolution is
+all-or-nothing, so a stale bundle key already aborts the exec
+regardless of `strict`.
 
 ## Residuals: what postmaster cannot fully prevent
 
@@ -249,6 +252,31 @@ A process running as root can read any other process's memory via
 `/proc/PID/mem` or `ptrace`. This is the Unix trust boundary — root is
 always game over. Postmaster's `PR_SET_DUMPABLE=0` and `PT_DENY_ATTACH`
 prevent non-privileged peers from attaching, but cannot stop root.
+
+### Rotation timing oracle
+
+When multiple private keys are configured for one variable (the
+comma-separated rotation convention), decryption tries each candidate in
+order and stops at the first that works. A local observer measuring
+launch or fetch latency can infer which candidate matched — i.e., the
+rotation position of the current key. Accepted (audit 2026-08-02 A14):
+the observer learns only the rotation index, not key material, and
+already needs same-host access; equalizing the timing would require
+attempting every candidate on every decryption for no meaningful gain.
+
+### Env-file content is trusted input (no variable-name denylist)
+
+Postmaster injects what the configured env files and bundles say,
+including plaintext passthrough entries. There is no denylist of
+environment variable names (audit 2026-08-02 A18): names like
+`LD_PRELOAD` or `PATH` are honored, because real deployments
+legitimately set variables of this family (`LD_LIBRARY_PATH` is common).
+The protection boundary is artifact authorship: anyone who can write the
+env file (or produce valid ciphertext for it) already controls what the
+child process receives. Treat plaintext passthrough entries in
+world-readable artifacts as code-level intent, and keep artifact write
+access tight. If a denylist is ever wanted, it belongs in config
+validation as an explicit opt-in policy, not a silent default.
 
 ### Swap and core dumps
 

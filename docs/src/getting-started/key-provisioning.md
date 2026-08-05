@@ -126,5 +126,5 @@ Use `--verify-keys` to catch stale keys before they cause a silent
 failure:
 
 ```console
-$ postmaster exec --config exec.json --verify-keys -- /bin/true
+$ postmaster exec --config exec.json --verify-keys -- /usr/bin/true
 ```

@@ -6,16 +6,20 @@
 //!
 //! Security and fail-closed semantics are preserved exactly.
 
-#![allow(missing_docs, missing_debug_implementations)]
-
 pub mod adapter;
 pub mod bundle;
 pub mod config;
+pub mod exec_config;
+pub mod key_provisioning;
+pub mod key_source;
 pub mod keys;
 pub mod launcher;
+pub mod ramdisk;
+pub mod secret_files;
 pub mod server;
 
 pub use config::{Invocation, parse_args, parse_args_from};
+pub use key_provisioning::{cleanup, setup};
 pub use server::{fetch, harden_process, run};
 
 /// Re-exported for binary use. The real main is here so tests can call into it.
@@ -41,8 +45,8 @@ pub fn main() -> std::process::ExitCode {
             unattended,
             force,
             keys_dir,
-        }) => launcher::setup(&config, recheck, unattended, force, keys_dir),
-        Ok(Invocation::Cleanup { config }) => launcher::cleanup(&config),
+        }) => setup(&config, recheck, unattended, force, keys_dir),
+        Ok(Invocation::Cleanup { config }) => cleanup(&config),
         #[allow(clippy::print_stdout, clippy::print_stderr)]
         Ok(Invocation::Help(sub)) => {
             let text = match sub.as_deref() {

@@ -39,13 +39,20 @@ API_TOKEN="encrypted:BGAAAAAADWyy..."
 
 ## Step 2: Provision keys
 
-Postmaster needs the private key to decrypt the values. The key lives in
-a `.env.keys` file:
+Postmaster needs the private key to decrypt the values. `dotenvx set`
+above wrote it to a `.env.keys` file alongside your env file:
 
 ```console
-$ dotenvx keys -f secrets/.env.production
-DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
+$ cat secrets/.env.keys
+DOTENV_PRIVATE_KEY_PRODUCTION=a1b2c3d4e5f6...
 ```
+
+> **dotenvx version note:** the CLI changes across releases. Older
+> versions exposed the private key through a `dotenvx keys` subcommand
+> (since removed); current versions write it to the `.env.keys` file
+> next to your env file, and the value may be quoted or unquoted
+> depending on version. Treat the `.env.keys` file as the durable
+> source — copy the `DOTENV_PRIVATE_KEY_*` value from it.
 
 Place the keys file on the host (Linux):
 

@@ -14,9 +14,10 @@ repository = "https://github.com/beardedeagle/postmaster"
 # We use a fairly strict set of lints. One deliberate deviation: we allow
 # `unsafe_code` (some stricter projects deny it outright). postmaster is a
 # syscall-level socket-activation daemon and needs a handful of justified
-# `unsafe` blocks (getpeereid(2), best-effort mlock()-style hardening, and
-# UnixListener::from_raw_fd on the one inherited systemd fd) — each site in
-# src/main.rs carries a SAFETY comment, so `unsafe_code` is left at rustc's
+# `unsafe` blocks (getpeereid(2), best-effort mlock()-style hardening,
+# signal-mask deferral around the plaintext-write window, and
+# UnixListener::from_raw_fd on the one inherited systemd fd) — each site
+# carries a SAFETY comment, so `unsafe_code` is left at rustc's
 # default (allow) rather than denied or blanket-warned.
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
@@ -28,12 +29,14 @@ explicit_outlives_requirements = "warn"
 if_let_rescope = "warn"
 impl_trait_overcaptures = "warn"
 impl_trait_redundant_captures = "warn"
-# `let _ = …` is postmaster's deliberate best-effort idiom: hardening calls
-# (mlockall-style, non-dumpable, core limits, ptrace-deny) and cleanup paths
-# (socket shutdown, stale-socket unlink, thread join at teardown) may
-# legitimately fail, and the adjacent comments explain why that's acceptable.
-# Converting them to unwrap/expect/error handling would CHANGE behavior in a
-# fail-closed daemon, so the lint stays off.
+# `let _ = …` is postmaster's deliberate best-effort idiom for cleanup
+# paths (socket shutdown, stale-socket unlink, read-timeout set, thread
+# join at teardown) that may legitimately fail, and the adjacent comments
+# explain why that's acceptable. Security-relevant hardening calls
+# (mlockall-style, non-dumpable, core limits, ptrace-deny) LOG their
+# failures instead (audit 2026-08-02 A10). Converting either to
+# unwrap/expect/error handling would CHANGE behavior in a fail-closed
+# daemon, so the lint stays off.
 let_underscore_drop = "allow"
 macro_use_extern_crate = "warn"
 meta_variable_misuse = "warn"
@@ -100,11 +103,19 @@ zeroize = "1"
 # single fd-ownership assertion at the systemd socket-activation boundary.
 rustix = { version = "1", features = ["net", "process", "mm", "fs"] }
 
+# AAD support for the bundle adapter (audit 2026-08-02 A7) lives on the
+# `aad-support` branch of the author's ecies fork pending the upstream PR
+# against ecies/rs. Pinned by rev for reproducibility; drop this section
+# once the PR merges and ships in a crates.io release.
+[patch.crates-io]
+ecies = { git = "https://github.com/beardedeagle/rs.git", rev = "81e1b84" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Darwin's stable kernel ABI *is* libc (raw syscalls are unsupported there;
 # rustix itself calls through libc on darwin). Two narrow calls use it
 # directly: getpeereid for the peer check and PT_DENY_ATTACH hardening.
 libc = "0.2"
+security-framework = "3.7.0"
 
 [profile.release]
 # Everything here is stable-toolchain and arch-agnostic: safe under nixpkgs
@@ -114,6 +125,11 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+# PT_DENY_ATTACH (macOS hardening) is gated on not(debug_assertions); pin
+# this so a profile override can't silently compile it out (audit
+# 2026-08-02 A23). This is already the release default — explicitness is
+# the guard.
+debug-assertions = false
 # Arithmetic bugs become panic → abort → Restart=on-failure: fail closed,
 # never a wrong answer. Cost is ~nil (crypto deps use wrapping intrinsics).
 overflow-checks = true

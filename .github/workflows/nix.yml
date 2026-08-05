@@ -29,18 +29,33 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
+        shell: bash
+        run: |
+          if ! command -v nix >/dev/null 2>&1; then
+            curl -sSf -L https://nixos.org/nix/install | sh -s -- install --no-confirm
+          fi
+
+      - name: Enable nix-command and flakes
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.config/nix"
+          if ! grep -q 'experimental-features' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+            echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+          fi
+
+      - name: Install just
+        uses: ./.github/actions/setup-rust
         with:
-          extra-conf: |
-            experimental-features = nix-command flakes
+          install-cargo-deny: "false"
+          install-cargo-audit: "false"
 
       - name: nix flake check
-        run: nix flake check
+        run: just flake-check
 
       - name: nix flake check (eval-only, all systems)
         run: nix flake check --all-systems --no-build
