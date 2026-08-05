@@ -7,19 +7,26 @@
 //! Security and fail-closed semantics are preserved exactly.
 
 pub mod adapter;
-pub mod bundle;
-pub mod config;
+pub mod cli;
 pub mod exec_config;
-pub mod key_provisioning;
-pub mod key_source;
 pub mod keys;
 pub mod launcher;
 pub mod ramdisk;
 pub mod secret_files;
 pub mod server;
 
-pub use config::{Invocation, parse_args, parse_args_from};
-pub use key_provisioning::{cleanup, setup};
+/// The bundle adapter, re-exported so `crate::bundle` keeps resolving.
+pub use adapter::bundle;
+/// The CLI module under its former name, so `crate::config` keeps resolving.
+pub use cli as config;
+pub use cli::{Invocation, parse_args, parse_args_from};
+/// Key provisioning under its former name, so `crate::key_provisioning`
+/// keeps resolving.
+pub use keys::provisioning as key_provisioning;
+pub use keys::provisioning::{cleanup, setup};
+/// Key-source selection under its former name, so `crate::key_source`
+/// keeps resolving.
+pub use keys::source as key_source;
 pub use server::{fetch, harden_process, run};
 
 /// Re-exported for binary use. The real main is here so tests can call into it.

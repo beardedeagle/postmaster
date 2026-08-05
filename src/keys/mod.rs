@@ -4,7 +4,7 @@
 //! Plaintext values (from `dotenvx set --plain`) are passed through.
 //!
 //! Key-naming conventions are abstracted via the `KeyNaming` trait
-//! (see `adapter.rs`), so the core logic is adapter-neutral. The `.env`
+//! (see `adapter/mod.rs`), so the core logic is adapter-neutral. The `.env`
 //! adapter's `KeyNaming::Env` is the first implementation.
 
 use std::collections::HashMap;
@@ -17,21 +17,22 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::adapter::KeyNaming;
 use crate::config::Entry;
 
+mod env;
+#[cfg(target_os = "macos")]
+mod keychain;
+mod load;
+pub mod provisioning;
+pub mod source;
+mod verify;
+
+/// Re-exported so `crate::keys::verify_external_binary` keeps resolving.
+pub use verify::verify_external_binary;
+
 /// Full variable name (adapter-specific, e.g. DOTENV_PRIVATE_KEY[_<ENV>])
 /// → candidate secret keys. Multiple candidates per name come from
 /// comma-separated rotation convention; decryption tries each in order.
 #[derive(Debug)]
 pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
-
-/// True for exactly `PREFIX` or `PREFIX_<nonempty suffix>`. A bare
-/// prefix match would slurp unrelated variables like
-/// `DOTENV_PRIVATE_KEYFOO` as key material (audit 2026-08-02 A16).
-fn is_key_var_name(prefix: &str, name: &str) -> bool {
-    name == prefix
-        || name
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.len() > 1 && rest.starts_with('_'))
-}
 
 impl KeyRing {
     /// Look up candidate keys for a given key variable name.
@@ -39,6 +40,7 @@ impl KeyRing {
     pub fn candidates(&self, var: &str) -> Option<&[Zeroizing<[u8; 32]>]> {
         self.0.get(var).map(|v| v.as_slice())
     }
+
     /// Load a `.env.keys` file from `path` and build a key ring.
     ///
     /// Security invariants enforced on the opened file (all checked on the
@@ -50,41 +52,7 @@ impl KeyRing {
     ///     process on the host; fail closed instead.
     ///   - `st_uid == euid`: the file must be owned by the service user.
     pub fn load(path: &Path, naming: KeyNaming) -> Result<Self, String> {
-        let oflags =
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
-        let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
-            format!(
-                "keys file {}: {e} (refusing to follow a symlink)",
-                path.display()
-            )
-        })?;
-        let stat = rustix::fs::fstat(&fd)
-            .map_err(|e| format!("keys file {}: fstat: {e}", path.display()))?;
-        let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
-        // Reject group or world accessibility. 0o077 masks both RWXG and RWXO.
-        if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
-            return Err(format!(
-                "keys file {}: permissions {:#o} are group/world accessible; expected 0400 or 0600 (fail closed)",
-                path.display(),
-                stat.st_mode
-            ));
-        }
-        let euid = rustix::process::geteuid().as_raw();
-        if stat.st_uid != euid {
-            return Err(format!(
-                "keys file {}: owned by uid {} but postmaster euid is {euid} (fail closed)",
-                path.display(),
-                stat.st_uid
-            ));
-        }
-        let file = std::fs::File::from(fd);
-        let iter = dotenvy::from_read_iter(file);
-        let mut pairs = Vec::new();
-        for item in iter {
-            let (k, v) = item.map_err(|e| format!("keys file {}: {e}", path.display()))?;
-            pairs.push((k, Zeroizing::new(v)));
-        }
-        Self::from_pairs(pairs, naming).map_err(|e| format!("keys file {}: {e}", path.display()))
+        load::load(path, naming)
     }
 
     /// Core parser shared by every key source: keep keys matching the
@@ -137,14 +105,7 @@ impl KeyRing {
     /// provisioning; `key.file = null` in the module). Reads all
     /// variables matching the adapter's key prefix.
     pub fn from_env(naming: KeyNaming) -> Result<Self, String> {
-        let prefix = naming.key_prefix();
-        Self::from_pairs(
-            std::env::vars()
-                .filter(|(k, _)| is_key_var_name(prefix, k))
-                .map(|(k, v)| (k, Zeroizing::new(v))),
-            naming,
-        )
-        .map_err(|e| format!("environment: {e}"))
+        env::from_env(naming)
     }
 
     /// macOS System keychain: one generic-password item per variable,
@@ -157,95 +118,8 @@ impl KeyRing {
         vars: &[String],
         naming: KeyNaming,
     ) -> Result<Self, String> {
-        // Reads go through the Security.framework API, not the
-        // /usr/bin/security CLI (F1 direction): no subprocess, no argv,
-        // and no stdout buffer holding key material — the UTF-8-failure
-        // path validates from a borrow so the error never carries the
-        // bytes (audit 2026-08-02 A17).
-        let mut pairs = Vec::new();
-        for var in vars {
-            let bytes = Zeroizing::new(
-                security_framework::passwords::get_generic_password(service, var).map_err(
-                    |_| format!("keychain {service}: no item for account {var} (fail closed)"),
-                )?,
-            );
-            let s = std::str::from_utf8(&bytes[..])
-                .map_err(|_| format!("keychain {service}/{var}: not UTF-8"))?;
-            // from_pairs trims each comma-separated candidate itself, so
-            // no separate trim is needed here.
-            pairs.push((var.clone(), Zeroizing::new(s.to_string())));
-        }
-        Self::from_pairs(pairs, naming).map_err(|e| format!("keychain {service}: {e}"))
+        keychain::from_keychain(service, vars, naming)
     }
-}
-
-/// Verify the integrity of an external binary before invoking it as part
-/// of a secret-handling path. This is a defense-in-depth trust boundary
-/// check (audit finding #3): the binary path is a trust root, and we
-/// verify it has not been tampered with before exec.
-///
-/// On macOS: `codesign -v <path>` verifies the code signature. The binary
-/// is additionally SIP-protected, so this catches a hypothetical SIP
-/// bypass or a misconfigured environment.
-///
-/// On Linux: verify the file is a regular file, owned by root (uid 0),
-/// and not world-writable. There is no universal code-signing mechanism
-/// on Linux, so ownership and permission checks are the practical
-/// defense-in-depth boundary.
-///
-/// Bootstrap limitation (audit 2026-08-02 O2): on macOS the verifier
-/// itself invokes `/usr/bin/codesign`. Self-verifying codesign with
-/// codesign is circular — a compromised codesign would vouch for
-/// itself — so codesign is trusted via SIP alone. Moving verification
-/// onto the Security.framework StaticCode API (the `security-framework`
-/// crate route already chosen for keychain access) would remove this
-/// residual trust gap.
-pub fn verify_external_binary(path: &Path) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let out = std::process::Command::new("/usr/bin/codesign")
-            .args(["-v", path.to_str().unwrap_or("")])
-            .output()
-            .map_err(|e| format!("{}: codesign verification failed: {e}", path.display()))?;
-        if !out.status.success() {
-            return Err(format!(
-                "{}: code signature verification failed (audit finding #3 trust boundary)",
-                path.display()
-            ));
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let md = std::fs::symlink_metadata(path)
-            .map_err(|e| format!("{}: cannot stat external binary: {e}", path.display()))?;
-        if md.file_type().is_symlink() {
-            return Err(format!(
-                "{}: external binary is a symlink; refusing to trust a symlinked binary",
-                path.display()
-            ));
-        }
-        if !md.is_file() {
-            return Err(format!(
-                "{}: external binary is not a regular file",
-                path.display()
-            ));
-        }
-        if md.uid() != 0 {
-            return Err(format!(
-                "{}: external binary owned by uid {} (expected root/0); refusing to trust",
-                path.display(),
-                md.uid()
-            ));
-        }
-        if md.mode() & 0o002 != 0 {
-            return Err(format!(
-                "{}: external binary is world-writable; refusing to trust",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Shell-identifier check shared with the Nix module's eval-time isIdent.
@@ -478,7 +352,8 @@ pub mod tests {
     use std::io::Write;
     use std::path::Path;
 
-    fn with_temp_keys(content: &str, f: impl FnOnce(&Path)) {
+    /// Shared with the `load` submodule's tests.
+    pub fn with_temp_keys(content: &str, f: impl FnOnce(&Path)) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
@@ -497,7 +372,8 @@ pub mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    fn tdir(tag: &str) -> std::path::PathBuf {
+    /// Shared with the `load` submodule's tests.
+    pub fn tdir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("pm-keys-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -582,168 +458,9 @@ pub mod tests {
     }
 
     #[test]
-    fn load_rejects_bad_hex() {
-        let content = "DOTENV_PRIVATE_KEY=not-hex\n";
-        with_temp_keys(content, |p| match KeyRing::load(p, KeyNaming::Env) {
-            Err(e) if e.contains("not valid hex") => {}
-            other => panic!("expected bad hex error, got {other:?}"),
-        });
-    }
-
-    #[test]
-    fn load_rejects_world_readable_keys_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-worldread-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
-        }
-        // 0644: world-readable — must be rejected.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        match KeyRing::load(&path, KeyNaming::Env) {
-            Err(e) if e.contains("group/world accessible") => {}
-            other => panic!("expected group/world permission error, got {other:?}"),
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_rejects_group_readable_keys_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-groupread-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
-        }
-        // 0640: group-readable — must be rejected.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        match KeyRing::load(&path, KeyNaming::Env) {
-            Err(e) if e.contains("group/world accessible") => {}
-            other => panic!("expected group permission error, got {other:?}"),
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_rejects_symlink_keys_file() {
-        let dir = tdir("symlink-keys");
-        let real = dir.join("real-keys");
-        std::fs::write(&real, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let link = dir.join(".env.keys");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        match KeyRing::load(&link, KeyNaming::Env) {
-            Err(e) if e.contains("symlink") => {}
-            other => panic!("expected symlink rejection error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn load_accepts_0600_keys_file() {
-        // Sanity: a properly locked-down keys file (0600, owned by euid)
-        // loads normally. This guards against false positives from the
-        // permission and ownership checks.
-        let content = format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32));
-        with_temp_keys(&content, |p| {
-            KeyRing::load(p, KeyNaming::Env).expect("0600 keys file owned by euid should load");
-        });
-    }
-
-    #[test]
-    fn load_accepts_0400_keys_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-0400-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
-        }
-        // 0400: read-only by owner — stricter than 0600, must pass.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
-        KeyRing::load(&path, KeyNaming::Env).expect("0400 keys file owned by euid should load");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn verify_external_binary_accepts_codesigned_binary() {
-        // /usr/bin/security is Apple-signed and SIP-protected; the codesign
-        // verification must pass. This guards against a hypothetical SIP
-        // bypass or a misconfigured environment where the binary has been
-        // replaced.
-        verify_external_binary(std::path::Path::new("/usr/bin/security"))
-            .expect("codesigned system binary should pass verification");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn verify_external_binary_rejects_unsigned_file() {
-        // A temp file with no code signature must be rejected by codesign -v.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-unsigned-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::write(&path, b"not a signed binary").unwrap();
-        let result = verify_external_binary(&path);
-        let _ = std::fs::remove_file(&path);
-        assert!(
-            result.is_err(),
-            "unsigned file should fail code signature verification"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_os = "macos"))]
-    fn verify_external_binary_rejects_non_root_owned() {
-        // On Linux, a non-root-owned binary in /tmp must be rejected.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-binary-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::write(&path, b"fake binary").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let result = verify_external_binary(&path);
-        let _ = std::fs::remove_file(&path);
-        assert!(result.is_err(), "non-root-owned binary should be rejected");
-    }
-
-    #[test]
     fn is_ident_rules() {
         assert!(is_ident("DATABASE_URL") && is_ident("_x9"));
         assert!(!is_ident("9x") && !is_ident("a-b") && !is_ident("") && !is_ident("a b"));
-    }
-
-    #[test]
-    fn is_key_var_name_rules() {
-        // audit 2026-08-02 A16: only `PREFIX` or `PREFIX_<suffix>` match;
-        // prefix-substring collisions are rejected.
-        let p = "DOTENV_PRIVATE_KEY";
-        assert!(is_key_var_name(p, "DOTENV_PRIVATE_KEY"));
-        assert!(is_key_var_name(p, "DOTENV_PRIVATE_KEY_PRODUCTION"));
-        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KEYFOO"));
-        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KEY_")); // empty suffix
-        assert!(!is_key_var_name(p, "DOTENV_PRIVATE_KE"));
-        assert!(!is_key_var_name(p, "XDOTENV_PRIVATE_KEY"));
     }
 
     #[test]
@@ -839,64 +556,5 @@ pub mod tests {
         assert!(out.resolved.is_empty());
         assert_eq!(out.failed.len(), 1);
         assert_eq!(out.failed[0].0, "A");
-    }
-
-    #[test]
-    fn from_env_loads_and_fails_closed() {
-        // from_env reads ALL DOTENV_PRIVATE_KEY* vars from the process
-        // environment and delegates to from_pairs. This is a single test
-        // (not two) because env mutation is global and tests run in
-        // parallel — two tests mutating DOTENV_PRIVATE_KEY* simultaneously
-        // would race. Using a unique suffix to avoid collision with any
-        // ambient vars in the test runner.
-        let var_name = "DOTENV_PRIVATE_KEY_TESTFROMENV";
-        let key_hex = "aa".repeat(32);
-
-        // Positive path: set a valid key, from_env succeeds.
-        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). This test does not spawn threads and the var name
-        // is unique, so no concurrent test mutates the same var.
-        unsafe {
-            std::env::set_var(var_name, &key_hex);
-        }
-        let ring = KeyRing::from_env(KeyNaming::Env);
-        unsafe {
-            std::env::remove_var(var_name);
-        }
-        let ring = ring.expect("from_env should succeed with a valid key set");
-        let candidates = ring
-            .0
-            .get(var_name)
-            .expect("ring should contain the key we set");
-        assert_eq!(candidates.len(), 1, "exactly one candidate expected");
-        assert_eq!(&candidates[0][..], &[0xaa; 32]);
-
-        // Negative path: set an invalid hex value, from_env fails closed
-        // with an "environment:" prefixed error.
-        unsafe {
-            std::env::set_var(var_name, "not-valid-hex-at-all");
-        }
-        let err = KeyRing::from_env(KeyNaming::Env);
-        unsafe {
-            std::env::remove_var(var_name);
-        }
-        let err = err.expect_err("from_env should fail on invalid hex");
-        assert!(
-            err.starts_with("environment:"),
-            "expected 'environment:' prefix, got: {err}"
-        );
-
-        // Also verify the from_pairs empty-error path directly: no
-        // DOTENV_PRIVATE_KEY* entries at all should be an error.
-        assert!(
-            KeyRing::from_pairs(
-                [(
-                    "NOT_A_DOTENV_KEY".to_string(),
-                    Zeroizing::new("x".to_string())
-                )],
-                KeyNaming::Env,
-            )
-            .is_err()
-        );
     }
 }

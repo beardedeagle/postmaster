@@ -2,7 +2,7 @@
 
 All postmaster commands, flags, and exit codes. The CLI is hand-rolled
 with no external parsing library — every flag below is the complete
-set, directly from the argument parser in `config.rs`.
+set, directly from the argument parser in `cli/mod.rs`.
 
 ## Synopsis
 

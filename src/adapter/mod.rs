@@ -11,6 +11,8 @@
 //! every adapter at compile time — adding a variant is a deliberate act
 //! that forces all code paths to acknowledge it.
 
+pub mod bundle;
+
 use std::path::Path;
 
 /// The key-naming convention for a secret input adapter.

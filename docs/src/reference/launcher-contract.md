@@ -49,7 +49,7 @@ binding to emit `exec.json`; it is not privileged over any other binding.
 described by this document and passes the conformance suite.**
 Nothing here documents intent or a roadmap; every claim below is true
 of the committed parser and launcher (`src/exec_config.rs`,
-`src/launcher.rs`, `src/keys.rs`) as of this writing.
+`src/launcher.rs`, `src/keys/mod.rs`) as of this writing.
 
 ### Config to launch flow
 
@@ -214,7 +214,7 @@ decryption happens in that mode; see below.
 
 ## Precedence contract
 
-This is the contract `resolve_all` (`src/keys.rs`) implements,
+This is the contract `resolve_all` (`src/keys/mod.rs`) implements,
 verbatim:
 
 - **Within one file, the last assignment wins** — ordinary dotenv
@@ -267,7 +267,7 @@ ASCII whitespace (spaces, tabs, newlines, carriage returns). If any is
 present, it is stripped before decoding, so a value that has been
 line-wrapped decodes identically to the same value on one line. This
 matches the wire-compatible behavior for line-wrapped encrypted values and
-is exercised directly in `tests/exec_conformance.rs`
+is exercised directly in `tests/exec_conformance/main.rs`
 (`wrapped_base64_ciphertext_decrypts`).
 
 `key_var_for` maps an env-file name to the private-key variable it needs:
@@ -420,7 +420,7 @@ with external secret-management tooling that materializes a
 
 ## Conformance
 
-`tests/exec_conformance.rs` is the executable form of this document:
+`tests/exec_conformance/main.rs` is the executable form of this document:
 metacharacter-laden values stay inert across all three modes,
 process-env-wins-without-overload and overload-reverses-it, rotation with
 a bogus first key, strict failure refuses to exec, `0600` pointer files
