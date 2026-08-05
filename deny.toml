@@ -45,3 +45,17 @@ ignore = true
 # sanctioned git source; drop this entry together with the patch section
 # once the upstream PR ships in a crates.io release.
 allow-git = ["https://github.com/beardedeagle/rs.git"]
+
+[bans]
+# Warn on duplicate crate versions — companion to clippy's
+# multiple_crate_versions (crate-level; allowed at the crate root for
+# exactly the case skipped below, since that lint has no per-package
+# scoping). New duplicates should fail review, not land quietly.
+multiple-versions = "warn"
+
+# syn 2 + syn 3 coexist ONLY because wasm-bindgen (target-gated to
+# wasm32-unknown-unknown inside the ecies dep, never compiled for
+# postmaster's real targets) pins syn 2 while serde_derive uses syn 3 —
+# uncontrollable until upstream wasm-bindgen moves. Remove this skip, and
+# the crate-root allow in src/lib.rs, when the tree converges.
+skip = [{ name = "syn" }]

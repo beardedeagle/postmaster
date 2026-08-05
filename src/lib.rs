@@ -6,6 +6,15 @@
 //!
 //! Security and fail-closed semantics are preserved exactly.
 
+// `multiple_crate_versions` is warn-level in Cargo.toml; allowed here for
+// exactly one uncontrollable case: syn 2 + syn 3 coexist only because
+// wasm-bindgen (target-gated to wasm32-unknown-unknown inside the ecies
+// dependency, never compiled for postmaster's real targets) pins syn 2
+// while serde_derive uses syn 3. cargo-deny `[bans].multiple-versions`
+// (warn, with syn skipped) keeps watch for the tree converging and for any
+// NEW duplicates — remove this allow when syn 2 leaves the tree.
+#![allow(clippy::multiple_crate_versions)]
+
 pub mod adapter;
 pub mod cli;
 pub mod exec_config;
