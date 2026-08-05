@@ -203,7 +203,7 @@ The implementation ships with conformance vectors for:
 - unknown version
 - tampered authenticated metadata
 - wrong local private key
-- replayed ciphertext under a different entry name or profile
+- replayed ciphertext under a different entry name
 
 ## Key sources
 

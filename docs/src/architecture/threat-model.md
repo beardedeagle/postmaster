@@ -461,13 +461,13 @@ as the ramdisk.
 
 ### fd closure before execvp — Mitigated
 
-`OFlags::CLOEXEC` is set on all `rustix::fs::open` calls (5 sites) —
-the kernel automatically closes these on execvp, preventing the child
-from inheriting postmaster's open file descriptors. Third-party code
-(e.g., dotenvy) may open fds without `CLOEXEC`; a `pre_exec` hook to
-close those was considered but not implemented because it requires
-unsafe code or a new cross-platform dependency. Postmaster's own fds
-are fully covered.
+`OFlags::CLOEXEC` is set on every file descriptor postmaster opens (all
+`rustix::fs::open`/`openat` sites) — the kernel automatically closes
+these on execvp, preventing the child from inheriting postmaster's open
+file descriptors. Third-party parsers never open their own fds in
+postmaster's paths: dotenvy is only invoked as `dotenvy::from_read_iter`
+on fds postmaster itself opened (`O_NOFOLLOW | CLOEXEC`). Postmaster's
+own fds are fully covered.
 
 ### Secrets directory path exposure — Mitigated
 

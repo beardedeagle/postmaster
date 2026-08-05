@@ -460,8 +460,10 @@ pub fn setup(
 /// `postmaster cleanup`: remove all secret files from the secrets_dir
 /// configured in the exec config. Intended for `ExecStopPost` in systemd
 /// or equivalent lifecycle hooks. Does not decrypt — only removes files
-/// that postmaster would have written. Safe to run even if the directory
-/// is empty or does not exist.
+/// that postmaster would have written. Bulk removal is guarded by the
+/// `.postmaster-managed` sentinel: a non-empty directory lacking it is
+/// refused (postmaster only bulk-deletes directories it manages). Safe
+/// to run even if the directory is empty or does not exist.
 pub fn cleanup(config_path: &Path) -> Result<(), String> {
     let cfg = crate::launcher::parse_exec_config(config_path)?;
     let dir = cfg

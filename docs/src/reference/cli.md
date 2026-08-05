@@ -114,6 +114,12 @@ $ postmaster cleanup --config <exec.json>
 | --- | --- |
 | `--config <path>` | Path to `exec.json` (reads `secrets_dir` from config) |
 
+Safety guard: cleanup refuses to bulk-delete a **non-empty** directory
+that lacks the `.postmaster-managed` sentinel file (dropped by postmaster
+when it writes there) — a misconfigured `secrets_dir` can never wipe a
+directory postmaster doesn't manage. Empty or missing directories are
+fine.
+
 Wired to `ExecStopPost` in systemd by the Nix module. On macOS, the
 ramdisk destruction handles cleanup automatically when the launchd job
 stops.

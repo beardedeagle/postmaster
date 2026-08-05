@@ -101,7 +101,7 @@ fetches from remote systems:
 - **Files** — a `.env.keys`-format file on local disk (not in the Nix
   store)
 - **macOS Keychain** — key material stored as generic-password items,
-  read natively by postmaster via `security(1)`
+  read natively by postmaster via the Security.framework API
 - **Environment** — `DOTENV_PRIVATE_KEY*` variables in the process
   environment (set by the service manager)
 

@@ -83,7 +83,7 @@ pub fn verify_ramdisk(mount_point: &Path, secrets_dir: &Path) -> Result<(), Stri
     // Trust boundary (audit 2026-08-02 O2): a compromised /sbin/mount or
     // hdiutil could report persistent disk as the RAM-backed postmaster
     // ramdisk and let plaintext land on persistent storage. Verify both
-    // helpers before invoking, same as /usr/bin/security.
+    // helpers before invoking.
     crate::keys::verify_external_binary(Path::new("/sbin/mount"))?;
     crate::keys::verify_external_binary(Path::new("/usr/bin/hdiutil"))?;
     let out = std::process::Command::new("/sbin/mount")

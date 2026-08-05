@@ -102,7 +102,9 @@ pub enum Invocation {
     /// from the secrets_dir configured in the exec config. Intended for
     /// `ExecStopPost` in systemd or equivalent lifecycle hooks in other
     /// service managers. Does not decrypt — only removes files that
-    /// postmaster would have written.
+    /// postmaster would have written. Bulk removal is refused for a
+    /// non-empty directory lacking the `.postmaster-managed` sentinel
+    /// (audit 2026-08-02 A19).
     Cleanup {
         /// Path to the exec config JSON.
         config: PathBuf,
@@ -195,6 +197,8 @@ Reads the exec config, extracts secrets_dir, and removes all regular files\n\
 in that directory. Intended for ExecStopPost in systemd or equivalent\n\
 lifecycle hooks in other service managers.\n\n\
 Does not decrypt — only removes files that postmaster would have written.\n\
+Safety guard: a NON-EMPTY directory without a .postmaster-managed sentinel\n\
+file is left untouched (postmaster only bulk-deletes directories it manages).\n\
 Safe to run even if the directory is already empty or does not exist.\n\n\
 OPTIONS:\n  \
 --config <path>  Exec config JSON (required)\n";

@@ -180,7 +180,7 @@ How key material reaches postmaster at runtime.
 - **Files** — a `.env.keys`-format file on local disk (not in the
   Nix store)
 - **macOS Keychain** — key material stored as generic-password items,
-  read natively by postmaster via `security(1)`
+  read natively by postmaster via the Security.framework API
 - **Environment** — `DOTENV_PRIVATE_KEY*` variables in the process
   environment (set by the service manager)
 
@@ -243,7 +243,7 @@ and per-mode injection rules are the cross-binding contract at
 
 ## Dependency policy
 
-Postmaster has 8 dependencies:
+Postmaster has 10 direct dependencies (8 portable, 2 macOS-only):
 
 - `ecies` — crypto (secp256k1 + AES-256-GCM)
 - `dotenvy` — `.env` file parser
@@ -252,7 +252,11 @@ Postmaster has 8 dependencies:
 - `hex` — key parsing
 - `rustix` — syscalls (no libc FFI on Linux)
 - `libc` — macOS only (for `getpeereid` and `PT_DENY_ATTACH`)
+- `security-framework` — macOS only (Security.framework keychain reads)
 - `zeroize` — secret memory wiping
+
+(`ecies` is currently a git+rev pin of the author's fork via
+`[patch.crates-io]`, pending upstream PR ecies/rs#159.)
 
 No CLI parsing library (clap, etc.). No async runtime. No OpenSSL.
 No network client. No plugin system. The dependency set is

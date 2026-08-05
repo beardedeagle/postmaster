@@ -272,9 +272,10 @@ is exercised directly in `tests/exec_conformance.rs`
 
 `key_var_for` maps an env-file name to the private-key variable it needs:
 `.env` → `DOTENV_PRIVATE_KEY`; `.env.production` →
-`DOTENV_PRIVATE_KEY_PRODUCTION`; non-alphanumeric characters in the
-environment suffix become `_` and the whole suffix is upper-cased. A file
-name that doesn't start with `.env` is a hard parse error.
+`DOTENV_PRIVATE_KEY_PRODUCTION`. The environment suffix must be non-empty
+and contain only `[A-Za-z0-9_]` after upper-casing — anything else is a
+hard parse error (no lossy mapping: `.env..x` and `.env._x` must never
+alias). A file name that doesn't start with `.env` is a hard parse error.
 
 ## Per-mode injected variables
 
