@@ -457,13 +457,16 @@ the launcher checks `sigpending` and, if a termination signal arrived
 during the window, removes the plaintext and dies by that signal
 (audit 2026-08-02 A11).
 
-*Accepted residual:* a termination signal arriving between that final
-pending check and the mask restore/exec is delivered at restore —
-before `execvp` and before cleanup — stranding the just-written
-plaintext. The window is microseconds and irreducible below a
-fork+exec or handler+flag design (both rejected: more unsafe surface
-and complexity than the window justifies); the worst case is bounded
-because the ramdisk is destroyed when the launchd job stops.
+*Race closed (2026-08-05):* the pending-check/exec handoff was
+previously an accepted residual here. The guard now installs a
+flag-recording handler while the signals are still blocked, then
+restores the mask — any signal pending from the window is delivered to
+the handler, never to the default disposition — so death-before-exec
+always runs cleanup first. The one remaining sliver is
+supervision-semantics, not plaintext exposure: a signal arriving after
+the final flag check but before `execvp` is recorded but unexamined,
+so the launch proceeds and the service manager's escalation (SIGKILL)
+performs the stop.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 

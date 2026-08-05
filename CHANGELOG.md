@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `encrypt_with_aad`/`decrypt_with_aad` on the ecies fork (upstream PR
   ecies/rs#159), consumed via a git+rev `[patch.crates-io]` pin.
 - Hardening: macOS termination-signal deferral across the plaintext-write
-  window; logged hardening failures; fd-pinned secret-file writes and
+  window, with a flag-handler handoff closing the check/exec race (no
+  death before exec without cleanup); logged hardening failures; fd-pinned secret-file writes and
   fd-relative prune/cleanup; `O_NOFOLLOW` ciphertext opens;
   sentinel-guarded bulk cleanup (`.postmaster-managed`); keychain reads
   via the Security.framework API (no `/usr/bin/security`); `--verify-keys`

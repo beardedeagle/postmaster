@@ -22,19 +22,36 @@ use crate::secret_files::{
     Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale, write_secret_file,
 };
 use crate::server::{fetch_bytes, log, read_capped};
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicI32, Ordering};
 
 /// macOS-only guard deferring termination signals across the window where
 /// plaintext secret files exist on the ramdisk (audit 2026-08-02 A11).
 /// The ramdisk persists across process death, so a signal landing
 /// mid-write would otherwise strand partial plaintext. Signals are
-/// *blocked*, not handled — nothing runs in async-signal context; the
-/// pending set is checked synchronously before execvp, and the mask is
-/// always restored before exec (a child must never inherit blocked
-/// termination signals).
+/// *blocked* across the window; before execvp the guard is disarmed by
+/// installing a flag-recording handler (while still blocked) and then
+/// restoring the saved mask — anything pending from the window is
+/// delivered to that handler, never to the default disposition, so no
+/// termination signal can kill the launcher without cleanup running
+/// first. The handler's body is a single atomic store (the canonical
+/// async-signal-safe operation).
 ///
 /// Linux needs no equivalent: tmpfs does not persist across reboots,
 /// systemd's `ExecStopPost` runs `postmaster cleanup`, and the next
 /// launch's `prune_stale` removes residuals — documented decision per A11.
+#[cfg(target_os = "macos")]
+static PENDING_SIG: AtomicI32 = AtomicI32::new(0);
+
+/// Records a deferred termination signal for the launcher's
+/// check-before-exec. This MUST remain a pure atomic store: no logging,
+/// no allocation, no locking — anything more is unsound in async-signal
+/// context.
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn record_sig(sig: libc::c_int) {
+    PENDING_SIG.store(sig, Ordering::Relaxed);
+}
+
 #[cfg(target_os = "macos")]
 struct TerminationGuard {
     old: libc::sigset_t,
@@ -60,7 +77,49 @@ impl TerminationGuard {
         }
     }
 
-    /// First deferred termination signal currently pending, if any.
+    /// Disarm the guard at the end of the write window: install
+    /// `record_sig` for the deferred signals while they are still blocked
+    /// (so nothing can be delivered mid-install), then restore the saved
+    /// mask. Pending termination signals are delivered to the handler and
+    /// recorded — never to the default disposition — and the first one
+    /// observed is returned. `None` means no termination signal arrived
+    /// across the entire window; the mask is restored either way, and
+    /// caught-signal dispositions reset to default at execvp, so the
+    /// child starts with a clean signal state.
+    fn disarm(&self) -> Option<i32> {
+        let mut ok = true;
+        unsafe {
+            // SAFETY: zeroed sigaction is a valid starting representation;
+            // sa_mask is made a valid empty set; the handler pointer is a
+            // valid function with the C signal-handler ABI.
+            let mut act: libc::sigaction = std::mem::zeroed();
+            libc::sigemptyset(&mut act.sa_mask);
+            act.sa_sigaction = record_sig as *const () as usize;
+            for sig in Self::SIGNALS {
+                if libc::sigaction(sig, &act, std::ptr::null_mut()) != 0 {
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            // Defensive: sigaction(2) cannot realistically fail for these
+            // four signals (EINVAL covers SIGKILL/SIGSTOP/invalid, none of
+            // which we touch) — but if it ever does, fall back to the
+            // pre-handler pending check rather than silently weaken the
+            // guard. The residual race that disarm() exists to close then
+            // applies to this launch (see the threat model).
+            log("termination-guard: sigaction failed; falling back to pending-check");
+            let sig = self.pending();
+            self.restore_mask();
+            return sig;
+        }
+        self.restore_mask();
+        let sig = PENDING_SIG.load(Ordering::Relaxed);
+        (sig != 0).then_some(sig)
+    }
+
+    /// First deferred termination signal pending right now, if any.
+    /// Fallback path for `disarm` when the handler cannot be installed.
     fn pending(&self) -> Option<i32> {
         unsafe {
             // SAFETY: zeroed sigset_t is valid; sigpending fills it.
@@ -77,10 +136,13 @@ impl TerminationGuard {
         }
     }
 
-    /// Restore the saved signal mask. MUST be called before execvp —
-    /// the child must not inherit blocked termination signals.
-    fn restore(self) {
-        // Consuming self runs Drop, which does the restore.
+    /// Restore the saved signal mask. Always called before execvp — the
+    /// child must not inherit blocked termination signals.
+    fn restore_mask(&self) {
+        unsafe {
+            // SAFETY: restoring a previously saved valid mask.
+            libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
+        }
     }
 
     /// Restore the mask, reset the signal to its default disposition, and
@@ -102,10 +164,7 @@ impl TerminationGuard {
 #[cfg(target_os = "macos")]
 impl Drop for TerminationGuard {
     fn drop(&mut self) {
-        unsafe {
-            // SAFETY: restoring a previously saved valid mask.
-            libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
-        }
+        self.restore_mask();
     }
 }
 
@@ -119,15 +178,14 @@ impl TerminationGuard {
         Self
     }
 
-    fn pending(&self) -> Option<i32> {
+    /// No persistence window exists on non-macOS platforms (see above):
+    /// always clear.
+    fn disarm(&self) -> Option<i32> {
         None
     }
 
-    /// No-op (nothing was blocked).
-    fn restore(self) {}
-
     fn die_by(&self, _sig: i32) -> ! {
-        // Unreachable: pending() is always None here.
+        // Unreachable: disarm() is always None here.
         std::process::abort()
     }
 }
@@ -433,15 +491,15 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
 
     // A termination signal arrived during the write window: remove the
     // plaintext, then die by that signal as the sender intended (A11).
-    if let Some(sig) = sig_guard.pending() {
+    if let Some(sig) = sig_guard.disarm() {
         if let Some(dir_fd) = &secrets_dir_fd {
             cleanup_written(dir_fd, &written);
         }
         sig_guard.die_by(sig);
     }
-    // Restore the signal mask before execvp — the child must not inherit
-    // blocked termination signals.
-    sig_guard.restore();
+    // disarm() already restored the pre-guard signal mask, and
+    // caught-signal dispositions reset to default at execvp — the child
+    // starts with a clean signal state.
     let err = std::process::Command::new(program)
         .args(&argv[1..])
         .envs(extra)
@@ -461,6 +519,28 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
+
+    /// The disarm handoff must convert a signal raised during the blocked
+    /// window into a recorded flag instead of process death — the whole
+    /// point of the flag-handler design (A11 race closure).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn disarm_records_signal_raised_during_the_window() {
+        PENDING_SIG.store(0, Ordering::Relaxed);
+        let guard = TerminationGuard::block();
+        // Sent while blocked: pends. At disarm it is delivered to the
+        // recording handler, not the default disposition — so this test
+        // process keeps running.
+        unsafe {
+            libc::raise(libc::SIGTERM);
+        }
+        assert_eq!(guard.disarm(), Some(libc::SIGTERM));
+        // Leave the process as we found it.
+        PENDING_SIG.store(0, Ordering::Relaxed);
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        }
+    }
 
     #[test]
     fn validate_credential_keys_accepts_identifiers() {

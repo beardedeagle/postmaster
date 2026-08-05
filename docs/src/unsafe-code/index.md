@@ -21,7 +21,7 @@ Every `unsafe` block requires:
 
 | Location | Platform | Purpose | Page |
 |----------|----------|---------|------|
-| `launcher.rs` (TerminationGuard: block/pending/die_by/Drop) | macOS | Defer termination signals across the plaintext-write window | [signal-deferral](./signal-deferral.md) |
+| `launcher.rs` (TerminationGuard: block/disarm (sigaction flag handler)/die_by/Drop) | macOS | Defer termination signals across the plaintext-write window, then hand off without a check/exec race | [signal-deferral](./signal-deferral.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |
