@@ -34,19 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        shell: bash
-        run: |
-          if ! command -v nix >/dev/null 2>&1; then
-            curl -sSf -L https://nixos.org/nix/install | sh -s -- install --no-confirm
-          fi
-
-      - name: Enable nix-command and flakes
-        shell: bash
-        run: |
-          mkdir -p "$HOME/.config/nix"
-          if ! grep -q 'experimental-features' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
-            echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
-          fi
+        uses: ./.github/actions/setup-nix
 
       - name: Install just
         uses: ./.github/actions/setup-rust

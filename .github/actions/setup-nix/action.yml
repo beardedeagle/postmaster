@@ -1,0 +1,55 @@
+name: Setup Nix
+description: >-
+  Install Nix via the official installer, integrity-verified against a
+  pinned sha256 before execution, enable flakes, and put nix on PATH for
+  later steps. In-repo composite: no third-party actions, no unverified
+  remote code.
+
+inputs:
+  installer-version:
+    description: Nix release version to install.
+    required: false
+    default: "2.34.7"
+  installer-sha256:
+    description: sha256 of the official install script for installer-version.
+    required: false
+    default: "e9d447ce3d2ff62d7ff9cb6ef401de6fa8acb148839dd00f7271945d7b638b14"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix (integrity-verified)
+      shell: bash
+      env:
+        NIX_VERSION: ${{ inputs.installer-version }}
+        INSTALLER_SHA256: ${{ inputs.installer-sha256 }}
+      run: |
+        set -euo pipefail
+        if command -v nix >/dev/null 2>&1; then
+          echo "nix already available: $(command -v nix) -> $(nix --version)"
+        else
+          url="https://releases.nixos.org/nix/nix-${NIX_VERSION}/install"
+          tmp="$(mktemp -t nix-install)"
+          # Verify the pinned digest BEFORE executing: a substituted or
+          # corrupted installer fails closed here, never runs.
+          curl -sSfL "$url" -o "$tmp"
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${INSTALLER_SHA256}  ${tmp}" | sha256sum -c -
+          else
+            echo "${INSTALLER_SHA256}  ${tmp}" | shasum -a 256 -c -
+          fi
+          sh "$tmp" install --no-confirm
+        fi
+        # The installer does not put nix on PATH for subsequent GHA steps.
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+          echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+        fi
+
+    - name: Enable nix-command and flakes
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.config/nix"
+        if ! grep -q 'experimental-features' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+          echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+        fi

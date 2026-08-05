@@ -31,6 +31,10 @@ test:
 flake-check:
     nix flake check
 
+# Eval-only flake check across all supported systems (no builds)
+flake-check-eval-all:
+    nix flake check --all-systems --no-build
+
 # =============================================================================
 # Docs
 # =============================================================================
