@@ -13,12 +13,16 @@ repository = "https://github.com/beardedeagle/postmaster"
 
 # We use a fairly strict set of lints. One deliberate deviation: we allow
 # `unsafe_code` (some stricter projects deny it outright). postmaster is a
-# syscall-level socket-activation daemon and needs a handful of justified
-# `unsafe` blocks (getpeereid(2), best-effort mlock()-style hardening,
-# signal-mask deferral around the plaintext-write window, and
-# UnixListener::from_raw_fd on the one inherited systemd fd) — each site
-# carries a SAFETY comment, so `unsafe_code` is left at rustc's
-# default (allow) rather than denied or blanket-warned.
+# syscall-boundary daemon and needs a handful of justified `unsafe` blocks:
+# getpeereid(2) and PT_DENY_ATTACH on macOS (Darwin's stable kernel ABI is
+# libc), signal-mask deferral around the plaintext-write window (macOS),
+# UnixListener::from_raw_fd on the inherited systemd sockets (Linux), and
+# test-only set_var/remove_var (unsafe on edition 2024). Each site carries
+# a SAFETY comment and is documented in docs/src/unsafe-code/ (the mdbook
+# "Unsafe Code" section). mlockall/setrlimit/set_dumpable hardening uses
+# SAFE rustix wrappers and is not part of the unsafe inventory. So
+# `unsafe_code` stays at rustc's default (allow) rather than denied or
+# blanket-warned.
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
 rust_2018_idioms = { level = "warn", priority = -1 }
