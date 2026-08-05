@@ -155,7 +155,19 @@ pub fn resolve_bundle(
             }
         }
         match decrypted {
-            Some(pt) => out.push((name.clone(), pt, entry.encoding)),
+            Some(pt) => {
+                // `utf8` is a promise the bundle makes to env-mode
+                // consumers: validate it at the trust boundary and fail
+                // closed — invalid bytes must never flow into an
+                // environment value. `bytes` entries stay byte-exact.
+                if entry.encoding == Encoding::Utf8 && std::str::from_utf8(&pt).is_err() {
+                    return Err(format!(
+                        "{}: {name} declares utf8 but is not valid UTF-8",
+                        bundle_path.display()
+                    ));
+                }
+                out.push((name.clone(), pt, entry.encoding));
+            }
             None => {
                 let _ = ciphertext; // zeroize on drop
                 // No candidate count in the error text (audit 2026-08-02 A15).
@@ -350,6 +362,28 @@ mod tests {
         let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
         assert_eq!(&resolved[0].1[..], binary_val);
         assert_eq!(resolved[0].2, Encoding::Bytes);
+    }
+
+    #[test]
+    fn resolve_bundle_rejects_invalid_utf8_when_declared_utf8() {
+        // An entry declaring `encoding: "utf8"` whose plaintext is not
+        // valid UTF-8 must fail closed; the same plaintext under
+        // `encoding: "bytes"` stays byte-exact.
+        let invalid = b"\xff\xfe";
+        let pk = hex::decode(test_pk_hex()).unwrap();
+        let ct = BASE64.encode(ecies::encrypt_with_aad(&pk, invalid, b"GREETING").unwrap());
+        let ring = crate::keys::tests::make_test_ring();
+
+        let bundle = make_bundle(vec![("GREETING", &ct, Encoding::Utf8)]);
+        let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
+        assert!(
+            err.contains("GREETING declares utf8 but is not valid UTF-8"),
+            "{err}"
+        );
+
+        let bundle = make_bundle(vec![("GREETING", &ct, Encoding::Bytes)]);
+        let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
+        assert_eq!(&resolved[0].1[..], &invalid[..]);
     }
 
     #[test]

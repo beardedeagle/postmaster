@@ -8,7 +8,7 @@ use crate::adapter::KeyNaming;
 /// True for exactly `PREFIX` or `PREFIX_<nonempty suffix>`. A bare
 /// prefix match would slurp unrelated variables like
 /// `DOTENV_PRIVATE_KEYFOO` as key material (audit 2026-08-02 A16).
-fn is_key_var_name(prefix: &str, name: &str) -> bool {
+pub(crate) fn is_key_var_name(prefix: &str, name: &str) -> bool {
     name == prefix
         || name
             .strip_prefix(prefix)

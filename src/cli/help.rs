@@ -37,10 +37,12 @@ as files / credential pointers depending on mode), and execs the command.\n\n\
 OPTIONS:\n  \
 --config <path>  Exec config JSON (required)\n  \
 --check          Validate config shape only, no decryption, no exec\n  \
---verify-keys    Preflight: test-decrypt one value per env file before exec\n  \
+--verify-keys    Preflight: fail unless EVERY value in every env file decrypts;\n                  \
+under `strict:false` any skipped/undecryptable value also aborts\n                  \
+the launch (fail-closed)\n  \
 -- <command>     Everything after `--` is the child argv (required unless --check)\n\n\
 The config must specify mode (env/files/credentials), key sources, and\n\
-artifact paths. See docs/src/launcher-contract.md for the full contract.\n";
+artifact paths. See docs/src/reference/launcher-contract.md for the full contract.\n";
 
 /// Help text for the `fetch` subcommand.
 pub const HELP_FETCH: &str = "postmaster fetch — fetch a secret from a daemon socket\n\n\

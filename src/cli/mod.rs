@@ -37,7 +37,9 @@ pub enum KeysSource {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-/// A single credential mapping served by postmaster.
+#[serde(deny_unknown_fields)]
+/// A single credential mapping served by postmaster. Unknown fields are
+/// rejected (audit 2026-08-02 A21) — same strictness as `Config`.
 pub struct Entry {
     /// encrypted env file (a Nix store path; ciphertext is public).
     pub env_file: PathBuf,
@@ -78,10 +80,11 @@ pub enum Invocation {
         config: PathBuf,
         /// Validate config shape only — no decryption, no exec.
         check: bool,
-        /// Preflight: attempt a test decryption of one encrypted value
-        /// from each env file before proceeding to exec. Catches stale
-        /// keys from a previous rotation cycle that are valid hex but
-        /// no longer match the ciphertext (audit finding #4).
+        /// Preflight: fail unless EVERY value in every env file
+        /// decrypts. Catches stale keys from a previous rotation cycle
+        /// that are valid hex but no longer match the ciphertext (audit
+        /// finding #4); under `strict: false` any skipped/undecryptable
+        /// value also aborts the launch (fail-closed).
         verify_keys: bool,
         /// Child argv — everything after `--` on the command line.
         argv: Vec<String>,
@@ -434,6 +437,30 @@ mod tests {
     #[test]
     fn parse_no_args_fails() {
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn config_rejects_unknown_fields_in_nested_entry() {
+        // audit 2026-08-02 A21: the nested credential Entry is as strict
+        // as the top-level Config — an unknown field is a binding bug,
+        // not something to silently ignore.
+        let raw = serde_json::json!({
+            "keys": {"file": "/run/postmaster/.env.keys"},
+            "credentials": {
+                "/run/cred.sock": {"env_file": "/nix/store/x/.env", "key": "DB_URL", "bogus": 1}
+            }
+        });
+        let err = serde_json::from_value::<Config>(raw).unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
+
+        // A well-formed config still parses.
+        let raw = serde_json::json!({
+            "keys": {"credential": "postmaster-keys"},
+            "credentials": {
+                "/run/cred.sock": {"env_file": "/nix/store/x/.env", "key": "DB_URL", "peer_user": "_www"}
+            }
+        });
+        serde_json::from_value::<Config>(raw).unwrap();
     }
 
     #[test]

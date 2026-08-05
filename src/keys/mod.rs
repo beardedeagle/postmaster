@@ -28,6 +28,11 @@ mod verify;
 /// Re-exported so `crate::keys::verify_external_binary` keeps resolving.
 pub use verify::verify_external_binary;
 
+/// The exact predicate `KeyRing::from_env` admits, re-exported so setup
+/// verification accepts precisely the variables resolution would load
+/// (audit 2026-08-02 A16).
+pub(crate) use env::is_key_var_name;
+
 /// Full variable name (adapter-specific, e.g. DOTENV_PRIVATE_KEY[_<ENV>])
 /// → candidate secret keys. Multiple candidates per name come from
 /// comma-separated rotation convention; decryption tries each in order.

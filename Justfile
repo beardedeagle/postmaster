@@ -51,8 +51,8 @@ docs-serve:
     #!/usr/bin/env bash
     set -euo pipefail
     cp CHANGELOG.md docs/src/changelog.md
-    cd docs && mdbook serve --open
-    rm -f docs/src/changelog.md
+    trap 'rm -f docs/src/changelog.md' EXIT
+    (cd docs && mdbook serve --open)
 
 # =============================================================================
 # Dependency policy
@@ -152,9 +152,17 @@ build-matrix level target="native":
             export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
             export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
             export CARGO_PROFILE_RELEASE_STRIP=symbols
-            # Use native CPU for ARM, x86-64-v3 for x86 targets
-            if [[ "$TARGET" == "macos-arm" ]] || [[ "$TARGET" == "linux-arm" ]] || [[ "$TARGET" == "native" && "$(uname -m)" == "arm64" ]]; then
-                export RUSTFLAGS="-C target-cpu=native"
+            # CPU targeting: `native` describes the build HOST, so only apply
+            # it when the target IS the host. Explicit ARM targets get no
+            # target-cpu override (toolchain baseline); x86 targets use
+            # x86-64-v3.
+            if [[ "$TARGET" == "native" ]]; then
+                case "$(uname -m)" in
+                    arm64|aarch64) export RUSTFLAGS="-C target-cpu=native" ;;
+                    *)             export RUSTFLAGS="-C target-cpu=x86-64-v3" ;;
+                esac
+            elif [[ "$TARGET" == "linux-arm" || "$TARGET" == "macos-arm" ]]; then
+                : # cross-building: no target-cpu override, use toolchain baseline
             else
                 export RUSTFLAGS="-C target-cpu=x86-64-v3"
             fi
@@ -175,19 +183,16 @@ build-matrix level target="native":
 
 # Build all platforms at a given optimization level (requires cross-compilation setup)
 build-all level="release":
-    @echo "Building all platforms at '{{level}}' optimization level..."
-    @echo "Note: Cross-compilation requires 'cross' tool or appropriate toolchains"
-    @echo ""
-    just build-matrix {{level}} native
-    @echo ""
-    @echo "For cross-compilation to other platforms, install targets with:"
-    @echo "  rustup target add x86_64-unknown-linux-gnu"
-    @echo "  rustup target add x86_64-unknown-linux-musl"
-    @echo "  rustup target add aarch64-unknown-linux-gnu"
-    @echo "  rustup target add x86_64-apple-darwin"
-    @echo "  rustup target add aarch64-apple-darwin"
-    @echo ""
-    @echo "Or use 'cross' for easier cross-compilation: cargo install cross"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Building all platforms at '{{level}}' optimization level..."
+    echo "Note: cross targets need their toolchains installed first"
+    echo "      (e.g. 'rustup target add <triple>'); a missing toolchain fails loudly."
+    for target in native linux linux-musl linux-arm macos macos-arm; do
+        echo ""
+        echo "=== Building target: $target ==="
+        just build-matrix {{level}} "$target"
+    done
 
 # Show build matrix help
 build-help:

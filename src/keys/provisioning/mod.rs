@@ -375,8 +375,15 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 checked += 1;
                 let env_prefix = KeyNaming::Env.key_prefix();
                 let bundle_prefix = KeyNaming::Bundle.key_prefix();
-                let has_key = std::env::vars()
-                    .any(|(k, _)| k.starts_with(env_prefix) || k.starts_with(bundle_prefix));
+                // The SAME predicate KeyRing::from_env applies (audit
+                // 2026-08-02 A16): a bare starts_with would count a
+                // prefix-substring collision like DOTENV_PRIVATE_KEYFOO
+                // as key material that from_env then refuses to load —
+                // verification must not pass what resolution rejects.
+                let has_key = std::env::vars().any(|(k, _)| {
+                    crate::keys::is_key_var_name(env_prefix, &k)
+                        || crate::keys::is_key_var_name(bundle_prefix, &k)
+                });
                 if !has_key {
                     return Err(format!(
                         "environment: no {env_prefix}* or {bundle_prefix}* variables set"
@@ -395,4 +402,66 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
         "setup: {found}/{checked} key source(s) verified — environment ready"
     ));
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Serializes tests that mutate process-global env vars (same
+    /// pattern as `keys::source::tests::ENV_LOCK`): the test harness
+    /// runs tests in parallel threads of one process.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_only_cfg() -> ExecConfig {
+        serde_json::from_str(r#"{"mode":"env","keys":["environment"],"env_files":["/x/.env"]}"#)
+            .unwrap()
+    }
+
+    #[test]
+    fn verify_key_sources_uses_from_env_predicate() {
+        // audit 2026-08-02 A16: verification must admit exactly what
+        // KeyRing::from_env admits. A prefix-substring collision like
+        // DOTENV_PRIVATE_KEYFOO is NOT a key var, so with only such a
+        // var set, verification must fail.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cfg = env_only_cfg();
+        let bogus = "DOTENV_PRIVATE_KEYFOO_PMVERIFY";
+        let valid = "DOTENV_PRIVATE_KEY_PMVERIFY";
+
+        // Positive leg: an exact `PREFIX_<suffix>` var passes. Robust
+        // against any other valid vars a concurrent test may have set.
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized within this module via ENV_LOCK; the
+        // var names are unique to this test.
+        unsafe {
+            std::env::set_var(valid, "aa".repeat(32));
+        }
+        assert!(
+            verify_key_sources(&cfg, &[]).is_ok(),
+            "an exact PREFIX_<suffix> variable must pass verification"
+        );
+
+        // Negative leg: only a prefix-substring collision remains.
+        unsafe {
+            std::env::remove_var(valid);
+            std::env::set_var(bogus, "aa".repeat(32));
+        }
+        let res = verify_key_sources(&cfg, &[]);
+        unsafe {
+            std::env::remove_var(bogus);
+        }
+        // env.rs's from_env test holds a valid DOTENV_PRIVATE_KEY_* var
+        // for a microsecond window; if any valid key var was present,
+        // the negative leg is not observable — skip rather than flake.
+        let any_valid = std::env::vars().any(|(k, _)| {
+            crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), &k)
+                || crate::keys::is_key_var_name(KeyNaming::Bundle.key_prefix(), &k)
+        });
+        if !any_valid {
+            let err = res.expect_err("a prefix-substring variable must fail verification");
+            assert!(err.contains("environment:"), "{err}");
+        }
+    }
 }

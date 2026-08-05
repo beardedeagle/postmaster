@@ -38,7 +38,7 @@ runs:
           else
             echo "${INSTALLER_SHA256}  ${tmp}" | shasum -a 256 -c -
           fi
-          sh "$tmp" install --no-confirm
+          sh "$tmp" --daemon --yes --no-modify-profile
         fi
         # The installer does not put nix on PATH for subsequent GHA steps.
         if [[ -n "${GITHUB_PATH:-}" ]]; then

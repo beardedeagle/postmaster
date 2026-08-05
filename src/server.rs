@@ -255,20 +255,26 @@ pub fn harden_process() {
 
 /// Resolve a user name to a uid without getpwnam FFI.
 pub fn uid_of(name: &str) -> Result<u32, String> {
-    #[cfg(target_os = "macos")]
-    const ID: &str = "/usr/bin/id";
-    #[cfg(not(target_os = "macos"))]
-    const ID: &str = "id";
     // Trust boundary (audit 2026-08-02 O2): a compromised `id` returning
-    // a wrong uid would defeat the socket peer-uid ACL. Verify before
-    // invoking where we invoke by absolute path under SIP (macOS); on
-    // Linux the lookup is PATH-relative config trust with no signing root.
+    // a wrong uid would defeat the socket peer-uid ACL. macOS invokes
+    // /usr/bin/id by absolute path under SIP, verified via codesign.
+    // Linux never uses PATH resolution — a PATH-resolved `id` would
+    // inherit a potentially attacker-controlled PATH; instead the first
+    // candidate absolute path that verifies (regular file, root-owned,
+    // no group/other write bits — checked by fstat on an
+    // O_NOFOLLOW|CLOEXEC fd) is invoked, and if none verifies the lookup
+    // fails closed.
     #[cfg(target_os = "macos")]
-    crate::keys::verify_external_binary(Path::new(ID))?;
-    let out = std::process::Command::new(ID)
+    let id: &str = {
+        crate::keys::verify_external_binary(Path::new("/usr/bin/id"))?;
+        "/usr/bin/id"
+    };
+    #[cfg(not(target_os = "macos"))]
+    let id: &str = verified_id_binary()?;
+    let out = std::process::Command::new(id)
         .args(["-u", name])
         .output()
-        .map_err(|e| format!("{ID}: {e}"))?;
+        .map_err(|e| format!("{id}: {e}"))?;
     if !out.status.success() {
         return Err(format!("peer_user {name:?}: no such user"));
     }
@@ -276,6 +282,58 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
         .trim()
         .parse::<u32>()
         .map_err(|_| format!("peer_user {name:?}: `id -u` output not a uid"))
+}
+
+/// First `id(1)` candidate that exists and verifies, or a fail-closed
+/// error listing why each was rejected (Linux only — see `uid_of`).
+/// Candidates are well-known absolute paths in preference order; the
+/// NixOS path covers systems without /usr/bin or /bin.
+#[cfg(not(target_os = "macos"))]
+fn verified_id_binary() -> Result<&'static str, String> {
+    const CANDIDATES: [&str; 3] = ["/usr/bin/id", "/bin/id", "/run/current-system/sw/bin/id"];
+    let mut failures: Vec<String> = Vec::new();
+    for path in CANDIDATES {
+        match verify_id_candidate(path) {
+            Ok(()) => return Ok(path),
+            Err(e) => failures.push(e),
+        }
+    }
+    Err(format!(
+        "no trustworthy `id` binary found (refusing PATH resolution; tried {}): {}",
+        CANDIDATES.join(", "),
+        failures.join("; ")
+    ))
+}
+
+/// Verify one `id(1)` candidate by fstat on the opened fd
+/// (O_NOFOLLOW|CLOEXEC, so a symlink at the path is rejected at open):
+/// must be a regular file, owned by root, with no group/other write
+/// bits. Same fd-based discipline as the keys-file checks — nothing is
+/// ever re-resolved by path (audit 2026-08-02 O2).
+#[cfg(not(target_os = "macos"))]
+fn verify_id_candidate(path: &str) -> Result<(), String> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|e| format!("{path}: {e}"))?;
+    let stat = rustix::fs::fstat(&fd).map_err(|e| format!("{path}: fstat: {e}"))?;
+    if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
+        return Err(format!("{path}: not a regular file"));
+    }
+    if stat.st_uid != 0 {
+        return Err(format!(
+            "{path}: owned by uid {} (expected root/0); refusing to trust",
+            stat.st_uid
+        ));
+    }
+    if rustix::fs::Mode::from_bits_truncate(stat.st_mode)
+        .intersects(rustix::fs::Mode::WGRP | rustix::fs::Mode::WOTH)
+    {
+        return Err(format!("{path}: group/other writable; refusing to trust"));
+    }
+    Ok(())
 }
 
 /// Resolve the keys file path from a `KeysSource` configuration.
@@ -517,5 +575,36 @@ mod tests {
         assert_eq!(&*fetch_bytes(&sock).unwrap(), b"sekrit");
         assert!(fetch_bytes(&sock).unwrap_err().contains("zero bytes"));
         t.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn verify_id_candidate_rejects_untrusted_file() {
+        // A user-owned, group/other-writable file must fail: non-root
+        // runs trip the root-ownership check, root runs trip the
+        // write-bits check — either way the file is refused.
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("pm-idfake-{}", std::process::id()));
+        fs::write(&path, b"fake id").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        let p = path.to_str().unwrap().to_string();
+
+        let err = verify_id_candidate(&p).unwrap_err();
+
+        let _ = fs::remove_file(&path);
+        assert!(
+            err.contains("owned by uid") || err.contains("writable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn verified_id_binary_finds_a_system_id() {
+        // On any Linux host at least one candidate must verify — glibc
+        // systems have /usr/bin/id or /bin/id, NixOS has
+        // /run/current-system/sw/bin/id.
+        let id = verified_id_binary().unwrap();
+        assert!(id.starts_with('/'));
     }
 }

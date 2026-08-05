@@ -18,7 +18,9 @@ use crate::exec_config::{ExecConfig, ExecMode};
 use crate::key_source::load_ring;
 use crate::keys::resolve_all;
 use crate::ramdisk::verify_ramdisk;
-use crate::secret_files::{Resolved, cleanup_written, env_pairs, prune_stale, write_secret_file};
+use crate::secret_files::{
+    Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale, write_secret_file,
+};
 use crate::server::{fetch_bytes, log, read_capped};
 
 /// macOS-only guard deferring termination signals across the window where
@@ -279,10 +281,16 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     // 2026-08-02 A11; no-op on Linux — see TerminationGuard docs).
     let sig_guard = TerminationGuard::block();
     let mut extra: Vec<(OsString, OsString)> = Vec::new();
-    // Plaintext files written by Files/Credentials modes, tracked across
-    // the match so the exec-failure path can remove them (audit
-    // 2026-08-02 A9).
-    let mut written: Vec<PathBuf> = Vec::new();
+    // Names of plaintext files written beneath the pinned secrets-dir
+    // fd, tracked across the match so the failure paths can unlink them
+    // fd-relative (audit 2026-08-02 A9).
+    let mut written: Vec<String> = Vec::new();
+    // The pinned secrets-dir fd (Files / Credentials-fetch modes only).
+    // Opened ONCE with O_DIRECTORY|O_NOFOLLOW|O_RDONLY|CLOEXEC and kept
+    // until after the exec-failure cleanup, so every write and every
+    // cleanup unlink is relative to the same pinned inode (audit
+    // 2026-08-02 A12).
+    let mut secrets_dir_fd: Option<std::os::fd::OwnedFd> = None;
 
     match cfg.mode {
         ExecMode::Env => {
@@ -328,20 +336,25 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
             // Prune stale secret files from a prior launch before writing new ones.
             let keep_keys: Vec<String> = resolved.iter().map(|(k, _)| k.clone()).collect();
             prune_stale(dir, &keep_keys)?;
+            // Pin the secrets dir for the whole write window: the writes,
+            // the mid-loop cleanups, and the post-match cleanups all act
+            // relative to this one pinned fd.
+            let dir_fd = open_secrets_dir(dir)
+                .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", dir.display()))?;
             written.reserve(resolved.len());
             for (k, v) in &resolved {
-                let path = match write_secret_file(dir, k, v) {
+                let path = match write_secret_file(&dir_fd, dir, k, v) {
                     Ok(p) => p,
                     Err(e) => {
-                        cleanup_written(&written);
+                        cleanup_written(&dir_fd, &written);
                         return Err(e);
                     }
                 };
-                written.push(path.clone());
+                written.push(k.clone());
                 extra.push((OsString::from(format!("{k}_FILE")), path.into_os_string()));
                 if cfg.passthrough.iter().any(|p| p == k) {
                     if v.contains(&0) {
-                        cleanup_written(&written);
+                        cleanup_written(&dir_fd, &written);
                         return Err(format!("{k}: passthrough value contains NUL"));
                     }
                     extra.push((OsString::from(k.clone()), OsString::from_vec(v.to_vec())));
@@ -352,6 +365,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
             // (extra: OsString pairs) survive to execvp, not the
             // plaintext values themselves.
             drop(resolved);
+            secrets_dir_fd = Some(dir_fd);
         }
         ExecMode::Credentials => {
             if cfg.credential_keys.is_empty() {
@@ -381,6 +395,11 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 let sockets: &HashMap<String, PathBuf> = &cfg.sockets;
                 // Prune stale credential files from a prior launch.
                 prune_stale(dir, &cfg.credential_keys)?;
+                // Pin the secrets dir for the whole fetch/write window
+                // (same single-fd discipline as files mode).
+                let dir_fd = open_secrets_dir(dir).map_err(|e| {
+                    format!("{}: {e} (refusing to follow a symlink)", dir.display())
+                })?;
                 written.reserve(cfg.credential_keys.len());
                 for k in &cfg.credential_keys {
                     let sock = sockets
@@ -389,24 +408,25 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                     let bytes = match fetch_bytes(sock) {
                         Ok(b) => b,
                         Err(e) => {
-                            cleanup_written(&written);
+                            cleanup_written(&dir_fd, &written);
                             return Err(e);
                         }
                     };
-                    let path = match write_secret_file(dir, k, &bytes) {
+                    let path = match write_secret_file(&dir_fd, dir, k, &bytes) {
                         Ok(p) => p,
                         Err(e) => {
-                            cleanup_written(&written);
+                            cleanup_written(&dir_fd, &written);
                             return Err(e);
                         }
                     };
-                    written.push(path.clone());
+                    written.push(k.clone());
                     extra.push((OsString::from(format!("{k}_FILE")), path.into_os_string()));
                 }
                 extra.push((
                     OsString::from("CREDENTIALS_DIRECTORY"),
                     dir.as_os_str().to_os_string(),
                 ));
+                secrets_dir_fd = Some(dir_fd);
             }
         }
     }
@@ -414,7 +434,9 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     // A termination signal arrived during the write window: remove the
     // plaintext, then die by that signal as the sender intended (A11).
     if let Some(sig) = sig_guard.pending() {
-        cleanup_written(&written);
+        if let Some(dir_fd) = &secrets_dir_fd {
+            cleanup_written(dir_fd, &written);
+        }
         sig_guard.die_by(sig);
     }
     // Restore the signal mask before execvp — the child must not inherit
@@ -428,7 +450,9 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     // plaintext secret files written above would otherwise persist
     // (the macOS ramdisk survives process death). Remove them before
     // returning the error (audit 2026-08-02 A9).
-    cleanup_written(&written);
+    if let Some(dir_fd) = &secrets_dir_fd {
+        cleanup_written(dir_fd, &written);
+    }
     log(&format!("exec {program}: {err}"));
     Err(format!("exec {program}: {err}"))
 }
