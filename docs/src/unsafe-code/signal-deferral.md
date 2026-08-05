@@ -48,7 +48,12 @@ stable kernel ABI is libc, so there is no raw-syscall alternative.
 |------|------------|--------|
 | Kernel/libc signal quirks on future Darwin versions | Very low | Missed deferral (fail-open to pre-A11 behavior) |
 | Operator sends SIGKILL | n/a | Unblockable by design; ramdisk contents persist until next boot — accepted residual |
-| Race: pending-check → mask-restore → exec | Microseconds | A termination signal arriving between the last `sigpending` check and the mask restore is delivered at restore — before `execvp` and before `cleanup_written` — stranding the just-written plaintext. Irreducible below a fork+exec or handler+flag design (both rejected: more unsafe surface and complexity than the window justifies). Worst case is bounded: the ramdisk is destroyed when the launchd job stops. Accepted residual. |
+
+For the design-level race in how the guard is *used* (pending-check →
+mask-restore → exec — a property of the launch flow, not of these
+unsafe blocks), see the threat model's
+[plaintext persistence window](../architecture/threat-model.md#plaintext-file-persistence-window-files-mode--mitigated)
+section.
 
 ## Tests
 

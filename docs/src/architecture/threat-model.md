@@ -451,6 +451,20 @@ ramdisk is destroyed when the `postmaster-ramdisk` launchd job stops.
 The `prune_stale` function also removes stale files from prior
 launches before writing new ones.
 
+On macOS, a `TerminationGuard` additionally blocks
+SIGTERM/SIGINT/SIGHUP/SIGQUIT across the write window; before `execvp`
+the launcher checks `sigpending` and, if a termination signal arrived
+during the window, removes the plaintext and dies by that signal
+(audit 2026-08-02 A11).
+
+*Accepted residual:* a termination signal arriving between that final
+pending check and the mask restore/exec is delivered at restore —
+before `execvp` and before cleanup — stranding the just-written
+plaintext. The window is microseconds and irreducible below a
+fork+exec or handler+flag design (both rejected: more unsafe surface
+and complexity than the window justifies); the worst case is bounded
+because the ramdisk is destroyed when the launchd job stops.
+
 ### Ramdisk mount verification (macOS) — Mitigated
 
 `verify_ramdisk` verifies the mount is RAM-backed by parsing
