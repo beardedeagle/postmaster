@@ -164,6 +164,16 @@ before a real launch:
   non-empty, it also requires `secrets_dir` and a socket mapping for every
   credential key.
 
+**One `secrets_dir` per service.** postmaster treats `secrets_dir` as
+single-tenant: `prune_stale` at launch and cleanup on every death path
+delete files there based on one service's key set, so two services
+sharing a directory lets one service's lifecycle delete the other's live
+files (an availability failure — plaintext never crosses services). The
+generated Nix modules comply by construction — each Linux unit mounts a
+namespace-private tmpfs at the path, and the darwin module writes
+per-service subdirectories under the ramdisk — so this rule binds
+hand-written configs.
+
 `--check` also validates env-file basenames, rejects private-key
 `file` sources under `/nix/store`, rejects path-like `credential` source
 names, and applies identifier validation to `passthrough` and

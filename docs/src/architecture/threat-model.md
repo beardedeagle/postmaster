@@ -495,6 +495,20 @@ the strongest backstop in the system. A monitor that dies before the
 service leaves the pre-existing backstops (`ExecStopPost`, teardown,
 `prune_stale`) — the same floor as before the monitor existed.
 
+### Shared `secrets_dir` (multi-tenant misuse) — Documented contract
+
+`secrets_dir` is single-tenant per service: `prune_stale` and the
+monitor's cleanup delete files based on one service's key set, so two
+services sharing one directory lets one service's lifecycle delete the
+other's live files. The impact is availability, not confidentiality —
+no plaintext crosses services. The generated Nix modules comply by
+construction (Linux: each unit mounts a namespace-private tmpfs at the
+path; darwin: per-service subdirectory under the shared ramdisk), so
+this binds hand-written configs only: one `secrets_dir` per service.
+Runtime enforcement via a service-identity sentinel is a
+considered-and-deferred hardening for the broker era, when multi-tenant
+topologies become real by design.
+
 ### Ramdisk mount verification (macOS) — Mitigated
 
 `verify_ramdisk` verifies the mount is RAM-backed by parsing
