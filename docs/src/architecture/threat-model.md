@@ -386,6 +386,22 @@ to be intact at the moment of `execvp`, and `execvp` replaces the
 process image without running destructors. Fork+wait would keep
 secrets in a long-lived parent heap (strictly worse) and was rejected.
 
+### Monitor inherited heap — Mitigated
+
+The sibling monitor is forked after zeroization, so the key ring and
+the `Zeroizing` resolved values are already wiped in the copy it
+inherits. One plaintext-bearing structure does cross the fork: the
+`extra` env array (plaintext values in env mode and in files-mode
+passthrough). The monitor scrubs its copy **first**, before the
+supervision loop starts: each `OsString` is consumed into its existing
+buffer (no copy) and wiped in place with `zeroize` — free() alone
+would leave the bytes in the monitor's mapped pages for its whole life,
+and the monitor never allocates again, so they would never even be
+reused. The parent's copy dies with `execvp` (image replacement). What
+the monitor keeps beyond the scrub is non-secret metadata only: the
+pinned secrets-dir fd and entry names (already visible in the
+directory listing).
+
 ### File-backed memory (page cache) — Mitigated by design
 
 Postmaster does not `mmap` secret files. Secret files on Linux tmpfs
@@ -444,30 +460,40 @@ privileged memory inspection within the same kernel.
 
 ### Plaintext file persistence window (files mode) — Mitigated
 
-Secret files written to the tmpfs/ramdisk are removed by `postmaster
-cleanup --config <exec.json>`, wired to `ExecStopPost` in the systemd
-Nix module — it runs immediately after the child exits. On macOS, the
-ramdisk is destroyed when the `postmaster-ramdisk` launchd job stops.
-The `prune_stale` function also removes stale files from prior
-launches before writing new ones.
+Secret files written to the tmpfs/ramdisk are removed by the **sibling
+launch monitor** (design 2026-08-05), by `postmaster cleanup --config
+<exec.json>` wired to `ExecStopPost` in the systemd Nix module, and by
+ramdisk destruction when the `postmaster-ramdisk` launchd job stops. The
+`prune_stale` function also removes stale files from prior launches
+before writing new ones.
 
-On macOS, a `TerminationGuard` additionally blocks
-SIGTERM/SIGINT/SIGHUP/SIGQUIT across the write window; before `execvp`
-the launcher checks `sigpending` and, if a termination signal arrived
-during the window, removes the plaintext and dies by that signal
-(audit 2026-08-02 A11).
+A `TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT across the
+write window on both platforms, so a signal landing mid-write cannot
+strand partial plaintext (audit 2026-08-02 A11). At the end of the
+window — after zeroization, before `execvp` — the launcher forks. The
+parent restores its pre-guard mask and execs the service (MainPID
+unchanged); the fork-child is the **sibling monitor**: it keeps the
+four termination signals blocked for life and owns stop semantics.
 
-*Race closed (2026-08-05):* the pending-check/exec handoff was
-previously an accepted residual here. The guard now installs a
-flag-recording handler while the signals are still blocked, then
-restores the mask — any signal pending from the window is delivered to
-the handler, never to the default disposition — so death-before-exec
-always runs cleanup first. The flag is read twice (at disarm and again
-immediately before `execvp`), narrowing the unexamined-consumption
-sliver to the execve path itself (~microseconds): a signal landing
-only there is recorded but unexamined, so the launch proceeds and the
-service manager's escalation (SIGKILL) performs the stop —
-supervision-semantics, not plaintext exposure.
+*Monitor model (2026-08-05):* the monitor consumes stop signals
+synchronously (no handlers anywhere — the sigaction flag-handler and
+second pre-exec gate were retired with this design), forwards them to
+the service, and escalates to SIGKILL after a **250 ms grace** — a
+single global constant, deliberately not configurable (per-service
+erosion of a security policy is unacceptable; the per-unit knob is the
+manager's own stop timeout). Cleanup runs on **every** death path:
+forwarded stops, natural exit, `kill -9`, crashes. Liveness uses a
+pidfd + `poll` on Linux and kqueue `NOTE_EXIT` on macOS — both fire at
+exit (zombie- and PID-reuse-proof); `kill(pid, 0)` polling is fallback
+only. On systemd the monitor receives its own copy of cgroup-wide stop
+signals, so it never depends on a signal the launcher already consumed.
+On launchd, signals go to the job's main process only, so the monitor
+is primarily a cleanup-watcher there — the macOS stop-path exposure
+(plus the bounded PID-reuse window of its `kill(2)` forwarding, Darwin
+having no pidfd) remains bounded by the ramdisk teardown at job stop,
+the strongest backstop in the system. A monitor that dies before the
+service leaves the pre-existing backstops (`ExecStopPost`, teardown,
+`prune_stale`) — the same floor as before the monitor existed.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 

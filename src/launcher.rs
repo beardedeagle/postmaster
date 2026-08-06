@@ -17,58 +17,43 @@ use crate::bundle::{parse_bundle, resolve_bundle};
 use crate::exec_config::{ExecConfig, ExecMode};
 use crate::key_source::load_ring;
 use crate::keys::resolve_all;
+use crate::monitor::{self, STOP_SIGNALS};
 use crate::ramdisk::verify_ramdisk;
 use crate::secret_files::{
     Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale, write_secret_file,
 };
 use crate::server::{fetch_bytes, log, read_capped};
-#[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicI32, Ordering};
 
-/// macOS-only guard deferring termination signals across the window where
-/// plaintext secret files exist on the ramdisk (audit 2026-08-02 A11).
-/// The ramdisk persists across process death, so a signal landing
-/// mid-write would otherwise strand partial plaintext. Signals are
-/// *blocked* across the window; before execvp the guard is disarmed by
-/// installing a flag-recording handler (while still blocked) and then
-/// restoring the saved mask — anything pending from the window is
-/// delivered to that handler, never to the default disposition, so no
-/// termination signal can kill the launcher without cleanup running
-/// first. The handler's body is a single atomic store (the canonical
-/// async-signal-safe operation).
+/// Guard deferring termination signals across the window where plaintext
+/// secret files exist on the ramdisk/tmpfs (audit 2026-08-02 A11). A
+/// signal landing mid-write would otherwise strand partial plaintext, so
+/// the four termination signals (`STOP_SIGNALS`) are *blocked* across the
+/// window. The sibling monitor is then forked — it inherits the blocked
+/// mask and keeps it for life (see monitor.rs) — and the parent restores
+/// the saved mask before execvp so the service starts with a clean
+/// signal state.
 ///
-/// Linux needs no equivalent: tmpfs does not persist across reboots,
-/// systemd's `ExecStopPost` runs `postmaster cleanup`, and the next
-/// launch's `prune_stale` removes residuals — documented decision per A11.
+/// The sigaction flag-handler and second pre-exec gate this guard used
+/// to implement were retired with the sibling-monitor design
+/// (2026-08-05): the monitor owns stop semantics, so no async handler is
+/// needed anywhere. What remains is the deterministic write window
+/// (`block`) and the pre-exec mask restore (`restore_mask`) — now real
+/// on Linux too, because the fork+monitor model runs there as well.
 #[cfg(target_os = "macos")]
-static PENDING_SIG: AtomicI32 = AtomicI32::new(0);
-
-/// Records a deferred termination signal for the launcher's
-/// check-before-exec. This MUST remain a pure atomic store: no logging,
-/// no allocation, no locking — anything more is unsound in async-signal
-/// context.
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn record_sig(sig: libc::c_int) {
-    PENDING_SIG.store(sig, Ordering::Relaxed);
-}
-
-#[cfg(target_os = "macos")]
-struct TerminationGuard {
+pub(crate) struct TerminationGuard {
     old: libc::sigset_t,
 }
 
 #[cfg(target_os = "macos")]
 impl TerminationGuard {
-    const SIGNALS: [i32; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT];
-
-    fn block() -> Self {
+    pub(crate) fn block() -> Self {
         unsafe {
             // SAFETY: zeroed sigset_t is a valid empty set representation;
             // all pointers are valid and outlive the calls.
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
-            for sig in Self::SIGNALS {
-                libc::sigaddset(&mut set, sig);
+            for sig in STOP_SIGNALS {
+                libc::sigaddset(&mut set, sig.as_raw());
             }
             let mut old: libc::sigset_t = std::mem::zeroed();
             // pthread form: correct in single- and multi-threaded processes.
@@ -77,95 +62,12 @@ impl TerminationGuard {
         }
     }
 
-    /// Disarm the guard at the end of the write window: install
-    /// `record_sig` for the deferred signals while they are still blocked
-    /// (so nothing can be delivered mid-install), then restore the saved
-    /// mask. Pending termination signals are delivered to the handler and
-    /// recorded — never to the default disposition — and the first one
-    /// observed is returned. `None` means no termination signal arrived
-    /// across the entire window; the mask is restored either way, and
-    /// caught-signal dispositions reset to default at execvp, so the
-    /// child starts with a clean signal state.
-    fn disarm(&self) -> Option<i32> {
-        let mut ok = true;
-        unsafe {
-            // SAFETY: zeroed sigaction is a valid starting representation;
-            // sa_mask is made a valid empty set; the handler pointer is a
-            // valid function with the C signal-handler ABI.
-            let mut act: libc::sigaction = std::mem::zeroed();
-            libc::sigemptyset(&mut act.sa_mask);
-            act.sa_sigaction = record_sig as *const () as usize;
-            for sig in Self::SIGNALS {
-                if libc::sigaction(sig, &act, std::ptr::null_mut()) != 0 {
-                    ok = false;
-                }
-            }
-        }
-        if !ok {
-            // Defensive: sigaction(2) cannot realistically fail for these
-            // four signals (EINVAL covers SIGKILL/SIGSTOP/invalid, none of
-            // which we touch) — but if it ever does, fall back to the
-            // pre-handler pending check rather than silently weaken the
-            // guard. The residual race that disarm() exists to close then
-            // applies to this launch (see the threat model).
-            log("termination-guard: sigaction failed; falling back to pending-check");
-            let sig = self.pending();
-            self.restore_mask();
-            return sig;
-        }
-        self.restore_mask();
-        let sig = PENDING_SIG.load(Ordering::Relaxed);
-        (sig != 0).then_some(sig)
-    }
-
-    /// First deferred termination signal pending right now, if any.
-    /// Fallback path for `disarm` when the handler cannot be installed.
-    fn pending(&self) -> Option<i32> {
-        unsafe {
-            // SAFETY: zeroed sigset_t is valid; sigpending fills it.
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            if libc::sigpending(&mut set) != 0 {
-                return None;
-            }
-            for sig in Self::SIGNALS {
-                if libc::sigismember(&set, sig) == 1 {
-                    return Some(sig);
-                }
-            }
-            None
-        }
-    }
-
-    /// A termination signal recorded by `record_sig` since `disarm`, if
-    /// any. Read once more immediately before `execvp` so a signal
-    /// consumed in the disarm→exec gap is not carried silently into the
-    /// child (A11).
-    fn recorded(&self) -> Option<i32> {
-        let sig = PENDING_SIG.load(Ordering::Relaxed);
-        (sig != 0).then_some(sig)
-    }
-
-    /// Restore the saved signal mask. Always called before execvp — the
-    /// child must not inherit blocked termination signals.
-    fn restore_mask(&self) {
+    /// Restore the saved signal mask. The parent calls this before
+    /// execvp — the child must not inherit blocked termination signals.
+    pub(crate) fn restore_mask(&self) {
         unsafe {
             // SAFETY: restoring a previously saved valid mask.
             libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
-        }
-    }
-
-    /// Restore the mask, reset the signal to its default disposition, and
-    /// re-raise it so the process dies by the signal as the sender
-    /// intended. Never returns.
-    fn die_by(&self, sig: i32) -> ! {
-        unsafe {
-            // SAFETY: plain single-threaded-at-this-point signal ops;
-            // SIG_DFL is the documented default-disposition constant.
-            libc::signal(sig, libc::SIG_DFL);
-            libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
-            libc::raise(sig);
-            // Unreachable unless raise(3) itself failed.
-            libc::_exit(128 + sig);
         }
     }
 }
@@ -177,30 +79,58 @@ impl Drop for TerminationGuard {
     }
 }
 
-/// No-op on non-macOS platforms (see the macOS docs above).
-#[cfg(not(target_os = "macos"))]
-struct TerminationGuard;
+/// Linux leg of the guard (see the macOS docs above): same block/restore
+/// contract via rustix's raw `rt_sigprocmask` — no libc FFI.
+#[cfg(target_os = "linux")]
+pub(crate) struct TerminationGuard {
+    /// `None` only if the block call failed (logged); restore then no-ops
+    /// rather than clobbering a mask that was never captured.
+    old: Option<rustix::runtime::KernelSigSet>,
+}
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 impl TerminationGuard {
-    fn block() -> Self {
-        Self
+    pub(crate) fn block() -> Self {
+        let mut set = rustix::runtime::KernelSigSet::empty();
+        for sig in STOP_SIGNALS {
+            set.insert(sig);
+        }
+        // SAFETY: the set holds only the four standard termination
+        // signals — none reserved by any libc in the process (glibc
+        // reserves 32/33, untouched). The launcher is single-threaded at
+        // this point (the exec path spawns no threads; worker threads
+        // exist only in serve mode).
+        match unsafe {
+            rustix::runtime::kernel_sigprocmask(rustix::runtime::How::BLOCK, Some(&set))
+        } {
+            Ok(old) => Self { old: Some(old) },
+            Err(e) => {
+                // rt_sigprocmask cannot realistically fail here (EINVAL/
+                // EFAULT cover bad arguments, both impossible) — but if it
+                // ever does, log it and run unguarded rather than silently
+                // pretend the window is protected.
+                log(&format!("termination-guard: sigprocmask failed: {e}"));
+                Self { old: None }
+            }
+        }
     }
 
-    /// No persistence window exists on non-macOS platforms (see above):
-    /// always clear.
-    fn disarm(&self) -> Option<i32> {
-        None
+    /// Restore the saved signal mask (see the macOS docs).
+    pub(crate) fn restore_mask(&self) {
+        if let Some(old) = &self.old {
+            // SAFETY: restoring a mask previously returned by the kernel
+            // for this thread.
+            let _ = unsafe {
+                rustix::runtime::kernel_sigprocmask(rustix::runtime::How::SETMASK, Some(old))
+            };
+        }
     }
+}
 
-    /// Always clear (see above).
-    fn recorded(&self) -> Option<i32> {
-        None
-    }
-
-    fn die_by(&self, _sig: i32) -> ! {
-        // Unreachable: disarm() is always None here.
-        std::process::abort()
+#[cfg(target_os = "linux")]
+impl Drop for TerminationGuard {
+    fn drop(&mut self) {
+        self.restore_mask();
     }
 }
 
@@ -348,20 +278,24 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     cfg.validate_shape()?;
 
     let program = argv.first().ok_or("exec: empty argv")?;
-    // Defer termination signals until just before execvp, so a signal
-    // landing mid-write can't strand plaintext on disk (audit
-    // 2026-08-02 A11; no-op on Linux — see TerminationGuard docs).
+    // Defer termination signals until the fork/exec below, so a signal
+    // landing mid-write can't strand plaintext on disk (audit 2026-08-02
+    // A11 — see TerminationGuard docs). The fork-child monitor inherits
+    // the blocked mask and keeps it for life; the parent restores the
+    // saved mask before execvp.
     let sig_guard = TerminationGuard::block();
     let mut extra: Vec<(OsString, OsString)> = Vec::new();
     // Names of plaintext files written beneath the pinned secrets-dir
-    // fd, tracked across the match so the failure paths can unlink them
-    // fd-relative (audit 2026-08-02 A9).
+    // fd, tracked across the match so the failure paths (and the monitor,
+    // post-fork) can unlink them fd-relative (audit 2026-08-02 A9).
     let mut written: Vec<String> = Vec::new();
     // The pinned secrets-dir fd (Files / Credentials-fetch modes only).
     // Opened ONCE with O_DIRECTORY|O_NOFOLLOW|O_RDONLY|CLOEXEC and kept
     // until after the exec-failure cleanup, so every write and every
     // cleanup unlink is relative to the same pinned inode (audit
-    // 2026-08-02 A12).
+    // 2026-08-02 A12). Across the fork the monitor inherits the fd
+    // (CLOEXEC fires only on exec, which the monitor never performs) and
+    // holds it for the service's lifetime.
     let mut secrets_dir_fd: Option<std::os::fd::OwnedFd> = None;
 
     match cfg.mode {
@@ -503,32 +437,68 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
         }
     }
 
-    // A termination signal arrived during the write window: remove the
-    // plaintext, then die by that signal as the sender intended (A11).
-    if let Some(sig) = sig_guard.disarm() {
-        if let Some(dir_fd) = &secrets_dir_fd {
-            cleanup_written(dir_fd, &written);
+    // Zeroization is complete at this point (the key ring dropped inside
+    // decrypt(); `resolved` dropped at the end of each arm above): fork
+    // the sibling monitor BEFORE exec. The fork-child keeps the guard's
+    // blocked mask for life and supervises this process — stop-signal
+    // forwarding, bounded grace, SIGKILL escalation, and plaintext cleanup
+    // on every death path (sibling-monitor design 2026-08-05; see
+    // monitor.rs). The parent execs the service exactly as before, so
+    // MainPID is unchanged. The monitor runs for ALL exec launches,
+    // including env mode (uniform semantics; its cleanup is a no-op
+    // there). The pid is captured pre-fork: post-fork the parent IS the
+    // service-to-be, so the monitor needs no racy getppid.
+    let service_pid = rustix::process::getpid();
+    // SAFETY: fork(2) in a single-threaded process (the exec path spawns
+    // no threads; the daemon's worker threads exist only in serve mode).
+    // The fork-child executes only monitor::run — the async-signal-safe
+    // syscall set documented in monitor.rs: no allocation, no stdio
+    // locks, no destructors — and exits via _exit/exit_group. rustix
+    // deliberately has no fork wrapper; on Linux this is the one libc FFI
+    // call on the exec path, flagged in docs/src/unsafe-code/monitor.md.
+    match unsafe { libc::fork() } {
+        -1 => {
+            // No monitor means no stop semantics and no cleanup on
+            // abnormal death: fail closed like an exec failure rather
+            // than launch unsupervised.
+            if let Some(dir_fd) = &secrets_dir_fd {
+                cleanup_written(dir_fd, &written);
+            }
+            let err = std::io::Error::last_os_error();
+            log(&format!("exec {program}: fork: {err}"));
+            return Err(format!("exec {program}: fork: {err}"));
         }
-        sig_guard.die_by(sig);
+        0 => {
+            // Fork-child = the monitor (never returns). sig_guard is
+            // deliberately NOT dropped here: monitor::run diverges
+            // (`-> !`) and the _exit path runs no destructors, so the
+            // termination mask stays blocked for the monitor's life
+            // (run() re-asserts the block regardless). The inherited
+            // `extra` env pairs are SCRUBBED first — they hold plaintext
+            // values in env mode (and files-mode passthrough), and
+            // free() alone would leave the bytes in the monitor's
+            // mapped pages for its whole life (threat model: monitor
+            // inherited heap).
+            for (k, v) in extra {
+                drop(monitor::wipe_pair(k, v));
+            }
+            monitor::run(service_pid, secrets_dir_fd, written);
+        }
+        _ => {}
     }
-    // disarm() already restored the pre-guard signal mask, and
-    // caught-signal dispositions reset to default at execvp — the child
-    // starts with a clean signal state.
+    // Parent only from here (the fork-child diverged). Restore the
+    // pre-guard signal mask so the service starts with a clean signal
+    // state, then exec exactly as before.
+    sig_guard.restore_mask();
     let mut cmd = std::process::Command::new(program);
     cmd.args(&argv[1..]).envs(extra);
-    // Final gate: a termination signal recorded since disarm() must not
-    // be carried silently into the child — clean up and die by it (A11).
-    if let Some(sig) = sig_guard.recorded() {
-        if let Some(dir_fd) = &secrets_dir_fd {
-            cleanup_written(dir_fd, &written);
-        }
-        sig_guard.die_by(sig);
-    }
     let err = cmd.exec(); // only returns on failure
     // execvp failed: the process image was NOT replaced, so any
     // plaintext secret files written above would otherwise persist
     // (the macOS ramdisk survives process death). Remove them before
-    // returning the error (audit 2026-08-02 A9).
+    // returning the error (audit 2026-08-02 A9). The monitor watching
+    // this process fires on the imminent exit and cleans again —
+    // unlinkat of already-removed names is a no-op.
     if let Some(dir_fd) = &secrets_dir_fd {
         cleanup_written(dir_fd, &written);
     }
@@ -540,28 +510,6 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
-
-    /// The disarm handoff must convert a signal raised during the blocked
-    /// window into a recorded flag instead of process death — the whole
-    /// point of the flag-handler design (A11 race closure).
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn disarm_records_signal_raised_during_the_window() {
-        PENDING_SIG.store(0, Ordering::Relaxed);
-        let guard = TerminationGuard::block();
-        // Sent while blocked: pends. At disarm it is delivered to the
-        // recording handler, not the default disposition — so this test
-        // process keeps running.
-        unsafe {
-            libc::raise(libc::SIGTERM);
-        }
-        assert_eq!(guard.disarm(), Some(libc::SIGTERM));
-        // Leave the process as we found it.
-        PENDING_SIG.store(0, Ordering::Relaxed);
-        unsafe {
-            libc::signal(libc::SIGTERM, libc::SIG_DFL);
-        }
-    }
 
     #[test]
     fn validate_credential_keys_accepts_identifiers() {

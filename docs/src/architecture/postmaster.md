@@ -200,13 +200,22 @@ context. This is the only stage postmaster owns.
 
 ### Stage 5: Launch (execvp)
 
-Postmaster calls `execvp`. The process image is replaced. The child
-binary IS `MainPID`. Postmaster is gone.
+Postmaster forks a **sibling monitor** and then calls `execvp` in the
+parent. The parent's process image is replaced. The child binary IS
+`MainPID`. Postmaster is gone from the service's process.
+
+The fork-child is the monitor: secretless by construction (forked after
+zeroization), it keeps the termination signals blocked for life and
+supervises its parent — forwards stop signals with a 250 ms grace
+before SIGKILL escalation, and removes the plaintext secret files on
+every service-death path (natural exit, `kill -9`, crash), then exits.
+One tiny extra process per service for the service's lifetime; liveness
+is pidfd+`poll` on Linux and kqueue `NOTE_EXIT` on macOS.
 
 The service manager (systemd/launchd) supervises the child from this
 point. `ExecStopPost` runs `postmaster cleanup` to remove plaintext
-files after the child exits (Linux). The ramdisk is destroyed when
-the launchd job stops (macOS).
+files after the child exits (Linux) — now a backstop behind the
+monitor. The ramdisk is destroyed when the launchd job stops (macOS).
 
 ## Implementation
 
@@ -243,15 +252,19 @@ and per-mode injection rules are the cross-binding contract at
 
 ## Dependency policy
 
-Postmaster has 10 direct dependencies (8 portable, 2 macOS-only):
+Postmaster has 10 direct dependencies (8 portable, 2 platform-gated):
 
 - `ecies` — crypto (secp256k1 + AES-256-GCM)
 - `dotenvy` — `.env` file parser
 - `serde` + `serde_json` — JSON config deserialization
 - `base64` — ciphertext decoding
 - `hex` — key parsing
-- `rustix` — syscalls (no libc FFI on Linux)
-- `libc` — macOS only (for `getpeereid` and `PT_DENY_ATTACH`)
+- `rustix` — syscalls (raw syscalls via `linux_raw` on Linux, incl. the
+  monitor's pidfd/poll and the experimental `runtime` signal-mask API;
+  the only libc FFI on Linux is `fork(2)` — see the unsafe registry)
+- `libc` — macOS (getpeereid, `PT_DENY_ATTACH`, the monitor's
+  kqueue/signal ops) plus Linux `fork(2)` only (rustix has no fork
+  wrapper — review-gated doctrine exception)
 - `security-framework` — macOS only (Security.framework keychain reads)
 - `zeroize` — secret memory wiping
 

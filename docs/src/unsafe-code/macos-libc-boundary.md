@@ -1,9 +1,12 @@
 # macOS libc Boundary
 
-Two unrelated `unsafe` sites share one justification: on Darwin the
-stable kernel ABI *is* libc, so these calls have no raw-syscall route
-(contrast with Linux, where rustix's `linux_raw` backend avoids libc FFI
-entirely).
+On Darwin the stable kernel ABI *is* libc, so these calls have no
+raw-syscall route (contrast with Linux, where rustix's `linux_raw`
+backend avoids libc FFI except `fork(2)`). This page covers the daemon's
+two sites; the launcher's signal-mask guard and the sibling monitor's
+kqueue/signal ops share the same justification and live on their own
+pages ([signal deferral](./signal-deferral.md),
+[sibling launch monitor](./monitor.md)).
 
 ## getpeereid — peer credential check
 

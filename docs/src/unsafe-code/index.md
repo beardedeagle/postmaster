@@ -2,8 +2,9 @@
 
 Postmaster deliberately allows `unsafe` at the lint level (documented in
 `[lints.rust]` in `Cargo.toml`) because it is a syscall-boundary daemon:
-peer-credential checks, anti-debug hardening, signal-mask deferral, and
-the systemd socket-activation contract cannot be expressed in safe Rust.
+peer-credential checks, anti-debug hardening, signal-mask deferral, the
+sibling launch monitor (fork + pidfd/kqueue liveness), and the systemd
+socket-activation contract cannot be expressed in safe Rust.
 This section documents every approved site.
 
 ## Policy
@@ -21,7 +22,9 @@ Every `unsafe` block requires:
 
 | Location | Platform | Purpose | Page |
 |----------|----------|---------|------|
-| `launcher.rs` (TerminationGuard: block/disarm (sigaction flag handler)/die_by/Drop) | macOS | Defer termination signals across the plaintext-write window, then hand off without a check/exec race | [signal-deferral](./signal-deferral.md) |
+| `launcher.rs` (TerminationGuard: block/restore_mask/Drop) | macOS, Linux | Defer termination signals across the plaintext-write window; the fork-child monitor inherits the mask for life | [signal-deferral](./signal-deferral.md) |
+| `launcher.rs` (fork(2)) | macOS, Linux | Fork the sibling monitor before exec — the single libc FFI call on Linux (doctrine exception) | [monitor](./monitor.md) |
+| `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`, raw stderr write) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |

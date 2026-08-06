@@ -15,7 +15,10 @@ repository = "https://github.com/beardedeagle/postmaster"
 # `unsafe_code` (some stricter projects deny it outright). postmaster is a
 # syscall-boundary daemon and needs a handful of justified `unsafe` blocks:
 # getpeereid(2) and PT_DENY_ATTACH on macOS (Darwin's stable kernel ABI is
-# libc), signal-mask deferral around the plaintext-write window (macOS),
+# libc), signal-mask deferral around the plaintext-write window and the
+# sibling launch monitor (fork + pidfd/kqueue liveness — see
+# docs/src/unsafe-code/monitor.md; on Linux the monitor's signal ops use
+# rustix's linux_raw `runtime` API, fork(2) is the single libc FFI call),
 # UnixListener::from_raw_fd on the inherited systemd sockets (Linux), and
 # test-only set_var/remove_var (unsafe on edition 2024). Each site carries
 # a SAFETY comment and is documented in docs/src/unsafe-code/ (the mdbook
@@ -115,10 +118,27 @@ rustix = { version = "1", features = ["net", "process", "mm", "fs"] }
 [patch.crates-io]
 ecies = { git = "https://github.com/beardedeagle/rs.git", rev = "81e1b84" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux-only additions for the sibling launch monitor
+# (docs/src/unsafe-code/monitor.md):
+# - rustix "runtime": the monitor's signal ops (mask for life, synchronous
+#   consumption) use kernel_sigprocmask/kernel_sigpending/kernel_sigwait —
+#   rustix's experimental, doc-hidden runtime API — so the Linux leg stays
+#   on linux_raw with NO libc signal FFI. Cargo.lock pins the exact rustix;
+#   an update that changes this unstable API fails the build loudly,
+#   never silently.
+# - rustix "event": poll(2) on the service pidfd for liveness.
+# - libc: fork(2) ONLY. rustix deliberately has no fork wrapper; this is
+#   the single libc FFI call on the Linux exec path (house-doctrine
+#   exception, review-gated — flagged in the unsafe-code registry).
+rustix = { version = "1", features = ["runtime", "event"] }
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Darwin's stable kernel ABI *is* libc (raw syscalls are unsupported there;
-# rustix itself calls through libc on darwin). Two narrow calls use it
-# directly: getpeereid for the peer check and PT_DENY_ATTACH hardening.
+# rustix itself calls through libc on darwin). Narrow direct uses: getpeereid
+# for the peer check, PT_DENY_ATTACH hardening, and the sibling monitor's
+# kqueue/signal-mask ops (docs/src/unsafe-code/monitor.md).
 libc = "0.2"
 security-framework = "3.7.0"
 

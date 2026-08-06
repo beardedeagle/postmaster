@@ -17,18 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-AAD bundles are rejected. AAD support comes from the additive
   `encrypt_with_aad`/`decrypt_with_aad` on the ecies fork (upstream PR
   ecies/rs#159), consumed via a git+rev `[patch.crates-io]` pin.
-- Hardening: macOS termination-signal deferral across the plaintext-write
-  window, with a flag-handler handoff plus a final pre-exec gate closing
-  the check/exec race (no death before exec without cleanup); logged
-  hardening failures; fd-pinned secret-file writes and
-  fd-relative prune/cleanup; `O_NOFOLLOW` ciphertext opens;
-  sentinel-guarded bulk cleanup (`.postmaster-managed`); keychain reads
-  via the Security.framework API (no `/usr/bin/security`); `--verify-keys`
-  fails on ANY undecryptable value, including under `strict:false`;
-  daemon config rejects unknown fields (root and nested); Linux `id`
-  resolved from verified absolute paths only; setup verification reuses
-  the runtime key-variable predicate; bundle `encoding: "utf8"` is
-  validated at resolution.
+- Hardening: a sibling launch monitor now owns stop semantics on the
+  exec path — the launcher forks after zeroization, the parent execs the
+  service (MainPID unchanged), and the fork-child supervises it:
+  synchronous stop-signal forwarding with a fixed 250 ms grace before
+  SIGKILL escalation, pidfd/kqueue liveness, and plaintext-file cleanup
+  on EVERY service-death path (natural exit, `kill -9`, crash) — the
+  macOS termination-signal deferral across the plaintext-write window
+  remains, while the sigaction flag-handler and second pre-exec gate are
+  retired (the monitor subsumes the race; fork(2) on Linux is the one
+  libc FFI call there, review-gated); logged hardening failures;
+  fd-pinned secret-file writes and fd-relative prune/cleanup;
+  `O_NOFOLLOW` ciphertext opens; sentinel-guarded bulk cleanup
+  (`.postmaster-managed`); keychain reads via the Security.framework API
+  (no `/usr/bin/security`); `--verify-keys` fails on ANY undecryptable
+  value, including under `strict:false`; daemon config rejects unknown
+  fields (root and nested); Linux `id` resolved from verified absolute
+  paths only; setup verification reuses the runtime key-variable
+  predicate; bundle `encoding: "utf8"` is validated at resolution.
 
 ### Changed
 

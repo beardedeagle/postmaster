@@ -20,6 +20,7 @@ pub mod cli;
 pub mod exec_config;
 pub mod keys;
 pub mod launcher;
+pub(crate) mod monitor;
 pub mod ramdisk;
 pub mod secret_files;
 pub mod server;

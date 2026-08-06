@@ -1,4 +1,3 @@
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use crate::common;
@@ -34,7 +33,8 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
          cat "$SECRET_FILE" > '{d}'/secret_contents.out && \
          printf %s "${{SECRET:-UNSET}}" > '{d}'/secret_var.out && \
          printf %s "$PLAIN" > '{d}'/plain.out && \
-         printf %s "${{POSTMASTER_SECRETS_DIR:-UNSET}}" > '{d}'/secretsdir.out"#,
+         printf %s "${{POSTMASTER_SECRETS_DIR:-UNSET}}" > '{d}'/secretsdir.out && \
+         find "$SECRET_FILE" -perm 600 -print | grep -q ."#,
         d = d.display()
     );
     let out = run_exec(&cfg, &sh, &[]);
@@ -61,8 +61,16 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
         "UNSET"
     );
 
-    let md = std::fs::metadata(secrets_dir.join("SECRET")).unwrap();
-    assert_eq!(md.permissions().mode() & 0o777, 0o600);
+    // The 0600 check ran inside the service above (the file must be
+    // exactly 0600 while it exists). Once the service exits, the sibling
+    // monitor removes the plaintext (cleanup on every death path) —
+    // run_exec returning implies the monitor has already exited: it
+    // inherits postmaster's stdout/stderr pipe ends across the fork and
+    // output() only sees EOF after the monitor's cleanup has run.
+    assert!(
+        !secrets_dir.join("SECRET").exists(),
+        "the sibling monitor must remove plaintext files on service death"
+    );
 }
 
 #[test]
@@ -126,7 +134,7 @@ fn credentials_mode_fetch_loop() {
         ),
     );
     let sh = format!(
-        "printf %s \"$CREDENTIALS_DIRECTORY\" > '{d}'/creddir.out && cat '{sd}'/K > '{d}'/kcontents.out",
+        "printf %s \"$CREDENTIALS_DIRECTORY\" > '{d}'/creddir.out && cat '{sd}'/K > '{d}'/kcontents.out && find '{sd}/K' -perm 600 -print | grep -q .",
         d = d.display(),
         sd = secrets_dir.display()
     );
@@ -142,6 +150,11 @@ fn credentials_mode_fetch_loop() {
         secrets_dir.display().to_string()
     );
     assert_eq!(std::fs::read(d.join("kcontents.out")).unwrap(), b"s3cret");
-    let md = std::fs::metadata(secrets_dir.join("K")).unwrap();
-    assert_eq!(md.permissions().mode() & 0o777, 0o600);
+    // The 0600 check ran inside the service above; after the service
+    // exits the sibling monitor removes the plaintext (see the files-mode
+    // test for why run_exec returning implies the monitor has exited).
+    assert!(
+        !secrets_dir.join("K").exists(),
+        "the sibling monitor must remove plaintext files on service death"
+    );
 }
