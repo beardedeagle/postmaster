@@ -496,7 +496,10 @@ pub fn run(args: &Args) -> Result<(), String> {
         return Err("config maps no credentials; nothing to do".into());
     }
 
-    let ring = Arc::new(KeyRing::load(&keys_path(&cfg.keys)?, KeyNaming::Env)?);
+    // The daemon's fetch contract is dotenvx-style env entries only; the
+    // bundle adapter is an exec-mode surface, so the ring requires Env
+    // naming alone here.
+    let ring = Arc::new(KeyRing::load(&keys_path(&cfg.keys)?, &[KeyNaming::Env])?);
 
     // Preflight: prove every credential is servable — and every peer_user
     // resolvable — before accepting anyone.

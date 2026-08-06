@@ -56,24 +56,28 @@ impl KeyRing {
     ///     file accidentally `chmod 0644` would expose private keys to every
     ///     process on the host; fail closed instead.
     ///   - `st_uid == euid`: the file must be owned by the service user.
-    pub fn load(path: &Path, naming: KeyNaming) -> Result<Self, String> {
-        load::load(path, naming)
+    ///
+    /// `namings` is the required adapter set; entries under other
+    /// prefixes are dropped (and zeroized) at parse time.
+    pub fn load(path: &Path, namings: &[KeyNaming]) -> Result<Self, String> {
+        load::load(path, namings)
     }
 
-    /// Core parser shared by every key source: keep keys matching the
-    /// adapter's key prefix, split comma-separated rotation candidates,
-    /// hex-decode to 32-byte zeroized keys. Empty result is an error
-    /// (fail closed). Takes `Zeroizing<String>` values so callers never
-    /// hand key material as a plain heap String that drops without
-    /// zeroization.
+    /// Core parser shared by every key source: keep keys matching any of
+    /// the required adapters' key prefixes, split comma-separated rotation
+    /// candidates, hex-decode to 32-byte zeroized keys. Empty result is an
+    /// error (fail closed). Takes `Zeroizing<String>` values so callers
+    /// never hand key material as a plain heap String that drops without
+    /// zeroization. `namings` is the set the config's artifacts require
+    /// (see `ExecConfig::required_namings`) — the ring admits exactly
+    /// those prefixes, no more (least privilege on key material).
     pub fn from_pairs(
         pairs: impl IntoIterator<Item = (String, Zeroizing<String>)>,
-        naming: KeyNaming,
+        namings: &[KeyNaming],
     ) -> Result<Self, String> {
-        let prefix = naming.key_prefix();
         let mut map: HashMap<String, Vec<Zeroizing<[u8; 32]>>> = HashMap::new();
         for (name, mut value) in pairs {
-            if !name.starts_with(prefix) {
+            if !namings.iter().any(|n| name.starts_with(n.key_prefix())) {
                 value.zeroize();
                 continue;
             }
@@ -101,16 +105,16 @@ impl KeyRing {
             map.insert(name, keys);
         }
         if map.is_empty() {
-            return Err(naming.empty_error());
+            return Err(empty_error(namings));
         }
         Ok(KeyRing(map))
     }
 
     /// Private key variables from the process environment (external
     /// provisioning; `key.file = null` in the module). Reads all
-    /// variables matching the adapter's key prefix.
-    pub fn from_env(naming: KeyNaming) -> Result<Self, String> {
-        env::from_env(naming)
+    /// variables matching any required adapter's key prefix.
+    pub fn from_env(namings: &[KeyNaming]) -> Result<Self, String> {
+        env::from_env(namings)
     }
 
     /// macOS System keychain: one generic-password item per variable,
@@ -121,9 +125,25 @@ impl KeyRing {
     pub fn from_keychain(
         service: &str,
         vars: &[String],
-        naming: KeyNaming,
+        namings: &[KeyNaming],
     ) -> Result<Self, String> {
-        keychain::from_keychain(service, vars, naming)
+        keychain::from_keychain(service, vars, namings)
+    }
+}
+
+/// Human-readable empty-ring error for a naming set: a single naming
+/// keeps its adapter-specific message; multiple namings join them.
+fn empty_error(namings: &[KeyNaming]) -> String {
+    match namings {
+        [] => "no key material admitted (empty naming set)".to_string(),
+        [single] => single.empty_error(),
+        many => format!(
+            "no {}",
+            many.iter()
+                .map(|n| n.empty_error().trim_start_matches("no ").to_string())
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
     }
 }
 
@@ -352,7 +372,7 @@ pub mod tests {
             "POSTMASTER_KEY".to_string(),
             Zeroizing::new(TEST_SK_HEX.to_string()),
         )];
-        KeyRing::from_pairs(pairs, KeyNaming::Bundle).unwrap()
+        KeyRing::from_pairs(pairs, &[KeyNaming::Bundle]).unwrap()
     }
     use std::io::Write;
     use std::path::Path;
@@ -444,7 +464,7 @@ pub mod tests {
                     Zeroizing::new(format!("{},{}", "22".repeat(32), "33".repeat(32))),
                 ),
             ],
-            KeyNaming::Env,
+            &[KeyNaming::Env],
         )
         .unwrap();
         assert_eq!(ring.0.len(), 1);
@@ -452,11 +472,53 @@ pub mod tests {
     }
 
     #[test]
+    fn from_pairs_admits_exactly_the_required_namings() {
+        // The bundle-ring gap fix: a config requiring both adapters must
+        // get both prefix families in the ring, and nothing else.
+        let pairs = || {
+            [
+                (
+                    "DOTENV_PRIVATE_KEY".to_string(),
+                    Zeroizing::new("22".repeat(32)),
+                ),
+                (
+                    "POSTMASTER_KEY".to_string(),
+                    Zeroizing::new("33".repeat(32)),
+                ),
+                ("UNRELATED".to_string(), Zeroizing::new("44".repeat(32))),
+            ]
+        };
+
+        let both = KeyRing::from_pairs(pairs(), &[KeyNaming::Env, KeyNaming::Bundle]).unwrap();
+        assert!(both.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(both.candidates("POSTMASTER_KEY").is_some());
+        assert_eq!(both.0.len(), 2, "UNRELATED must be dropped");
+
+        // Least privilege: a naming the config does not require is NOT
+        // admitted, even when the source provides it.
+        let env_only = KeyRing::from_pairs(pairs(), &[KeyNaming::Env]).unwrap();
+        assert!(env_only.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(env_only.candidates("POSTMASTER_KEY").is_none());
+
+        // A bundle-only requirement with only Env material present fails
+        // closed with the adapter's own empty message.
+        let err = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                Zeroizing::new("22".repeat(32)),
+            )],
+            &[KeyNaming::Bundle],
+        )
+        .unwrap_err();
+        assert_eq!(err, KeyNaming::Bundle.empty_error());
+    }
+
+    #[test]
     fn from_pairs_empty_is_error() {
         assert!(
             KeyRing::from_pairs(
                 [("A".to_string(), Zeroizing::new("b".to_string()))],
-                KeyNaming::Env
+                &[KeyNaming::Env]
             )
             .is_err()
         );

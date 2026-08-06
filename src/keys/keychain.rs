@@ -11,7 +11,7 @@ use crate::adapter::KeyNaming;
 pub(super) fn from_keychain(
     service: &str,
     vars: &[String],
-    naming: KeyNaming,
+    namings: &[KeyNaming],
 ) -> Result<KeyRing, String> {
     // Reads go through the Security.framework API, not the
     // /usr/bin/security CLI (F1 direction): no subprocess, no argv,
@@ -31,5 +31,5 @@ pub(super) fn from_keychain(
         // no separate trim is needed here.
         pairs.push((var.clone(), Zeroizing::new(s.to_string())));
     }
-    KeyRing::from_pairs(pairs, naming).map_err(|e| format!("keychain {service}: {e}"))
+    KeyRing::from_pairs(pairs, namings).map_err(|e| format!("keychain {service}: {e}"))
 }

@@ -9,7 +9,7 @@ use crate::adapter::KeyNaming;
 
 /// Implementation of [`KeyRing::load`]; the contract is documented on the
 /// method.
-pub(super) fn load(path: &Path, naming: KeyNaming) -> Result<KeyRing, String> {
+pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
     let oflags =
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
     let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
@@ -44,7 +44,7 @@ pub(super) fn load(path: &Path, naming: KeyNaming) -> Result<KeyRing, String> {
         let (k, v) = item.map_err(|e| format!("keys file {}: {e}", path.display()))?;
         pairs.push((k, Zeroizing::new(v)));
     }
-    KeyRing::from_pairs(pairs, naming).map_err(|e| format!("keys file {}: {e}", path.display()))
+    KeyRing::from_pairs(pairs, namings).map_err(|e| format!("keys file {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn load_rejects_bad_hex() {
         let content = "DOTENV_PRIVATE_KEY=not-hex\n";
-        with_temp_keys(content, |p| match KeyRing::load(p, KeyNaming::Env) {
+        with_temp_keys(content, |p| match KeyRing::load(p, &[KeyNaming::Env]) {
             Err(e) if e.contains("not valid hex") => {}
             other => panic!("expected bad hex error, got {other:?}"),
         });
@@ -78,7 +78,7 @@ mod tests {
         }
         // 0644: world-readable — must be rejected.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        match KeyRing::load(&path, KeyNaming::Env) {
+        match KeyRing::load(&path, &[KeyNaming::Env]) {
             Err(e) if e.contains("group/world accessible") => {}
             other => panic!("expected group/world permission error, got {other:?}"),
         }
@@ -100,7 +100,7 @@ mod tests {
         }
         // 0640: group-readable — must be rejected.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        match KeyRing::load(&path, KeyNaming::Env) {
+        match KeyRing::load(&path, &[KeyNaming::Env]) {
             Err(e) if e.contains("group/world accessible") => {}
             other => panic!("expected group permission error, got {other:?}"),
         }
@@ -116,7 +116,7 @@ mod tests {
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
         let link = dir.join(".env.keys");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        match KeyRing::load(&link, KeyNaming::Env) {
+        match KeyRing::load(&link, &[KeyNaming::Env]) {
             Err(e) if e.contains("symlink") => {}
             other => panic!("expected symlink rejection error, got {other:?}"),
         }
@@ -129,7 +129,7 @@ mod tests {
         // permission and ownership checks.
         let content = format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32));
         with_temp_keys(&content, |p| {
-            KeyRing::load(p, KeyNaming::Env).expect("0600 keys file owned by euid should load");
+            KeyRing::load(p, &[KeyNaming::Env]).expect("0600 keys file owned by euid should load");
         });
     }
 
@@ -148,7 +148,7 @@ mod tests {
         }
         // 0400: read-only by owner — stricter than 0600, must pass.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
-        KeyRing::load(&path, KeyNaming::Env).expect("0400 keys file owned by euid should load");
+        KeyRing::load(&path, &[KeyNaming::Env]).expect("0400 keys file owned by euid should load");
         let _ = std::fs::remove_file(&path);
     }
 }

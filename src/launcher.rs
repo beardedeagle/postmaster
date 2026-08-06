@@ -208,7 +208,7 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
     for f in &cfg.bundle_files {
         wanted.push(KeyNaming::Bundle.key_var_for(f)?);
     }
-    let ring = load_ring(&cfg.keys, &wanted)?;
+    let ring = load_ring(&cfg.keys, &wanted, &cfg.required_namings())?;
 
     // Resolve .env files (if any) via the env adapter. Values skipped
     // under strict:false are recorded in `failed` so --verify-keys can

@@ -8,7 +8,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::adapter::KeyNaming;
 use crate::exec_config::{ExecConfig, KeySourceSpec};
 use crate::server::log;
 
@@ -373,21 +372,21 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
             }
             KeySourceSpec::Environment => {
                 checked += 1;
-                let env_prefix = KeyNaming::Env.key_prefix();
-                let bundle_prefix = KeyNaming::Bundle.key_prefix();
+                // Every naming the config's artifacts require must be
+                // present: accepting ANY single prefix let `POSTMASTER_KEY`
+                // satisfy verification for an env-files-only config (setup
+                // said OK, exec then failed) — and vice versa.
+                //
                 // The SAME predicate KeyRing::from_env applies (audit
                 // 2026-08-02 A16): a bare starts_with would count a
                 // prefix-substring collision like DOTENV_PRIVATE_KEYFOO
                 // as key material that from_env then refuses to load —
                 // verification must not pass what resolution rejects.
-                let has_key = std::env::vars().any(|(k, _)| {
-                    crate::keys::is_key_var_name(env_prefix, &k)
-                        || crate::keys::is_key_var_name(bundle_prefix, &k)
-                });
-                if !has_key {
-                    return Err(format!(
-                        "environment: no {env_prefix}* or {bundle_prefix}* variables set"
-                    ));
+                for naming in cfg.required_namings() {
+                    let prefix = naming.key_prefix();
+                    if !std::env::vars().any(|(k, _)| crate::keys::is_key_var_name(prefix, &k)) {
+                        return Err(format!("environment: no {prefix}* variables set"));
+                    }
                 }
                 found += 1;
             }
@@ -408,6 +407,7 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::adapter::KeyNaming;
     use crate::test_util::ENV_LOCK;
 
     fn env_only_cfg() -> ExecConfig {
@@ -453,14 +453,97 @@ mod tests {
         // own environment (e.g. DOTENV_PRIVATE_KEY exported in CI): if
         // one is present, the negative leg is not observable — skip
         // rather than flake. A concurrent test cannot be the source:
-        // every env-mutating test holds the shared ENV_LOCK.
-        let any_valid = std::env::vars().any(|(k, _)| {
-            crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), &k)
-                || crate::keys::is_key_var_name(KeyNaming::Bundle.key_prefix(), &k)
-        });
+        // every env-mutating test holds the shared ENV_LOCK. Only the
+        // Env prefix counts here: this config requires Env naming alone.
+        let any_valid = std::env::vars()
+            .any(|(k, _)| crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), &k));
         if !any_valid {
             let err = res.expect_err("a prefix-substring variable must fail verification");
             assert!(err.contains("environment:"), "{err}");
+        }
+    }
+
+    fn bundle_only_cfg() -> ExecConfig {
+        serde_json::from_str(
+            r#"{"mode":"env","keys":["environment"],"bundle_files":["/x/s.json"]}"#,
+        )
+        .unwrap()
+    }
+
+    fn mixed_cfg() -> ExecConfig {
+        serde_json::from_str(
+            r#"{"mode":"env","keys":["environment"],"env_files":["/x/.env"],"bundle_files":["/x/s.json"]}"#,
+        )
+        .unwrap()
+    }
+
+    /// True when a valid key var for `prefix` exists that this test did
+    /// NOT set itself (i.e. ambient in the runner's own environment).
+    fn ambient_key_var(prefix: &str, mine: &[&str]) -> bool {
+        std::env::vars()
+            .any(|(k, _)| !mine.contains(&k.as_str()) && crate::keys::is_key_var_name(prefix, &k))
+    }
+
+    #[test]
+    fn verify_key_sources_requires_each_required_naming() {
+        // The compounding half of the bundle-ring gap: verification used
+        // to accept EITHER prefix for the environment source, so an
+        // env-files-only config passed with only POSTMASTER_KEY present
+        // (then failed at exec), and a bundle-only config failed despite
+        // its POSTMASTER_KEY being right there. Every required naming
+        // must now be present.
+        //
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dotenv = "DOTENV_PRIVATE_KEY_PMREQUIRED";
+        let bundle = "POSTMASTER_KEY_PMREQUIRED";
+        let key_hex = "aa".repeat(32);
+        unsafe {
+            std::env::remove_var(dotenv);
+            std::env::remove_var(bundle);
+        }
+
+        // bundle-only config + its POSTMASTER_KEY present → passes.
+        unsafe {
+            std::env::set_var(bundle, &key_hex);
+        }
+        assert!(
+            verify_key_sources(&bundle_only_cfg(), &[]).is_ok(),
+            "a bundle config's own POSTMASTER_KEY must satisfy verification"
+        );
+
+        // env-only config + only bundle material → fails (the old lie).
+        let res = verify_key_sources(&env_only_cfg(), &[]);
+        if !ambient_key_var(KeyNaming::Env.key_prefix(), &[dotenv, bundle]) {
+            let err = res.expect_err("POSTMASTER_KEY must not satisfy an env-only config");
+            assert!(err.contains("DOTENV_PRIVATE_KEY"), "{err}");
+        }
+
+        // mixed config with only ONE of the two required namings → fails.
+        unsafe {
+            std::env::remove_var(bundle);
+            std::env::set_var(dotenv, &key_hex);
+        }
+        let res = verify_key_sources(&mixed_cfg(), &[]);
+        if !ambient_key_var(KeyNaming::Bundle.key_prefix(), &[dotenv, bundle]) {
+            let err = res.expect_err("a mixed config requires POSTMASTER_KEY too");
+            assert!(err.contains("POSTMASTER_KEY"), "{err}");
+        }
+
+        // mixed config with both required namings present → passes.
+        unsafe {
+            std::env::set_var(bundle, &key_hex);
+        }
+        assert!(
+            verify_key_sources(&mixed_cfg(), &[]).is_ok(),
+            "both required namings present must pass"
+        );
+
+        unsafe {
+            std::env::remove_var(dotenv);
+            std::env::remove_var(bundle);
         }
     }
 }

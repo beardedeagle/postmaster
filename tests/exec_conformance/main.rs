@@ -51,7 +51,7 @@ fn wrapped_base64_ciphertext_decrypts() {
     let keys_path = d.join(".env.keys");
 
     // Load the key ring
-    let ring = postmaster::keys::KeyRing::load(&keys_path, KeyNaming::Env).unwrap();
+    let ring = postmaster::keys::KeyRing::load(&keys_path, &[KeyNaming::Env]).unwrap();
 
     // Create a dummy env file path for error messages
     let dummy_env = d.join(".env");

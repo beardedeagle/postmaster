@@ -17,13 +17,12 @@ pub(crate) fn is_key_var_name(prefix: &str, name: &str) -> bool {
 
 /// Implementation of [`KeyRing::from_env`]; the contract is documented on
 /// the method.
-pub(super) fn from_env(naming: KeyNaming) -> Result<KeyRing, String> {
-    let prefix = naming.key_prefix();
+pub(super) fn from_env(namings: &[KeyNaming]) -> Result<KeyRing, String> {
     KeyRing::from_pairs(
         std::env::vars()
-            .filter(|(k, _)| is_key_var_name(prefix, k))
+            .filter(|(k, _)| namings.iter().any(|n| is_key_var_name(n.key_prefix(), k)))
             .map(|(k, v)| (k, Zeroizing::new(v))),
-        naming,
+        namings,
     )
     .map_err(|e| format!("environment: {e}"))
 }
@@ -67,7 +66,7 @@ mod tests {
         unsafe {
             std::env::set_var(var_name, &key_hex);
         }
-        let ring = KeyRing::from_env(KeyNaming::Env);
+        let ring = KeyRing::from_env(&[KeyNaming::Env]);
         unsafe {
             std::env::remove_var(var_name);
         }
@@ -84,7 +83,7 @@ mod tests {
         unsafe {
             std::env::set_var(var_name, "not-valid-hex-at-all");
         }
-        let err = KeyRing::from_env(KeyNaming::Env);
+        let err = KeyRing::from_env(&[KeyNaming::Env]);
         unsafe {
             std::env::remove_var(var_name);
         }
@@ -102,9 +101,45 @@ mod tests {
                     "NOT_A_DOTENV_KEY".to_string(),
                     Zeroizing::new("x".to_string())
                 )],
-                KeyNaming::Env,
+                &[KeyNaming::Env],
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn from_env_admits_only_the_required_namings() {
+        // The bundle-ring gap fix: with Bundle required, POSTMASTER_KEY
+        // enters the ring; when it is not required, the same variable is
+        // NOT admitted (least privilege).
+        //
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dotenv_var = "DOTENV_PRIVATE_KEY_TESTNAMINGS";
+        let bundle_var = "POSTMASTER_KEY_TESTNAMINGS";
+        let key_hex = "aa".repeat(32);
+        unsafe {
+            std::env::set_var(dotenv_var, &key_hex);
+            std::env::set_var(bundle_var, &key_hex);
+        }
+        let both = KeyRing::from_env(&[KeyNaming::Env, KeyNaming::Bundle]);
+        let bundle_only = KeyRing::from_env(&[KeyNaming::Bundle]);
+        unsafe {
+            std::env::remove_var(dotenv_var);
+            std::env::remove_var(bundle_var);
+        }
+
+        let both = both.expect("both namings required should load");
+        assert!(both.candidates(dotenv_var).is_some());
+        assert!(both.candidates(bundle_var).is_some());
+
+        let bundle_only = bundle_only.expect("bundle naming alone should load");
+        assert!(
+            bundle_only.candidates(dotenv_var).is_none(),
+            "an unrequired naming must not enter the ring"
+        );
+        assert!(bundle_only.candidates(bundle_var).is_some());
     }
 }

@@ -15,11 +15,20 @@ use crate::keys::KeyRing;
 /// Ordered key-source selection. `credential` is skippable (no
 /// $CREDENTIALS_DIRECTORY or file absent ⇒ try next source); every other
 /// source is terminal: once selected, its failure fails the launcher.
+///
+/// `namings` is the adapter set the config's artifacts require
+/// (`ExecConfig::required_namings`): the ring admits exactly those key
+/// prefixes. Hardcoding a single naming here previously dropped
+/// `POSTMASTER_KEY*` at parse time and broke bundle configs end-to-end.
 // `wanted_vars` is only consumed by the macOS keychain source; on other
 // targets the parameter is unused, so silence that leg's clippy warning
 // without touching the signature or source-selection semantics.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-pub fn load_ring(specs: &[KeySourceSpec], wanted_vars: &[String]) -> Result<KeyRing, String> {
+pub fn load_ring(
+    specs: &[KeySourceSpec],
+    wanted_vars: &[String],
+    namings: &[KeyNaming],
+) -> Result<KeyRing, String> {
     for spec in specs {
         match spec {
             KeySourceSpec::Credential(name) => {
@@ -39,7 +48,7 @@ pub fn load_ring(specs: &[KeySourceSpec], wanted_vars: &[String]) -> Result<KeyR
                                 p.display()
                             ));
                         }
-                        Ok(md) if md.is_file() => return KeyRing::load(&p, KeyNaming::Env),
+                        Ok(md) if md.is_file() => return KeyRing::load(&p, namings),
                         Ok(_) => {
                             return Err(format!(
                                 "{}: credential source is not a regular file",
@@ -58,17 +67,17 @@ pub fn load_ring(specs: &[KeySourceSpec], wanted_vars: &[String]) -> Result<KeyR
                         p.display()
                     ));
                 }
-                return KeyRing::load(p, KeyNaming::Env);
+                return KeyRing::load(p, namings);
             }
             KeySourceSpec::Keychain(service) => {
                 #[cfg(target_os = "macos")]
-                return KeyRing::from_keychain(service, wanted_vars, KeyNaming::Env);
+                return KeyRing::from_keychain(service, wanted_vars, namings);
                 #[cfg(not(target_os = "macos"))]
                 return Err(format!(
                     "key source keychain({service}) is only available on macOS"
                 ));
             }
-            KeySourceSpec::Environment => return KeyRing::from_env(KeyNaming::Env),
+            KeySourceSpec::Environment => return KeyRing::from_env(namings),
         }
     }
     Err("no usable key source (configure keys=[…] or set DOTENV_PRIVATE_KEY*)".into())
@@ -100,7 +109,7 @@ mod tests {
             KeySourceSpec::Credential("nonexistent".to_string()),
             KeySourceSpec::Environment,
         ];
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         // The error should come from the environment source (terminal),
         // proving credential fell through rather than erroring.
         assert!(
@@ -133,7 +142,7 @@ mod tests {
             std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
         }
         let specs = vec![KeySourceSpec::Credential("dotenv-private-key".to_string())];
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
         }
@@ -163,7 +172,7 @@ mod tests {
             std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
         }
         let specs = vec![KeySourceSpec::Credential("subdir".to_string())];
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
         }
@@ -187,7 +196,7 @@ mod tests {
             KeySourceSpec::File(ghost_path.clone()),
             KeySourceSpec::Environment,
         ];
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         assert!(
             err.contains("ghost.keys"),
             "file source should be terminal and error with the path; got: {err}"
@@ -202,7 +211,7 @@ mod tests {
             KeySourceSpec::File(std::path::PathBuf::from("/nix/store/abc/.env.keys")),
             KeySourceSpec::Environment,
         ];
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         assert!(
             err.contains("Nix store"),
             "file source under /nix/store should be terminal and reject; got: {err}"
@@ -232,12 +241,68 @@ mod tests {
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
         }
-        let err = load_ring(&specs, &[]).unwrap_err();
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
         // The error must be from environment (terminal), not "no usable key
         // source" (which would mean environment also fell through).
         assert!(
             !err.contains("no usable key source"),
             "environment should be terminal, not fall through; got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_ring_admits_bundle_naming_when_required() {
+        // Regression for the bundle-ring gap: load_ring used to hardcode
+        // KeyNaming::Env at every source leg, so POSTMASTER_KEY material
+        // never entered the ring and every bundle config failed at
+        // resolve_bundle time. With Bundle in the required namings, the
+        // environment source must admit it.
+        //
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let var_name = "POSTMASTER_KEY_TESTLOADRING";
+        unsafe {
+            std::env::set_var(var_name, "aa".repeat(32));
+        }
+        let specs = vec![KeySourceSpec::Environment];
+        let ring = load_ring(&specs, &[], &[KeyNaming::Bundle]);
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+        let ring =
+            ring.expect("environment source must admit POSTMASTER_KEY* when Bundle is required");
+        assert!(ring.candidates(var_name).is_some());
+    }
+
+    #[test]
+    fn load_ring_excludes_unrequired_namings() {
+        // Least privilege: a bundle config's ring must NOT carry
+        // DOTENV_PRIVATE_KEY* material just because the source provides
+        // it, and vice versa — the ring admits exactly the required set.
+        //
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dotenv_var = "DOTENV_PRIVATE_KEY_TESTLOADRING";
+        let bundle_var = "POSTMASTER_KEY_TESTLOADRING";
+        unsafe {
+            std::env::set_var(dotenv_var, "bb".repeat(32));
+            std::env::set_var(bundle_var, "cc".repeat(32));
+        }
+        let specs = vec![KeySourceSpec::Environment];
+        let ring = load_ring(&specs, &[], &[KeyNaming::Bundle]);
+        unsafe {
+            std::env::remove_var(dotenv_var);
+            std::env::remove_var(bundle_var);
+        }
+        let ring = ring.expect("bundle-required ring should load from POSTMASTER_KEY*");
+        assert!(ring.candidates(bundle_var).is_some());
+        assert!(
+            ring.candidates(dotenv_var).is_none(),
+            "an unrequired naming must not enter the ring"
         );
     }
 }

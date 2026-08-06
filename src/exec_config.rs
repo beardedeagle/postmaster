@@ -100,6 +100,23 @@ impl ExecConfig {
         validate_mode_required_fields(self)?;
         Ok(())
     }
+
+    /// The key-naming conventions this config's artifacts require:
+    /// `Env` when `env_files` are present, `Bundle` when `bundle_files`
+    /// are present (both when both are). `load_ring` admits exactly these
+    /// namings into the key ring — no more (least privilege on key
+    /// material), no less (a bundle config must actually see
+    /// `POSTMASTER_KEY`).
+    pub fn required_namings(&self) -> Vec<KeyNaming> {
+        let mut namings = Vec::with_capacity(2);
+        if !self.env_files.is_empty() {
+            namings.push(KeyNaming::Env);
+        }
+        if !self.bundle_files.is_empty() {
+            namings.push(KeyNaming::Bundle);
+        }
+        namings
+    }
 }
 
 fn validate_mode_required_fields(cfg: &ExecConfig) -> Result<(), String> {
