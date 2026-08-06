@@ -24,6 +24,8 @@ pub(crate) mod monitor;
 pub mod ramdisk;
 pub mod secret_files;
 pub mod server;
+#[cfg(test)]
+pub(crate) mod test_util;
 
 /// The bundle adapter, re-exported so `crate::bundle` keeps resolving.
 pub use adapter::bundle;

@@ -408,11 +408,7 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    /// Serializes tests that mutate process-global env vars (same
-    /// pattern as `keys::source::tests::ENV_LOCK`): the test harness
-    /// runs tests in parallel threads of one process.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::test_util::ENV_LOCK;
 
     fn env_only_cfg() -> ExecConfig {
         serde_json::from_str(r#"{"mode":"env","keys":["environment"],"env_files":["/x/.env"]}"#)
@@ -431,10 +427,11 @@ mod tests {
         let valid = "DOTENV_PRIVATE_KEY_PMVERIFY";
 
         // Positive leg: an exact `PREFIX_<suffix>` var passes. Robust
-        // against any other valid vars a concurrent test may have set.
+        // against any valid key vars ambient in the test runner's own
+        // environment.
         // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized within this module via ENV_LOCK; the
-        // var names are unique to this test.
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
         unsafe {
             std::env::set_var(valid, "aa".repeat(32));
         }
@@ -452,9 +449,11 @@ mod tests {
         unsafe {
             std::env::remove_var(bogus);
         }
-        // env.rs's from_env test holds a valid DOTENV_PRIVATE_KEY_* var
-        // for a microsecond window; if any valid key var was present,
-        // the negative leg is not observable — skip rather than flake.
+        // Guard against an ambient valid key var in the test runner's
+        // own environment (e.g. DOTENV_PRIVATE_KEY exported in CI): if
+        // one is present, the negative leg is not observable — skip
+        // rather than flake. A concurrent test cannot be the source:
+        // every env-mutating test holds the shared ENV_LOCK.
         let any_valid = std::env::vars().any(|(k, _)| {
             crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), &k)
                 || crate::keys::is_key_var_name(KeyNaming::Bundle.key_prefix(), &k)

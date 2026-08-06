@@ -79,13 +79,7 @@ pub fn load_ring(specs: &[KeySourceSpec], wanted_vars: &[String]) -> Result<KeyR
 mod tests {
     use super::*;
     use crate::exec_config::KeySourceSpec;
-
-    /// Serializes tests that mutate the process-global
-    /// `CREDENTIALS_DIRECTORY`. The test harness runs tests in parallel
-    /// threads of one process, so unsynchronized set_var/remove_var on
-    /// the same variable races (observed as a flaky failure of
-    /// `load_ring_credential_rejects_non_file`, 2026-08-04).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::test_util::ENV_LOCK;
 
     #[test]
     fn load_ring_credential_is_skippable() {
@@ -96,8 +90,8 @@ mod tests {
         // source, not from the credential source.
         //
         // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized via ENV_LOCK against the other
-        // CREDENTIALS_DIRECTORY-mutating tests in this module.
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
@@ -132,8 +126,8 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized via ENV_LOCK against the other
-        // CREDENTIALS_DIRECTORY-mutating tests in this module.
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
@@ -162,8 +156,8 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
 
         // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized via ENV_LOCK against the other
-        // CREDENTIALS_DIRECTORY-mutating tests in this module.
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
@@ -223,8 +217,8 @@ mod tests {
         // source" fallback message.
         //
         // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized via ENV_LOCK against the other
-        // CREDENTIALS_DIRECTORY-mutating tests in this module.
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
         let _guard = ENV_LOCK.lock().unwrap();
         let var_name = "DOTENV_PRIVATE_KEY_TESTTERMINAL";
         unsafe {

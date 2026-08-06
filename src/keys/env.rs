@@ -32,6 +32,7 @@ pub(super) fn from_env(naming: KeyNaming) -> Result<KeyRing, String> {
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
+    use crate::test_util::ENV_LOCK;
 
     #[test]
     fn is_key_var_name_rules() {
@@ -50,17 +51,19 @@ mod tests {
     fn from_env_loads_and_fails_closed() {
         // from_env reads ALL DOTENV_PRIVATE_KEY* vars from the process
         // environment and delegates to from_pairs. This is a single test
-        // (not two) because env mutation is global and tests run in
-        // parallel — two tests mutating DOTENV_PRIVATE_KEY* simultaneously
-        // would race. Using a unique suffix to avoid collision with any
-        // ambient vars in the test runner.
+        // (not two) because env mutation is global; the shared ENV_LOCK
+        // serializes it against every other env-mutating test. Using a
+        // unique suffix to avoid collision with any ambient vars in the
+        // test runner.
+        //
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
         let var_name = "DOTENV_PRIVATE_KEY_TESTFROMENV";
         let key_hex = "aa".repeat(32);
 
         // Positive path: set a valid key, from_env succeeds.
-        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). This test does not spawn threads and the var name
-        // is unique, so no concurrent test mutates the same var.
         unsafe {
             std::env::set_var(var_name, &key_hex);
         }
