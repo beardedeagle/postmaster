@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Remediated all 33 findings of the 2026-08-02 security audit (5 HIGH,
+  11 MEDIUM, 17 LOW/INFO — 12 fixed, 4 documented as accepted).
+- Bundle entries are now name-bound: a ciphertext decrypts only under its
+  own entry name (AES-GCM AAD); relocating it fails authentication.
+  Suite bumped to `ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad`;
+  pre-AAD bundles are rejected. AAD support comes from the additive
+  `encrypt_with_aad`/`decrypt_with_aad` on the ecies fork (upstream PR
+  ecies/rs#159), consumed via a git+rev `[patch.crates-io]` pin.
+- Hardening: a sibling launch monitor now owns stop semantics on the
+  exec path — the launcher forks after zeroization, the parent execs the
+  service (MainPID unchanged), and the fork-child supervises it:
+  synchronous stop-signal forwarding with a fixed 250 ms grace before
+  SIGKILL escalation, pidfd/kqueue liveness, and plaintext-file cleanup
+  on EVERY service-death path (natural exit, `kill -9`, crash) — the
+  macOS termination-signal deferral across the plaintext-write window
+  remains, while the sigaction flag-handler and second pre-exec gate are
+  retired (the monitor subsumes the race; fork(2) on Linux is the one
+  libc FFI call there, review-gated); logged hardening failures;
+  fd-pinned secret-file writes and fd-relative prune/cleanup;
+  `O_NOFOLLOW` ciphertext opens; sentinel-guarded bulk cleanup
+  (`.postmaster-managed`); keychain reads via the Security.framework API
+  (no `/usr/bin/security`); `--verify-keys` fails on ANY undecryptable
+  value, including under `strict:false`; daemon config rejects unknown
+  fields (root and nested); Linux `id` resolved from verified absolute
+  paths only; setup verification reuses the runtime key-variable
+  predicate; bundle `encoding: "utf8"` is validated at resolution.
+
+### Changed
+
+- Module restructure per file-size limits (500/750/1000 LOC bands):
+  `keys/`, `cli/`, `adapter/` domains; conformance suite split under
+  `tests/exec_conformance/`.
+- Dependencies: base64 0.23 plus the minor/patch set (libc 0.2.189,
+  serde family 1.0.229, serde_json 1.0.151, syn 3.0.3).
+- CI automation conforms to the repo doctrine: in-repo composites only
+  (setup-rust, setup-nix — the latter verifies the pinned installer's
+  sha256 before executing), actions pinned by sha, workflows consume
+  just recipes.
+
+### Added
+
+- "Unsafe Code" documentation section: exception policy and a registry
+  of every unsafe site (signal deferral, macOS libc boundary, systemd fd
+  ownership, test-only env mutation).
+- `multiple_crate_versions` clippy lint plus `[bans] multiple-versions`
+  in deny.toml (syn skipped for the wasm-gated duplicate).
+
+## [0.1.0] - 2026-07-28
+
 ### Added
 
 - Standalone postmaster binary — a format-neutral local secret

@@ -2,7 +2,7 @@
 
 All postmaster commands, flags, and exit codes. The CLI is hand-rolled
 with no external parsing library — every flag below is the complete
-set, directly from the argument parser in `config.rs`.
+set, directly from the argument parser in `cli/mod.rs`.
 
 ## Synopsis
 
@@ -65,10 +65,10 @@ $ postmaster exec --config <exec.json> [--check] [--verify-keys] -- <command> [a
 - On failure the error is logged and the process exits non-zero.
 - `--check` does not accept a command after `--`.
 - `--verify-keys` performs a preflight check: after loading and
-  decrypting, if the resolved values are empty but the env files
-  contain `encrypted:` values, the keys are stale and the exec
-  aborts. This catches the `strict: false` case where stale keys
-  would silently skip undecryptable values.
+  decrypting, if any value was skipped because the key ring could not
+  decrypt it, the keys are stale and the exec aborts naming the key.
+  This catches the `strict: false` case where stale keys would
+  otherwise silently skip undecryptable values (partial or empty set).
 
 Exit codes:
 
@@ -113,6 +113,12 @@ $ postmaster cleanup --config <exec.json>
 | Flag | Description |
 | --- | --- |
 | `--config <path>` | Path to `exec.json` (reads `secrets_dir` from config) |
+
+Safety guard: cleanup refuses to bulk-delete a **non-empty** directory
+that lacks the `.postmaster-managed` sentinel file (dropped by postmaster
+when it writes there) — a misconfigured `secrets_dir` can never wipe a
+directory postmaster doesn't manage. Empty or missing directories are
+fine.
 
 Wired to `ExecStopPost` in systemd by the Nix module. On macOS, the
 ramdisk destruction handles cleanup automatically when the launchd job

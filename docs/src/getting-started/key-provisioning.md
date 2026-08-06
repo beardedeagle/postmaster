@@ -93,7 +93,8 @@ $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
 ```
 
 No file on disk — keys live as generic-password items in the System
-keychain. Postmaster reads them natively via `security(1)`.
+keychain. Postmaster reads them natively via the Security.framework
+API (`security-framework` crate).
 
 ## Rotation
 
@@ -126,5 +127,5 @@ Use `--verify-keys` to catch stale keys before they cause a silent
 failure:
 
 ```console
-$ postmaster exec --config exec.json --verify-keys -- /bin/true
+$ postmaster exec --config exec.json --verify-keys -- /usr/bin/true
 ```

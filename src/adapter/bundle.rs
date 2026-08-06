@@ -10,10 +10,11 @@
 //! - `entries`: map of key name → `{ encoding, ciphertext }`
 //!
 //! All fields are public metadata except `ciphertext`, which is
-//! encrypted and authenticated. Entries use the same identifier rule
-//! as `.env`-derived keys: `[A-Za-z_][A-Za-z0-9_]*`.
-
-#![allow(missing_docs, missing_debug_implementations)]
+//! encrypted and authenticated. Each entry's ciphertext is additionally
+//! bound to its key name as AES-GCM additional authenticated data (AAD):
+//! a ciphertext cut from one entry and pasted under another name fails
+//! decryption (audit 2026-08-02 A7). Entries use the same identifier
+//! rule as `.env`-derived keys: `[A-Za-z_][A-Za-z0-9_]*`.
 
 use std::path::Path;
 
@@ -71,9 +72,17 @@ pub struct BundleEntry {
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
+    /// UTF-8 string value (env projection rejects non-UTF-8).
     Utf8,
+    /// Raw byte value (files/credentials preserve byte-exact).
     Bytes,
 }
+
+/// The only supported crypto suite: ECIES (secp256k1, HKDF-SHA256,
+/// AES-256-GCM) with the entry name bound as AES-GCM additional
+/// authenticated data. Pre-AAD v1 ciphertexts are rejected at decryption
+/// (authentication failure), not just here.
+const SUITE: &str = "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad";
 
 /// Parse a bundle JSON file from raw bytes.
 pub fn parse_bundle(raw: &[u8], path: &Path) -> Result<Bundle, String> {
@@ -93,9 +102,9 @@ pub fn parse_bundle(raw: &[u8], path: &Path) -> Result<Bundle, String> {
             bundle.version
         ));
     }
-    if bundle.suite != "ecies-secp256k1-hkdf-sha256-aes-256-gcm" {
+    if bundle.suite != SUITE {
         return Err(format!(
-            "{}: unsupported suite {:?} (expected ecies-secp256k1-hkdf-sha256-aes-256-gcm)",
+            "{}: unsupported suite {:?} (expected {SUITE})",
             path.display(),
             bundle.suite
         ));
@@ -136,21 +145,35 @@ pub fn resolve_bundle(
                 .decode(&entry.ciphertext)
                 .map_err(|_| format!("{}: {name} is not valid base64", bundle_path.display()))?,
         );
+        // AAD = the entry name: a ciphertext pasted under a different
+        // entry fails authentication here (audit 2026-08-02 A7).
         let mut decrypted: Option<Zeroizing<Vec<u8>>> = None;
         for sk in candidates {
-            if let Ok(pt) = ecies::decrypt(&sk[..], &ciphertext) {
+            if let Ok(pt) = ecies::decrypt_with_aad(&sk[..], &ciphertext, name.as_bytes()) {
                 decrypted = Some(Zeroizing::new(pt));
                 break;
             }
         }
         match decrypted {
-            Some(pt) => out.push((name.clone(), pt, entry.encoding)),
+            Some(pt) => {
+                // `utf8` is a promise the bundle makes to env-mode
+                // consumers: validate it at the trust boundary and fail
+                // closed — invalid bytes must never flow into an
+                // environment value. `bytes` entries stay byte-exact.
+                if entry.encoding == Encoding::Utf8 && std::str::from_utf8(&pt).is_err() {
+                    return Err(format!(
+                        "{}: {name} declares utf8 but is not valid UTF-8",
+                        bundle_path.display()
+                    ));
+                }
+                out.push((name.clone(), pt, entry.encoding));
+            }
             None => {
                 let _ = ciphertext; // zeroize on drop
+                // No candidate count in the error text (audit 2026-08-02 A15).
                 return Err(format!(
-                    "{}: no key under {var} decrypts {name} ({} candidate(s) tried)",
-                    bundle_path.display(),
-                    candidates.len()
+                    "{}: no key under {var} decrypts {name}",
+                    bundle_path.display()
                 ));
             }
         }
@@ -186,7 +209,7 @@ mod tests {
             format: "postmaster.bundle".into(),
             version: 1,
             profile: Some("test".into()),
-            suite: "ecies-secp256k1-hkdf-sha256-aes-256-gcm".into(),
+            suite: SUITE.into(),
             recipients: vec![Recipient {
                 id: "test".into(),
                 public_key: test_pk_hex(),
@@ -195,9 +218,9 @@ mod tests {
         }
     }
 
-    fn enc(value: &str) -> String {
+    fn enc(name: &str, value: &str) -> String {
         let pk = hex::decode(test_pk_hex()).unwrap();
-        let ct = ecies::encrypt(&pk, value.as_bytes()).unwrap();
+        let ct = ecies::encrypt_with_aad(&pk, value.as_bytes(), name.as_bytes()).unwrap();
         BASE64.encode(ct)
     }
 
@@ -206,7 +229,7 @@ mod tests {
         let raw = serde_json::json!({
             "format": "wrong",
             "version": 1,
-            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
             "recipients": [],
             "entries": {}
         });
@@ -223,7 +246,7 @@ mod tests {
         let raw = serde_json::json!({
             "format": "postmaster.bundle",
             "version": 99,
-            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
             "recipients": [],
             "entries": {}
         });
@@ -257,7 +280,7 @@ mod tests {
         let raw = serde_json::json!({
             "format": "postmaster.bundle",
             "version": 1,
-            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
             "recipients": [],
             "entries": {
                 "BAD.KEY": { "encoding": "utf8", "ciphertext": "dGVzdA==" }
@@ -276,7 +299,7 @@ mod tests {
         let raw = serde_json::json!({
             "format": "postmaster.bundle",
             "version": 1,
-            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+            "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
             "recipients": [],
             "entries": {},
             "unknown_field": "should fail"
@@ -292,7 +315,7 @@ mod tests {
 
     #[test]
     fn resolve_bundle_decrypts_entries() {
-        let ct = enc("hello-bundle");
+        let ct = enc("SECRET", "hello-bundle");
         let bundle = make_bundle(vec![("SECRET", &ct, Encoding::Utf8)]);
         let ring = crate::keys::tests::make_test_ring();
         let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
@@ -303,13 +326,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_bundle_rejects_relocated_ciphertext() {
+        // audit 2026-08-02 A7: a ciphertext encrypted under one entry
+        // name must not decrypt under another.
+        let ct = enc("REAL", "top-secret");
+        let bundle = make_bundle(vec![("FAKE", &ct, Encoding::Utf8)]);
+        let ring = crate::keys::tests::make_test_ring();
+        let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
+        assert!(err.contains("no key under"), "{err}");
+    }
+
+    #[test]
     fn resolve_bundle_fails_on_wrong_key() {
         let other_sk = "22".repeat(32);
         let other_sk_bytes = hex::decode(&other_sk).unwrap();
         let other_sk = ecies::SecretKey::parse_slice(&other_sk_bytes).unwrap();
         let other_pk = ecies::PublicKey::from_secret_key(&other_sk);
-        let ct = BASE64
-            .encode(ecies::encrypt(&other_pk.serialize_compressed(), b"unreachable").unwrap());
+        let ct = BASE64.encode(
+            ecies::encrypt_with_aad(&other_pk.serialize_compressed(), b"unreachable", b"SECRET")
+                .unwrap(),
+        );
         let bundle = make_bundle(vec![("SECRET", &ct, Encoding::Utf8)]);
         let ring = crate::keys::tests::make_test_ring();
         let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
@@ -320,7 +356,7 @@ mod tests {
     fn resolve_bundle_handles_bytes_encoding() {
         let binary_val = b"\x00\x01\x02\xff";
         let pk = hex::decode(test_pk_hex()).unwrap();
-        let ct = BASE64.encode(ecies::encrypt(&pk, binary_val).unwrap());
+        let ct = BASE64.encode(ecies::encrypt_with_aad(&pk, binary_val, b"TLS_KEY").unwrap());
         let bundle = make_bundle(vec![("TLS_KEY", &ct, Encoding::Bytes)]);
         let ring = crate::keys::tests::make_test_ring();
         let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
@@ -329,9 +365,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_bundle_rejects_invalid_utf8_when_declared_utf8() {
+        // An entry declaring `encoding: "utf8"` whose plaintext is not
+        // valid UTF-8 must fail closed; the same plaintext under
+        // `encoding: "bytes"` stays byte-exact.
+        let invalid = b"\xff\xfe";
+        let pk = hex::decode(test_pk_hex()).unwrap();
+        let ct = BASE64.encode(ecies::encrypt_with_aad(&pk, invalid, b"GREETING").unwrap());
+        let ring = crate::keys::tests::make_test_ring();
+
+        let bundle = make_bundle(vec![("GREETING", &ct, Encoding::Utf8)]);
+        let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
+        assert!(
+            err.contains("GREETING declares utf8 but is not valid UTF-8"),
+            "{err}"
+        );
+
+        let bundle = make_bundle(vec![("GREETING", &ct, Encoding::Bytes)]);
+        let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
+        assert_eq!(&resolved[0].1[..], &invalid[..]);
+    }
+
+    #[test]
     fn resolve_bundle_multiple_entries() {
-        let ct1 = enc("value1");
-        let ct2 = enc("value2");
+        let ct1 = enc("KEY_A", "value1");
+        let ct2 = enc("KEY_B", "value2");
         let bundle = make_bundle(vec![
             ("KEY_A", &ct1, Encoding::Utf8),
             ("KEY_B", &ct2, Encoding::Utf8),

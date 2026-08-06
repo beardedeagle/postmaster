@@ -181,15 +181,15 @@ read or written:
 
 ### External binary verification
 
-Postmaster verifies the integrity of external binaries before
-invoking them in the secret path:
+Keychain access on macOS uses the Security.framework API in-process —
+no external binary is invoked for it. The external binaries postmaster
+does invoke in secret-adjacent paths (`/usr/bin/id`, `/sbin/mount`,
+`/usr/bin/hdiutil`) are verified before use:
 
-- **macOS:** `/usr/bin/security` is verified via `codesign -v` before
-  being invoked for keychain access. This ensures the binary has a
-  valid Apple code signature and has not been tampered with or
-  replaced.
-- **Linux:** External binaries are verified as regular files owned
-  by root (uid 0) and not world-writable.
+- **macOS:** `codesign -v` verifies a valid Apple code signature
+  (defense-in-depth; the binaries are also SIP-protected).
+- **Linux:** verified as regular files owned by root (uid 0) and not
+  world-writable.
 
 ### Input validation
 
@@ -217,11 +217,14 @@ the secret path:
 ### Key freshness verification
 
 Postmaster provides `--verify-keys` on `exec` to detect stale keys
-from a previous rotation cycle. After loading and decrypting, if the
-resolved values are empty but the env files contain `encrypted:`
-values, the keys are stale and the exec aborts with a clear error.
-This catches the `strict: false` case where stale keys would silently
-skip undecryptable values and launch the child with no secrets.
+from a previous rotation cycle. After loading and decrypting, if any
+value was skipped because the key ring could not decrypt it, the exec
+aborts with a clear error naming the key. This catches the
+`strict: false` case where stale keys would otherwise silently skip
+undecryptable values and launch the child with a partial or empty
+secret set. Bundle files need no such check: bundle resolution is
+all-or-nothing, so a stale bundle key already aborts the exec
+regardless of `strict`.
 
 ## Residuals: what postmaster cannot fully prevent
 
@@ -249,6 +252,31 @@ A process running as root can read any other process's memory via
 `/proc/PID/mem` or `ptrace`. This is the Unix trust boundary — root is
 always game over. Postmaster's `PR_SET_DUMPABLE=0` and `PT_DENY_ATTACH`
 prevent non-privileged peers from attaching, but cannot stop root.
+
+### Rotation timing oracle
+
+When multiple private keys are configured for one variable (the
+comma-separated rotation convention), decryption tries each candidate in
+order and stops at the first that works. A local observer measuring
+launch or fetch latency can infer which candidate matched — i.e., the
+rotation position of the current key. Accepted (audit 2026-08-02 A14):
+the observer learns only the rotation index, not key material, and
+already needs same-host access; equalizing the timing would require
+attempting every candidate on every decryption for no meaningful gain.
+
+### Env-file content is trusted input (no variable-name denylist)
+
+Postmaster injects what the configured env files and bundles say,
+including plaintext passthrough entries. There is no denylist of
+environment variable names (audit 2026-08-02 A18): names like
+`LD_PRELOAD` or `PATH` are honored, because real deployments
+legitimately set variables of this family (`LD_LIBRARY_PATH` is common).
+The protection boundary is artifact authorship: anyone who can write the
+env file (or produce valid ciphertext for it) already controls what the
+child process receives. Treat plaintext passthrough entries in
+world-readable artifacts as code-level intent, and keep artifact write
+access tight. If a denylist is ever wanted, it belongs in config
+validation as an explicit opt-in policy, not a silent default.
 
 ### Swap and core dumps
 
@@ -358,6 +386,22 @@ to be intact at the moment of `execvp`, and `execvp` replaces the
 process image without running destructors. Fork+wait would keep
 secrets in a long-lived parent heap (strictly worse) and was rejected.
 
+### Monitor inherited heap — Mitigated
+
+The sibling monitor is forked after zeroization, so the key ring and
+the `Zeroizing` resolved values are already wiped in the copy it
+inherits. One plaintext-bearing structure does cross the fork: the
+`extra` env array (plaintext values in env mode and in files-mode
+passthrough). The monitor scrubs its copy **first**, before the
+supervision loop starts: each `OsString` is consumed into its existing
+buffer (no copy) and wiped in place with `zeroize` — free() alone
+would leave the bytes in the monitor's mapped pages for its whole life,
+and the monitor never allocates again, so they would never even be
+reused. The parent's copy dies with `execvp` (image replacement). What
+the monitor keeps beyond the scrub is non-secret metadata only: the
+pinned secrets-dir fd and entry names (already visible in the
+directory listing).
+
 ### File-backed memory (page cache) — Mitigated by design
 
 Postmaster does not `mmap` secret files. Secret files on Linux tmpfs
@@ -416,12 +460,54 @@ privileged memory inspection within the same kernel.
 
 ### Plaintext file persistence window (files mode) — Mitigated
 
-Secret files written to the tmpfs/ramdisk are removed by `postmaster
-cleanup --config <exec.json>`, wired to `ExecStopPost` in the systemd
-Nix module — it runs immediately after the child exits. On macOS, the
-ramdisk is destroyed when the `postmaster-ramdisk` launchd job stops.
-The `prune_stale` function also removes stale files from prior
-launches before writing new ones.
+Secret files written to the tmpfs/ramdisk are removed by the **sibling
+launch monitor** (design 2026-08-05), by `postmaster cleanup --config
+<exec.json>` wired to `ExecStopPost` in the systemd Nix module, and by
+ramdisk destruction when the `postmaster-ramdisk` launchd job stops. The
+`prune_stale` function also removes stale files from prior launches
+before writing new ones.
+
+A `TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT across the
+write window on both platforms, so a signal landing mid-write cannot
+strand partial plaintext (audit 2026-08-02 A11). At the end of the
+window — after zeroization, before `execvp` — the launcher forks. The
+parent restores its pre-guard mask and execs the service (MainPID
+unchanged); the fork-child is the **sibling monitor**: it keeps the
+four termination signals blocked for life and owns stop semantics.
+
+*Monitor model (2026-08-05):* the monitor consumes stop signals
+synchronously (no handlers anywhere — the sigaction flag-handler and
+second pre-exec gate were retired with this design), forwards them to
+the service, and escalates to SIGKILL after a **250 ms grace** — a
+single global constant, deliberately not configurable (per-service
+erosion of a security policy is unacceptable; the per-unit knob is the
+manager's own stop timeout). Cleanup runs on **every** death path:
+forwarded stops, natural exit, `kill -9`, crashes. Liveness uses a
+pidfd + `poll` on Linux and kqueue `NOTE_EXIT` on macOS — both fire at
+exit (zombie- and PID-reuse-proof); `kill(pid, 0)` polling is fallback
+only. On systemd the monitor receives its own copy of cgroup-wide stop
+signals, so it never depends on a signal the launcher already consumed.
+On launchd, signals go to the job's main process only, so the monitor
+is primarily a cleanup-watcher there — the macOS stop-path exposure
+(plus the bounded PID-reuse window of its `kill(2)` forwarding, Darwin
+having no pidfd) remains bounded by the ramdisk teardown at job stop,
+the strongest backstop in the system. A monitor that dies before the
+service leaves the pre-existing backstops (`ExecStopPost`, teardown,
+`prune_stale`) — the same floor as before the monitor existed.
+
+### Shared `secrets_dir` (multi-tenant misuse) — Documented contract
+
+`secrets_dir` is single-tenant per service: `prune_stale` and the
+monitor's cleanup delete files based on one service's key set, so two
+services sharing one directory lets one service's lifecycle delete the
+other's live files. The impact is availability, not confidentiality —
+no plaintext crosses services. The generated Nix modules comply by
+construction (Linux: each unit mounts a namespace-private tmpfs at the
+path; darwin: per-service subdirectory under the shared ramdisk), so
+this binds hand-written configs only: one `secrets_dir` per service.
+Runtime enforcement via a service-identity sentinel is a
+considered-and-deferred hardening for the broker era, when multi-tenant
+topologies become real by design.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 
@@ -433,13 +519,13 @@ as the ramdisk.
 
 ### fd closure before execvp — Mitigated
 
-`OFlags::CLOEXEC` is set on all `rustix::fs::open` calls (5 sites) —
-the kernel automatically closes these on execvp, preventing the child
-from inheriting postmaster's open file descriptors. Third-party code
-(e.g., dotenvy) may open fds without `CLOEXEC`; a `pre_exec` hook to
-close those was considered but not implemented because it requires
-unsafe code or a new cross-platform dependency. Postmaster's own fds
-are fully covered.
+`OFlags::CLOEXEC` is set on every file descriptor postmaster opens (all
+`rustix::fs::open`/`openat` sites) — the kernel automatically closes
+these on execvp, preventing the child from inheriting postmaster's open
+file descriptors. Third-party parsers never open their own fds in
+postmaster's paths: dotenvy is only invoked as `dotenvy::from_read_iter`
+on fds postmaster itself opened (`O_NOFOLLOW | CLOEXEC`). Postmaster's
+own fds are fully covered.
 
 ### Secrets directory path exposure — Mitigated
 

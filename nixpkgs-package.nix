@@ -38,7 +38,10 @@ rustPlatform.buildRustPackage rec {
 
   cargoLock = {
     lockFile = src + "/postmaster/Cargo.lock";
-    # No outputHashes needed — all dependencies come from crates.io.
+    # While ecies is git-pinned via [patch.crates-io] (audit 2026-08-02 A7):
+    # the git dep's fetch hash. Drop once the upstream ecies PR (ecies/rs#159)
+    # ships on crates.io and the patch section is removed.
+    outputHashes."ecies-0.2.11" = "sha256-FOKSWQNJ9dZbQZdLI49o1OzeFoS3isQKchylQT/FaFk=";
   };
 
   meta = {

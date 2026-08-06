@@ -24,10 +24,10 @@ Preferred channels (either is fine):
 
 1. **GitHub private advisory (recommended).**
    Open a report at
-   https://github.com/beardedeagle/postmaster/security/advisories/new
+   [security advisories](https://github.com/beardedeagle/postmaster/security/advisories/new).
    This keeps the discussion private and allows coordinated disclosure.
 
-2. **Email.** Write to randy@heroictek.com.
+2. **Email.** Write to <randy@heroictek.com>.
 
 Please include as much of the following as you can:
 

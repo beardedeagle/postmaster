@@ -11,7 +11,7 @@
 //! every adapter at compile time — adding a variant is a deliberate act
 //! that forces all code paths to acknowledge it.
 
-#![allow(missing_docs, missing_debug_implementations)]
+pub mod bundle;
 
 use std::path::Path;
 
@@ -74,16 +74,17 @@ impl KeyNaming {
                 let env = rest.strip_prefix('.').ok_or_else(|| {
                     format!("{base}: env files must follow the `.env[.<environment>]` convention")
                 })?;
-                let suffix: String = env
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() {
-                            c.to_ascii_uppercase()
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
+                // Reject anything outside [A-Za-z0-9_]: such characters
+                // would sanitize to '_', making distinct filenames collide
+                // on the same key variable (`.env..x` ≡ `.env._x`)
+                // (audit 2026-08-02 A20). Letters fold to upper case, the
+                // dotenvx convention.
+                if env.is_empty() || !env.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Err(format!(
+                        "{base}: environment name must be non-empty [A-Za-z0-9_] only"
+                    ));
+                }
+                let suffix: String = env.chars().map(|c| c.to_ascii_uppercase()).collect();
                 Ok(format!("{}_{}", self.key_prefix(), suffix))
             }
             KeyNaming::Bundle => Ok(self.key_prefix().into()),
@@ -96,5 +97,48 @@ impl KeyNaming {
             KeyNaming::Env => format!("no {}* entries", self.key_prefix()),
             KeyNaming::Bundle => format!("no {} entries", self.key_prefix()),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_var_for_env_mapping() {
+        assert_eq!(
+            KeyNaming::Env.key_var_for(Path::new("/x/.env")).unwrap(),
+            "DOTENV_PRIVATE_KEY"
+        );
+        assert_eq!(
+            KeyNaming::Env
+                .key_var_for(Path::new("/x/.env.production"))
+                .unwrap(),
+            "DOTENV_PRIVATE_KEY_PRODUCTION"
+        );
+    }
+
+    #[test]
+    fn key_var_for_rejects_aliasing_names() {
+        // audit 2026-08-02 A20: `.env..x` used to alias `.env._x` onto the
+        // same key variable (DOTENV_PRIVATE_KEY__X); lossy names now fail.
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env..x")).is_err());
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.-x")).is_err());
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.")).is_err());
+        assert_eq!(
+            KeyNaming::Env.key_var_for(Path::new("/x/.env._x")).unwrap(),
+            "DOTENV_PRIVATE_KEY__X"
+        );
+    }
+
+    #[test]
+    fn key_var_for_bundle_is_constant() {
+        assert_eq!(
+            KeyNaming::Bundle
+                .key_var_for(Path::new("/x/anything.json"))
+                .unwrap(),
+            "POSTMASTER_KEY"
+        );
     }
 }

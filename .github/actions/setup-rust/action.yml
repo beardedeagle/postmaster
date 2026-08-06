@@ -1,0 +1,107 @@
+name: Setup Rust and just
+description: Install the pinned Rust toolchain (from rust-toolchain.toml), just, and optional cargo tools.
+
+inputs:
+  targets:
+    description: Optional space-separated list of additional Rust targets to install.
+    required: false
+    default: ""
+  install-just:
+    description: Whether to install the pinned just command runner.
+    required: false
+    default: "true"
+  just-version:
+    description: just runner version to install (not the Rust compiler version).
+    required: false
+    default: "1.51.0"
+  install-cargo-deny:
+    description: Whether to install cargo-deny.
+    required: false
+    default: "false"
+  install-cargo-audit:
+    description: Whether to install cargo-audit.
+    required: false
+    default: "false"
+  install-target-dir:
+    description: Cargo target directory for tool installation builds.
+    required: false
+    default: target/cargo-install
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust toolchain
+      shell: bash
+      env:
+        RUST_TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "rustup must be preinstalled; refusing to run an unpinned remote installer" >&2
+          exit 1
+        fi
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        fi
+        # Installs the toolchain and components pinned in rust-toolchain.toml.
+        rustup show
+        if [[ -n "$RUST_TARGETS" ]]; then
+          rustup target add $RUST_TARGETS
+        fi
+
+    - name: Install just
+      if: ${{ inputs.install-just == 'true' }}
+      shell: bash
+      env:
+        JUST_VERSION: ${{ inputs.just-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        # Probe by actually running `just`, not `command -v just`: a mise/asdf
+        # shim on PATH satisfies `command -v` but fails at call time with
+        # "No version is set for shim: just" when no version is pinned. If it
+        # does not run, or runs but reports a version other than the pin, install
+        # the pinned just and prepend ~/.cargo/bin so the real binary shadows
+        # any lingering shim for the rest of the job.
+        install_pinned_just() {
+          cargo install just --version "$JUST_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+          if [[ -n "${GITHUB_PATH:-}" ]]; then
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          "$HOME/.cargo/bin/just" --version
+        }
+        if found="$(just --version 2>/dev/null)"; then
+          # `just --version` reports "just X.Y.Z"
+          found_version="${found#just }"
+          if [[ "$found_version" == "$JUST_VERSION" ]]; then
+            echo "just already available at pinned version: $(command -v just) -> $found"
+          else
+            echo "just version mismatch: found '$found', pinned is 'just $JUST_VERSION'; installing pinned version"
+            install_pinned_just
+          fi
+        else
+          echo "no runnable just found; installing pinned just $JUST_VERSION"
+          install_pinned_just
+        fi
+
+    - name: Install cargo-deny
+      if: ${{ inputs.install-cargo-deny == 'true' }}
+      shell: bash
+      env:
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        if ! command -v cargo-deny >/dev/null 2>&1; then
+          cargo install cargo-deny --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+        fi
+
+    - name: Install cargo-audit
+      if: ${{ inputs.install-cargo-audit == 'true' }}
+      shell: bash
+      env:
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        if ! command -v cargo-audit >/dev/null 2>&1; then
+          cargo install cargo-audit --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+        fi

@@ -120,7 +120,8 @@ filename selects the private key variable:
 
 - `.env` maps to `DOTENV_PRIVATE_KEY`
 - `.env.production` maps to `DOTENV_PRIVATE_KEY_PRODUCTION`
-- non-alphanumeric environment suffix bytes normalize to `_`
+- environment names must be non-empty `[A-Za-z0-9_]` (letters fold to
+  upper case); anything else is rejected
 
 The `.env` adapter is the first adapter, not the ceiling of the system.
 
@@ -139,7 +140,7 @@ diff, while encrypted values remain opaque base64 strings.
   "format": "postmaster.bundle",
   "version": 1,
   "profile": "production",
-  "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+  "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
   "recipients": [
     {
       "id": "host:api-01",
@@ -160,10 +161,16 @@ diff, while encrypted values remain opaque base64 strings.
 ```
 
 All fields above are public metadata except `ciphertext`, which is encrypted
-and authenticated. The metadata that affects interpretation must be covered
-by authentication so a store or repo adversary cannot rename a key, change a
-profile, change a recipient id, switch an encoding, or replay a value between
-profiles without detection.
+and authenticated. Each entry's ciphertext is additionally bound to its key
+name as AES-GCM additional authenticated data (the `-entry-aad` suite): a
+store or repo adversary who cuts a ciphertext from one entry and pastes it
+under another key name gets an authentication failure at decryption, not a
+mislabeled secret.
+
+The remaining metadata (profile, recipient ids, encodings) is not yet
+cryptographically bound. Binding it requires specifying canonical serialized
+bytes for the authenticated metadata first — generated artifacts need
+deterministic bytes for reproducible builds and stable test vectors.
 
 The design constraints are:
 
@@ -179,9 +186,6 @@ The design constraints are:
 - `encoding` is either `utf8` or `bytes`. `env` projection rejects bytes that
   cannot become a POSIX environment value; `files` and `credentials` preserve
   byte-exact values.
-- The canonical serialized bytes for authenticated metadata must be specified
-  before implementation. Generated artifacts need deterministic bytes for
-  reproducible builds and stable test vectors.
 - A bundle can contain many entries for one projection, but it does not
   encode service-manager policy. Projection remains in the `postmaster`
   config, not inside the encrypted artifact.
@@ -199,7 +203,7 @@ The implementation ships with conformance vectors for:
 - unknown version
 - tampered authenticated metadata
 - wrong local private key
-- replayed ciphertext under a different entry name or profile
+- replayed ciphertext under a different entry name
 
 ## Key sources
 
