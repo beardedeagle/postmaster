@@ -52,7 +52,7 @@ mask operations: the unsafe surface grows in size, not in kind.
 | Signal floods | Many termination signals while blocked | Non-realtime signals coalesce in the kernel; the flag records one — any of them means die |
 | Mask leak to child | Child inheriting blocked termination signals | Mask restored before `execvp` on every path (explicit + `Drop` on early-Err) |
 | Lost signal | Deferred signal swallowed | `die_by` resets `SIG_DFL`, restores the saved mask, re-raises; `libc::_exit(128 + sig)` if `raise` itself fails |
-| Signal after final check | TERM lands between flag check and `execvp` | Recorded by the handler but unexamined — the launch proceeds and the manager's escalation (SIGKILL) performs the stop. Supervision-semantics, not plaintext exposure (the files are the child's by design) |
+| Signal after final check | TERM lands between flag check and `execvp` | The flag is read a second time immediately before `execvp`; only a signal inside the execve path itself (~microseconds) can slip through — recorded but unexamined, the manager's escalation (SIGKILL) performs the stop. Supervision-semantics, not plaintext exposure (the files are the child's by design) |
 
 ## Remaining Risks
 

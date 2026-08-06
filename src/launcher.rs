@@ -136,6 +136,15 @@ impl TerminationGuard {
         }
     }
 
+    /// A termination signal recorded by `record_sig` since `disarm`, if
+    /// any. Read once more immediately before `execvp` so a signal
+    /// consumed in the disarm→exec gap is not carried silently into the
+    /// child (A11).
+    fn recorded(&self) -> Option<i32> {
+        let sig = PENDING_SIG.load(Ordering::Relaxed);
+        (sig != 0).then_some(sig)
+    }
+
     /// Restore the saved signal mask. Always called before execvp — the
     /// child must not inherit blocked termination signals.
     fn restore_mask(&self) {
@@ -181,6 +190,11 @@ impl TerminationGuard {
     /// No persistence window exists on non-macOS platforms (see above):
     /// always clear.
     fn disarm(&self) -> Option<i32> {
+        None
+    }
+
+    /// Always clear (see above).
+    fn recorded(&self) -> Option<i32> {
         None
     }
 
@@ -500,10 +514,17 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     // disarm() already restored the pre-guard signal mask, and
     // caught-signal dispositions reset to default at execvp — the child
     // starts with a clean signal state.
-    let err = std::process::Command::new(program)
-        .args(&argv[1..])
-        .envs(extra)
-        .exec(); // only returns on failure
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(&argv[1..]).envs(extra);
+    // Final gate: a termination signal recorded since disarm() must not
+    // be carried silently into the child — clean up and die by it (A11).
+    if let Some(sig) = sig_guard.recorded() {
+        if let Some(dir_fd) = &secrets_dir_fd {
+            cleanup_written(dir_fd, &written);
+        }
+        sig_guard.die_by(sig);
+    }
+    let err = cmd.exec(); // only returns on failure
     // execvp failed: the process image was NOT replaced, so any
     // plaintext secret files written above would otherwise persist
     // (the macOS ramdisk survives process death). Remove them before

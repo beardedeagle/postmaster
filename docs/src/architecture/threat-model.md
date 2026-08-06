@@ -462,11 +462,12 @@ previously an accepted residual here. The guard now installs a
 flag-recording handler while the signals are still blocked, then
 restores the mask — any signal pending from the window is delivered to
 the handler, never to the default disposition — so death-before-exec
-always runs cleanup first. The one remaining sliver is
-supervision-semantics, not plaintext exposure: a signal arriving after
-the final flag check but before `execvp` is recorded but unexamined,
-so the launch proceeds and the service manager's escalation (SIGKILL)
-performs the stop.
+always runs cleanup first. The flag is read twice (at disarm and again
+immediately before `execvp`), narrowing the unexamined-consumption
+sliver to the execve path itself (~microseconds): a signal landing
+only there is recorded but unexamined, so the launch proceeds and the
+service manager's escalation (SIGKILL) performs the stop —
+supervision-semantics, not plaintext exposure.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 
