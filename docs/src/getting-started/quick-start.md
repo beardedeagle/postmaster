@@ -63,12 +63,23 @@ DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
 EOF
 ```
 
-On macOS, you can also use the keychain:
+Ownership matters: `KeyRing::load` requires the keys file to be owned
+by the effective uid of the loading process, so `chown` it to the
+service user (or run the file-owning step as that user) — a root-owned
+keys file fails closed for a service running as a normal user.
+
+On macOS, you can also use the keychain. The recommended path is
+`postmaster setup`, which seeds keychain items interactively; the
+equivalent by hand is `security add-generic-password` *without* `-w`,
+which prompts for the value:
 
 ```console
 $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
-    -s postmaster -w "a1b2c3d4e5f6..."
+    -s postmaster
 ```
+
+Avoid `-w "<hex>"`: it puts the private key in the process argv,
+visible to every process on the host via `ps`.
 
 ## Step 3: Create exec.json
 

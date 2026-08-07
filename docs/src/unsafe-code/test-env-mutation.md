@@ -4,9 +4,9 @@
 
 ```
 src/test_util.rs                 — the shared ENV_LOCK itself
-src/keys/source.rs (test module) — 4 sites
-src/keys/env.rs (test module)    — 1 test, 2 set/remove pairs
-src/keys/provisioning/mod.rs (test module) — 1 test, 2 set/remove pairs + a full vars() scan
+src/keys/source.rs (test module) — 8 tests, 17 set/remove calls
+src/keys/env.rs (test module)    — 2 tests, 8 set/remove calls
+src/keys/provisioning/mod.rs (test module) — 3 tests, 14 set/remove calls + ambient vars() scans
 ```
 
 ## Purpose
@@ -15,7 +15,8 @@ Edition 2024 marks `std::env::set_var`/`remove_var` `unsafe`: mutating
 the process environment is a data race in a multithreaded process, and
 the Rust test harness runs tests in parallel threads of one process.
 Several key-source tests must set or clear `DOTENV_PRIVATE_KEY*` /
-`CREDENTIALS_DIRECTORY` to exercise source selection.
+`POSTMASTER_KEY*` / `CREDENTIALS_DIRECTORY` to exercise source
+selection.
 
 ## UB Vectors and Mitigations
 

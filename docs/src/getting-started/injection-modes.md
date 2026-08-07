@@ -11,7 +11,7 @@ environment variables, as files, or as systemd credentials.
 
 | Mode | Best for | Secrets in environ? | Hygiene |
 | --- | --- | --- | --- |
-| `env` (default) | 12-factor apps, simple services | Yes | Lowest — same-UID processes can read `/proc/PID/environ` |
+| `env` | 12-factor apps, simple services | Yes | Lowest — same-UID processes can read `/proc/PID/environ` |
 | `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | No — only `_FILE` pointers | Medium — secrets absent from environ, `ps`, crash dumps |
 | `credentials` | systemd services wanting strongest isolation | No — reads `$CREDENTIALS_DIRECTORY` | Highest — unit-private unswappable ramfs |
 
@@ -33,7 +33,7 @@ flowchart TB
     end
 ```
 
-## `mode = "env"` (default)
+## `mode = "env"`
 
 Decrypted values are exported into the process environment and the
 wrapper `exec`s your binary. Correct for 12-factor apps.

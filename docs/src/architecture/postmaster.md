@@ -88,10 +88,14 @@ artifact exists or after the child process starts:
   SaltStack, Puppet — these tools render the deployment artifacts and
   wire the service manager. Postmaster does not deploy.
 
-- **Service supervision.** Postmaster does not supervise the child
-  process. The service manager (systemd on Linux, launchd on macOS)
-  starts, monitors, and stops the service. Postmaster's job is done
-  the moment `execvp` fires.
+- **Service supervision policy.** Postmaster owns no lifecycle policy
+  — no restarts, no health checks. The service manager (systemd on
+  Linux, launchd on macOS) starts, monitors, and stops the service.
+  What postmaster does run is a secretless sibling monitor alongside
+  the exec'd service: it forwards stop signals, escalates to SIGKILL
+  after a bounded grace, and removes plaintext secret files on every
+  death path (see "The secret pipeline" below) — supervision of
+  plaintext, not of the service's health.
 
 - **Child behavior.** What the child process does with its secrets —
   reading from environment variables, files, or credentials — is the
@@ -221,11 +225,11 @@ monitor. The ramdisk is destroyed when the launchd job stops (macOS).
 
 `postmaster/` contains a dependency-lean Rust binary (edition
 2024; pure-Rust crypto, no openssl; no async runtime; syscalls via
-rustix's `linux_raw` backend rather than libc FFI on Linux, leaving
-one `unsafe` block for the fd-ownership assertion at the systemd
-socket-activation boundary; on macOS, `libc` is used for `getpeereid`
-and `PT_DENY_ATTACH` hardening — each `unsafe` site carries a SAFETY
-comment) that materializes decrypted secret values as systemd
+rustix's `linux_raw` backend rather than libc FFI on Linux; on macOS,
+`libc` is used for `getpeereid` and `PT_DENY_ATTACH` hardening — each
+`unsafe` site carries a SAFETY comment and is catalogued in the
+[unsafe-code registry](../unsafe-code/index.md)) that materializes
+decrypted secret values as systemd
 `LoadCredential=` AF_UNIX sources or directly injects them via
 `execvp`. systemd's documented contract for socket credential sources
 is minimal — the manager connects once at process invocation and reads

@@ -56,7 +56,7 @@ holds only standard signals no libc reserves.
 | Dangling pointers | set/old must outlive each call | Locals live for the full block; no pointers escape |
 | Thread-model mismatch | `sigprocmask` is unspecified in multithreaded processes | `pthread_sigmask` form on Darwin; on Linux the launcher is single-threaded at this point (worker threads exist only in serve mode) |
 | libc-reserved signals | Masking a signal a libc reserves is UB (rustix `runtime` safety note) | The set holds only TERM/INT/HUP/QUIT — none reserved (glibc reserves 32/33) |
-| Mask clobber | Restoring a mask never captured | The Linux leg stores `None` on block failure (logged); restore then no-ops |
+| Mask clobber | Restoring a mask never captured | Both legs are Option-shaped and store `None` on block failure (logged); restore then no-ops |
 | Mask leak to the service | Service inheriting blocked termination signals | Mask restored before `execvp` on every path (explicit + `Drop` on early-Err) — the monitor *wants* the mask and is the only inheritor |
 
 ## Remaining Risks

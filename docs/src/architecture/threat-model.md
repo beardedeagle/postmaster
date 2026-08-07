@@ -162,8 +162,9 @@ read or written:
 
 - **Key files** are opened with `O_NOFOLLOW` — a symlinked `.env.keys`
   file is rejected at the kernel level. The file descriptor is then
-  `fstat`-ed to verify that permissions are `0o077` (no group or world
-  access) and that the owner matches the current effective user ID.
+  `fstat`-ed to verify that no group/world permission bits are set
+  (`mode & 0o077 == 0`) and that the owner matches the current
+  effective user ID.
   This fd-based approach eliminates the TOCTOU window between open
   and permission check.
 - **Credential source paths** are checked with `symlink_metadata`

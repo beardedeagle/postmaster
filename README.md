@@ -73,7 +73,7 @@ $ postmaster --help
 
 ## Injection modes
 
-**`mode = "env"` (default).** Decrypted values are exported into the
+**`mode = "env"`.** Decrypted values are exported into the
 process environment and the wrapper `exec`s your binary. Correct for
 12-factor apps.
 
@@ -103,7 +103,8 @@ fetches from remote systems:
 - **macOS Keychain** — key material stored as generic-password items,
   read natively by postmaster via the Security.framework API
 - **Environment** — `DOTENV_PRIVATE_KEY*` variables in the process
-  environment (set by the service manager)
+  environment (set by the service manager); bundle configs use
+  `POSTMASTER_KEY` instead
 
 ## Integration
 

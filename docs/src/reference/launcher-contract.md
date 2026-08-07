@@ -113,7 +113,8 @@ $ postmaster cleanup --config <exec.json>
   is verification-only. `--unattended` fails closed without prompting.
   `--force` re-creates/re-seeds even if correct. `--keys-dir` overrides
   the default path (`/var/lib/postmaster` on Linux,
-  `~/Library/Application Support/postmaster` on macOS).
+  `~/Library/Application Support/postmaster` on macOS — falling back to
+  `/var/lib/postmaster` when `HOME` is unset).
   **`--check` validates config shape only, not key source accessibility:**
   a config can pass `--check` in CI but fail at runtime because the key
   file is missing, the keychain item is absent, or the credential source
@@ -140,8 +141,8 @@ Every field except `mode` has a default, so a minimal config is just
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `mode` | `"env" \| "files" \| "credentials"` | — (required) | Injection mode; see below. |
-| `keys` | array of key-source specs | `[]` | Ordered list of where to obtain `DOTENV_PRIVATE_KEY*` material. Unused in `credentials` mode. |
-| `env_files` | array of paths | `[]` | Encrypted `.env[.<environment>]` files, in precedence order (first file wins unless `overload`). Required (non-empty) for `env`/`files` modes. |
+| `keys` | array of key-source specs | `[]` | Ordered list of where to obtain `DOTENV_PRIVATE_KEY*` / `POSTMASTER_KEY` material. Unused in `credentials` mode. |
+| `env_files` | array of paths | `[]` | Encrypted `.env[.<environment>]` files, in precedence order (first file wins unless `overload`). `env`/`files` modes require at least one of `env_files` or `bundle_files` non-empty. |
 | `bundle_files` | array of paths | `[]` | Encrypted `postmaster_bundle` JSON containers, in precedence order. Entries are merged with `env_files`; bundle keys use the same identifier rule and injection modes. |
 | `strict` | bool | **`true`** | Any value that fails to decrypt aborts the whole exec before the child runs. |
 | `overload` | bool | `false` | File-derived values override the process environment; later files override earlier ones. |
@@ -157,9 +158,10 @@ match it exactly.
 Mode-required fields are enforced by `postmaster exec --check` and again
 before a real launch:
 
-- `env` requires non-empty `keys` and non-empty `env_files`.
-- `files` requires non-empty `keys`, non-empty `env_files`, and
-  `secrets_dir`.
+- `env` requires non-empty `keys` and at least one of `env_files` or
+  `bundle_files` non-empty.
+- `files` requires non-empty `keys`, at least one of `env_files` or
+  `bundle_files` non-empty, and `secrets_dir`.
 - `credentials` requires non-empty `credential_keys`. If `sockets` is
   non-empty, it also requires `secrets_dir` and a socket mapping for every
   credential key.
@@ -191,7 +193,7 @@ serde fills those in even when the generator omits the field.
 |---|---|
 | `env` | `secrets_dir`, `credential_keys`, `sockets`, `verify_ramdisk`, `passthrough` |
 | `files` | `credential_keys`, `sockets` |
-| `credentials` | `keys`, `env_files`, `overload`, `passthrough` |
+| `credentials` | `keys`, `env_files`, `bundle_files`, `overload`, `passthrough` |
 
 ## Key-source list (`keys`)
 
@@ -201,8 +203,16 @@ Each entry in `keys` is one externally-tagged JSON shape:
 |---|---|
 | `{"credential": "<name>"}` | `$CREDENTIALS_DIRECTORY/<name>` (the launcher's *own* `LoadCredential`, i.e. `.env.keys` handed to it the same way postmaster's daemon receives its own). `<name>` must be a single relative path component, not `.`, `..`, an absolute path, or a slash-containing path. |
 | `{"file": "<path>"}` | An out-of-store `.env.keys`-format file read directly. Rejected outright if the path starts with `/nix/store` — private keys must never live in the world-readable store. |
-| `{"keychain": "<service>"}` | macOS System keychain; one generic-password item per `DOTENV_PRIVATE_KEY[_<ENV>]` account, service name as given. Only the variables actually needed (derived from `env_files`) are fetched. Any other target: error, "only available on macOS". |
-| `"environment"` | The unit-variant source — note it is a bare JSON string, not an object, because it carries no data. Reads `DOTENV_PRIVATE_KEY*` straight from postmaster's own process environment. |
+| `{"keychain": "<service>"}` | macOS keychain (the default keychain search list); one generic-password item per `DOTENV_PRIVATE_KEY[_<ENV>]` account, service name as given. Only the variables actually needed (derived from `env_files` and `bundle_files`) are fetched. Any other target: error, "only available on macOS". |
+| `"environment"` | The unit-variant source — note it is a bare JSON string, not an object, because it carries no data. Reads `DOTENV_PRIVATE_KEY*` (and `POSTMASTER_KEY` when `bundle_files` are configured) straight from postmaster's own process environment. |
+
+**Bundle key variable.** With `bundle_files` configured, the ring admits
+`POSTMASTER_KEY` material in the same sources: comma-separated rotation
+candidates are admitted, and `POSTMASTER_KEY_<suffix>` variants match by
+the same predicate as `DOTENV_PRIVATE_KEY_*`. There is no
+per-environment filename mapping — every bundle file resolves against
+the one `POSTMASTER_KEY` variable, and the bundle's `profile` field
+handles environment selection.
 
 **Selection contract**, evaluated in list order:
 
@@ -326,7 +336,7 @@ this mode — it dispatches on whether `sockets` is empty:
   each key, looks up its socket in `sockets` (missing entry is an error),
   connects and reads to EOF via the same client path `postmaster fetch`
   uses, writes the bytes to `<secrets_dir>/<KEY>` at `0600`, and exports
-  `<KEY>_FILE`. After all keys, exports **both**
+  `<KEY>_FILE`. After all keys, also exports
   `CREDENTIALS_DIRECTORY` set to `secrets_dir`
   — unlike the systemd branch, there is no real `LoadCredential`
   mechanism on darwin, so the launcher has to tell the consumer that
@@ -348,6 +358,9 @@ this mode — it dispatches on whether `sockets` is empty:
   serve, and fails closed with `"<path>: server sent zero bytes (refused
   to serve); failing closed"` rather than writing an empty credential
   file.
+- **16 MiB read cap.** Every single read — secret, bundle, config, and
+  fetch payloads — is hard-capped at 16 MiB (`read_capped`); an oversize
+  payload fails rather than truncates.
 - **Missing `$CREDENTIALS_DIRECTORY`** in `credentials` mode's systemd
   branch fails closed rather than silently exporting nothing.
 - **Private keys never come from the Nix store.** A `{"file": …}` key
@@ -431,7 +444,7 @@ with external secret-management tooling that materializes a
 ## Conformance
 
 `tests/exec_conformance/main.rs` is the executable form of this document:
-metacharacter-laden values stay inert across all three modes,
+metacharacter-laden values stay inert in `env` mode,
 process-env-wins-without-overload and overload-reverses-it, rotation with
 a bogus first key, strict failure refuses to exec, `0600` pointer files
 and `passthrough`, both `credentials` branches (systemd pointer-only and

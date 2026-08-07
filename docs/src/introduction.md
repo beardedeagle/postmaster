@@ -16,7 +16,7 @@ holds secrets in memory.
 
 ### Who this is for
 
-| Reader | What to take from this docs |
+| Reader | What to take from this doc |
 | -------- | ------------------------------ |
 | New user / junior engineer | The introduction and [Quick start](./getting-started/quick-start.md); then [Injection modes](./getting-started/injection-modes.md) |
 | Platform / SRE | [Key provisioning](./getting-started/key-provisioning.md) and the [Threat model](./architecture/threat-model.md) |
@@ -137,8 +137,11 @@ flowchart LR
 | 5. Launch | execvp | Process image replaced; child binary is MainPID |
 
 Postmaster does not participate in stages 1-3. It does not fetch from
-remote systems, does not deploy infrastructure, and does not supervise
-the child process. It decrypts, injects, and gets out of the way.
+remote systems, does not deploy infrastructure, and owns no service
+lifecycle policy — no restarts, no health checks (a secretless sibling
+monitor forwards stop signals and cleans up plaintext; the service
+manager supervises the service itself). It decrypts, injects, and gets
+out of the way.
 
 ## Capability Horizon
 

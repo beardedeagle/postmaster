@@ -181,6 +181,11 @@ The design constraints are:
 - `profile` is optional public selection metadata; it is not a secret.
 - `recipients[*].id` is public routing metadata used to select local private
   key material.
+- Private key material comes from the `POSTMASTER_KEY` variable:
+  comma-separated rotation candidates are admitted, and
+  `POSTMASTER_KEY_<suffix>` variants match by the same predicate as
+  `DOTENV_PRIVATE_KEY_*`. There is no per-environment filename mapping —
+  `profile` handles selection.
 - `entries` keys must use the same identifier rule as `.env`-derived keys:
   `[A-Za-z_][A-Za-z0-9_]*`.
 - `encoding` is either `utf8` or `bytes`. `env` projection rejects bytes that
@@ -197,11 +202,9 @@ launch, and the same output projection semantics as `.env` values.
 The implementation ships with conformance vectors for:
 
 - minimal valid bundle
-- multiple recipients
-- binary value projected to files
 - invalid key name
 - unknown version
-- tampered authenticated metadata
+- tampered `format`/`version`/`suite` values (fail-closed parsing)
 - wrong local private key
 - replayed ciphertext under a different entry name
 

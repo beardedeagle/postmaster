@@ -26,9 +26,10 @@ $ postmaster --help
 
 ## Default mode (serve)
 
-When no subcommand is given, postmaster enters daemon (serve) mode. This
-is the credential server used in credentials injection mode —
-socket-activated on Linux, self-binding on macOS.
+Serve mode has no subcommand keyword — invoke it with the serve flags
+directly. This is the credential server used in credentials injection
+mode — socket-activated on Linux, self-binding on macOS. (Bare
+`postmaster` with no arguments prints the top-level help and exits 1.)
 
 ```console
 $ postmaster --config <file.json> [--bind] [--allow-nonroot]
@@ -64,6 +65,8 @@ $ postmaster exec --config <exec.json> [--check] [--verify-keys] -- <command> [a
   returns.
 - On failure the error is logged and the process exits non-zero.
 - `--check` does not accept a command after `--`.
+- `--check` combined with `--verify-keys` silently ignores verification —
+  check validates the config shape and never decrypts.
 - `--verify-keys` performs a preflight check: after loading and
   decrypting, if any value was skipped because the key ring could not
   decrypt it, the keys are stale and the exec aborts naming the key.
@@ -75,8 +78,7 @@ Exit codes:
 | Code | Meaning |
 | --- | --- |
 | 0 | `--check` passed (or exec succeeded — but exec replaces the process) |
-| 1 | Config error, parse failure, decryption failure |
-| 2 | Missing arguments, bad usage |
+| 1 | Any failure — usage errors, config errors, parse failure, decryption failure |
 
 ## setup
 
@@ -99,7 +101,8 @@ $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--
 Default keys directory:
 
 - Linux: `/var/lib/postmaster`
-- macOS: `~/Library/Application Support/postmaster`
+- macOS: `~/Library/Application Support/postmaster` (falls back to
+  `/var/lib/postmaster` when `HOME` is unset)
 
 ## cleanup
 
@@ -127,7 +130,8 @@ stops.
 ## fetch
 
 macOS credential fetch client — connects to a postmaster socket and
-reads the decrypted value to EOF.
+reads the decrypted value to EOF. Reads are hard-capped at 16 MiB;
+an oversize stream fails rather than truncates.
 
 ```console
 $ postmaster fetch /run/postmaster-credd/myapp/DATABASE_URL.sock
@@ -138,7 +142,9 @@ typically called directly.
 
 ## help
 
-Print help text for a subcommand or the top-level help.
+Print help text for a subcommand or the top-level help. Every
+subcommand also accepts `--help`/`-h` directly (`postmaster exec
+--help`).
 
 ```console
 $ postmaster help           # top-level help

@@ -28,7 +28,7 @@ Every `unsafe` block requires:
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |
-| `keys/source.rs`, `keys/env.rs` (test modules) | all, test-only | `set_var`/`remove_var` (unsafe on edition 2024) | [test-env-mutation](./test-env-mutation.md) |
+| `keys/source.rs`, `keys/env.rs`, `keys/provisioning/mod.rs` (test modules) | all, test-only | `set_var`/`remove_var` (unsafe on edition 2024) | [test-env-mutation](./test-env-mutation.md) |
 
 Note what is NOT in the inventory: `mlockall`, `setrlimit(Core, 0)`, and
 `set_dumpable(NotDumpable)` hardening all use **safe** rustix wrappers.

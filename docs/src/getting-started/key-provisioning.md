@@ -43,8 +43,10 @@ DOTENV_PRIVATE_KEY_PRODUCTION="<64-hex from your local .env.keys>"
 EOF
 ```
 
-systemd treats an absolute-path credential as mandatory: missing file
-means the unit fails to start. Fail-closed.
+Ownership matters: `KeyRing::load` requires the keys file to be owned
+by the effective uid of the loading process, so `chown` it to the
+service user (or run the file-owning step as that user) — a root-owned
+keys file fails closed for a service running as a normal user.
 
 ## Strategy B: TPM2 / host-sealed blob
 
@@ -60,15 +62,20 @@ EOF
 # copy myapp-myhost.cred back into the repo
 ```
 
-Reference the sealed blob in your config:
+Wire the sealed blob to the launcher's unit with
+`LoadCredentialEncrypted=postmaster-myapp:<path to blob>` and reference
+the credential name in your config:
 
 ```json
 {
   "keys": [
-    {"file": "/nix/store/...-myapp.cred"}
+    {"credential": "postmaster-myapp"}
   ]
 }
 ```
+
+systemd treats the credential as mandatory: a missing or undecryptable
+blob means the unit fails to start. Fail-closed.
 
 Blobs are per-host. Without a TPM, `--with-key=host` binds to
 `/var/lib/systemd/credential.secret`.
@@ -85,22 +92,34 @@ deployment.keys."myapp.env.keys" = {
 };
 ```
 
+As with any keys file, `user` must be the service's own user —
+`KeyRing::load` requires the file owner to match the loading process's
+effective uid, so `root` here only works for services that run as root.
+
 ## Strategy D: macOS Keychain
+
+The recommended path is `postmaster setup`, which seeds the wanted
+keychain items interactively. By hand, use `security
+add-generic-password` *without* `-w` so it prompts for the value:
 
 ```console
 $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
-    -s postmaster -w "<64-hex>"
+    -s postmaster
 ```
 
-No file on disk — keys live as generic-password items in the System
-keychain. Postmaster reads them natively via the Security.framework
-API (`security-framework` crate).
+Avoid `-w "<hex>"`: it puts the private key in the process argv,
+visible to every process on the host via `ps`.
+
+No file on disk — keys live as generic-password items in the default
+keychain search list. Postmaster reads them natively via the
+Security.framework API (`security-framework` crate).
 
 ## Rotation
 
 No `rotate` subcommand exists. The flow is manual, but
 `DOTENV_PRIVATE_KEY*` accepts **comma-separated keys** for a
-zero-downtime window:
+zero-downtime window (the bundle adapter's `POSTMASTER_KEY` variable —
+no per-environment suffix — follows the same convention):
 
 ```mermaid
 flowchart TD
