@@ -12,7 +12,7 @@ pages ([signal deferral](./signal-deferral.md),
 
 ### Location
 
-```
+```text
 src/server.rs — fn peer_euid (macOS cfg only)
 ```
 
@@ -40,7 +40,7 @@ wrapper.
 
 ### Location
 
-```
+```text
 src/server.rs — fn harden_process (macOS cfg, release builds only)
 ```
 

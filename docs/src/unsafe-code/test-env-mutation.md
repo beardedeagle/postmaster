@@ -2,7 +2,7 @@
 
 ## Location
 
-```
+```text
 src/test_util.rs                 — the shared ENV_LOCK itself
 src/keys/source.rs (test module) — 8 tests, 17 set/remove calls
 src/keys/env.rs (test module)    — 2 tests, 8 set/remove calls

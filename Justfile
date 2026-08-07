@@ -63,6 +63,11 @@ docs-serve:
     trap 'rm -f docs/src/changelog.md' EXIT
     (cd docs && mdbook serve --open)
 
+# Markdown prose lint (sweep 2026-08-07 R6; rules + ignores in
+# .markdownlint-cli2.jsonc). markdownlint-cli2 version pinned.
+lint-md:
+    npx --yes markdownlint-cli2@0.23.2 "**/*.md"
+
 # =============================================================================
 # Dependency policy
 # =============================================================================

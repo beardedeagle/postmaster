@@ -42,21 +42,5 @@ jobs:
       - name: Quality gate (fmt, clippy, build, test)
         run: just ci-rust
 
-  deny:
-    name: Dependency policy
-    runs-on: ubuntu-latest
-    if: false
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Setup Rust, just, and cargo-deny
-        uses: ./.github/actions/setup-rust
-        with:
-          install-cargo-deny: "true"
-
-      - name: Dependency policy
-        run: just deny
+# The dependency-policy (cargo deny) job lives in security.yml — do not
+# duplicate it here (sweep 2026-08-07 R9).

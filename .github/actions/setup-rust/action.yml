@@ -22,6 +22,26 @@ inputs:
     description: Whether to install cargo-audit.
     required: false
     default: "false"
+  cargo-deny-version:
+    description: cargo-deny version to install.
+    required: false
+    default: "0.20.2"
+  cargo-audit-version:
+    description: cargo-audit version to install.
+    required: false
+    default: "0.22.2"
+  install-mdbook:
+    description: Whether to install mdbook and the mdbook-mermaid preprocessor (docs builds).
+    required: false
+    default: "false"
+  mdbook-version:
+    description: mdbook version to install.
+    required: false
+    default: "0.5.4"
+  mdbook-mermaid-version:
+    description: mdbook-mermaid preprocessor version to install.
+    required: false
+    default: "0.17.0"
   install-target-dir:
     description: Cargo target directory for tool installation builds.
     required: false
@@ -88,20 +108,38 @@ runs:
       if: ${{ inputs.install-cargo-deny == 'true' }}
       shell: bash
       env:
+        CARGO_DENY_VERSION: ${{ inputs.cargo-deny-version }}
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
         if ! command -v cargo-deny >/dev/null 2>&1; then
-          cargo install cargo-deny --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
         fi
 
     - name: Install cargo-audit
       if: ${{ inputs.install-cargo-audit == 'true' }}
       shell: bash
       env:
+        CARGO_AUDIT_VERSION: ${{ inputs.cargo-audit-version }}
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
         if ! command -v cargo-audit >/dev/null 2>&1; then
-          cargo install cargo-audit --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+          cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+        fi
+
+    - name: Install mdbook
+      if: ${{ inputs.install-mdbook == 'true' }}
+      shell: bash
+      env:
+        MDBOOK_VERSION: ${{ inputs.mdbook-version }}
+        MDBOOK_MERMAID_VERSION: ${{ inputs.mdbook-mermaid-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        if ! command -v mdbook >/dev/null 2>&1; then
+          cargo install mdbook --version "$MDBOOK_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
+        fi
+        if ! command -v mdbook-mermaid >/dev/null 2>&1; then
+          cargo install mdbook-mermaid --version "$MDBOOK_MERMAID_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
         fi

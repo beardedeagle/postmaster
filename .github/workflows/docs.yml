@@ -36,8 +36,10 @@ jobs:
       - name: Install Nix
         uses: ./.github/actions/setup-nix
 
-      - name: Install just
+      - name: Install just and mdbook
         uses: ./.github/actions/setup-rust
+        with:
+          install-mdbook: "true"
 
       - name: Build book
         run: just docs

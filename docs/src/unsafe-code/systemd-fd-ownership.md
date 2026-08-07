@@ -2,7 +2,7 @@
 
 ## Location
 
-```
+```text
 src/server.rs — socket-activation path (Linux cfg only)
 ```
 

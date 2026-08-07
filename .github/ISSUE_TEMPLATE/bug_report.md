@@ -16,7 +16,8 @@ A clear description of the bug and what you expected instead.
 2.
 3.
 
-A minimal repro (failing postmaster command, unit test, or exec.json config) is the fastest path to a fix.
+A minimal repro (failing postmaster command, unit test, or exec.json
+config) is the fastest path to a fix.
 
 ## Environment
 

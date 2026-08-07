@@ -2,7 +2,7 @@
 
 ## Location
 
-```
+```text
 src/launcher.rs — struct TerminationGuard (macOS and Linux legs)
 Blocks: block() (sigmask), restore_mask() (sigmask), Drop (restore)
 ```
