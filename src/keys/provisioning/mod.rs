@@ -37,8 +37,10 @@ fn default_keys_dir() -> PathBuf {
 }
 
 /// Create the keys directory with 0700 permissions if it doesn't exist.
-/// If it exists, verify permissions and ownership are correct. Idempotent
-/// — skips if already correct unless `force` is true.
+/// If it exists, verify permissions and ownership are correct, correcting
+/// the mode whenever wrong. `force` has no directory effect — there is
+/// nothing to re-seed in a directory; force governs the keys file and the
+/// keychain items (sweep 2026-08-07 K7).
 #[allow(clippy::print_stderr)]
 fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
     if keys_dir.exists() {
@@ -118,8 +120,12 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
 /// euid). If the file doesn't exist, in interactive mode, prompt the
 /// operator to create it. In unattended mode, fail closed. If the file
 /// exists but has wrong permissions, fix them.
+///
+/// `--force` re-prompts for the contents even when the file is already
+/// correct (manual key rotation, sweep 2026-08-07 K7). Force requires
+/// interactive mode: unattended has no operator to paste contents.
 #[allow(clippy::print_stderr)]
-fn ensure_keys_file(path: &Path, _force: bool, unattended: bool) -> Result<(), String> {
+fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), String> {
     if path.exists() {
         // Verify permissions and ownership (same checks as setup_recheck)
         let oflags =
@@ -145,7 +151,61 @@ fn ensure_keys_file(path: &Path, _force: bool, unattended: bool) -> Result<(), S
                 stat.st_uid
             ));
         }
-        log(&format!("{}: keys file verified", path.display()));
+        drop(fd);
+        if !force {
+            log(&format!("{}: keys file verified", path.display()));
+            return Ok(());
+        }
+        // --force: re-prompt for the contents even though the file is
+        // already correct (sweep 2026-08-07 K7).
+        if unattended {
+            return Err(format!(
+                "{}: --force re-prompts for key contents, which unattended mode cannot do (fail closed)",
+                path.display()
+            ));
+        }
+        eprintln!("{}: keys file exists and is valid.", path.display());
+        eprintln!("--force given: replace its contents now? [y/N] ");
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            return Err(format!("{}: cannot read input", path.display()));
+        }
+        if !input.trim().eq_ignore_ascii_case("y") {
+            log(&format!(
+                "{}: --force declined; existing keys file kept",
+                path.display()
+            ));
+            return Ok(());
+        }
+        eprintln!("Paste the keys file contents (Ctrl+D to finish):");
+        // Zeroizing: operator-pasted key material must not linger in freed
+        // heap pages (audit 2026-08-02 O4).
+        let mut contents = zeroize::Zeroizing::new(String::new());
+        if std::io::stdin().read_to_string(&mut contents).is_err() {
+            return Err(format!("{}: cannot read key contents", path.display()));
+        }
+        // Overwrite in place: WRONLY|TRUNC|NOFOLLOW on the just-verified
+        // path, perms forced back to 0600 on the fd before the write.
+        let oflags = rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::TRUNC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC;
+        let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
+            format!(
+                "{}: cannot open for replacement: {e} (refusing to follow a symlink)",
+                path.display()
+            )
+        })?;
+        rustix::fs::fchmod(&fd, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+            .map_err(|e| format!("{}: cannot fix permissions: {e}", path.display()))?;
+        let mut file = fs::File::from(fd);
+        use std::io::Write;
+        file.write_all(contents.as_bytes())
+            .map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
+        log(&format!(
+            "{}: keys file contents replaced (--force)",
+            path.display()
+        ));
         return Ok(());
     }
 
@@ -207,7 +267,8 @@ fn ensure_keys_file(path: &Path, _force: bool, unattended: bool) -> Result<(), S
 
 /// Verify keychain items exist for the wanted key variables. If they
 /// don't exist and we're in interactive mode, offer to seed them.
-/// On macOS only.
+/// `--force` re-seeds EVERY wanted item, present or not (sweep
+/// 2026-08-07 K7). On macOS only.
 #[cfg(target_os = "macos")]
 #[allow(clippy::print_stderr)]
 fn ensure_keychain_items(
@@ -228,7 +289,15 @@ fn ensure_keychain_items(
         }
     }
 
-    if missing.is_empty() && !force {
+    // --force re-seeds every wanted item, present or not; without it
+    // only the missing ones are offered (sweep 2026-08-07 K7).
+    let to_seed: Vec<&str> = if force {
+        wanted.iter().map(String::as_str).collect()
+    } else {
+        missing
+    };
+
+    if to_seed.is_empty() {
         log(&format!(
             "keychain {service}: all {wanted_len} item(s) verified",
             wanted_len = wanted.len()
@@ -236,50 +305,45 @@ fn ensure_keychain_items(
         return Ok(());
     }
 
-    if unattended && !missing.is_empty() {
+    if unattended {
         return Err(format!(
-            "keychain {service}: {missing_len} item(s) missing (unattended mode — cannot prompt)",
-            missing_len = missing.len()
+            "keychain {service}: {seed_len} item(s) to seed (unattended mode — cannot prompt)",
+            seed_len = to_seed.len()
         ));
     }
 
-    // Interactive: offer to seed missing items
-    if !missing.is_empty() {
-        eprintln!(
-            "keychain {service}: missing items for: {}",
-            missing.join(", ")
-        );
-        eprintln!("Seed them now? You will need to paste each key value. [y/N] ");
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_err() {
-            return Err("cannot read input".into());
-        }
-        if !input.trim().eq_ignore_ascii_case("y") {
-            return Err(format!(
-                "keychain {service}: operator declined to seed missing items"
-            ));
-        }
+    // Interactive: offer to seed
+    eprintln!("keychain {service}: items to seed: {}", to_seed.join(", "));
+    eprintln!("Seed them now? You will need to paste each key value. [y/N] ");
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return Err("cannot read input".into());
+    }
+    if !input.trim().eq_ignore_ascii_case("y") {
+        return Err(format!(
+            "keychain {service}: operator declined to seed items"
+        ));
+    }
 
-        for var in &missing {
-            eprint!("Paste value for {var}: ");
-            // Zeroizing: pasted key material must not linger in freed
-            // heap pages (audit 2026-08-02 O4). `trim()` borrows, no copy.
-            let mut value = zeroize::Zeroizing::new(String::new());
-            if std::io::stdin().read_line(&mut value).is_err() {
-                return Err(format!("cannot read value for {var}"));
-            }
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(format!("{var}: empty value, refusing to seed"));
-            }
-            // Seed via the Security.framework API, not the security CLI:
-            // `add-generic-password -w <value>` exposes key material in
-            // the subprocess argv, readable by any local process via ps /
-            // proc_pidinfo (audit 2026-08-02 O3; F1 crate direction).
-            security_framework::passwords::set_generic_password(service, var, value.as_bytes())
-                .map_err(|e| format!("keychain {service}: failed to seed {var}: {e}"))?;
-            log(&format!("keychain {service}: seeded {var}"));
+    for var in &to_seed {
+        eprint!("Paste value for {var}: ");
+        // Zeroizing: pasted key material must not linger in freed
+        // heap pages (audit 2026-08-02 O4). `trim()` borrows, no copy.
+        let mut value = zeroize::Zeroizing::new(String::new());
+        if std::io::stdin().read_line(&mut value).is_err() {
+            return Err(format!("cannot read value for {var}"));
         }
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(format!("{var}: empty value, refusing to seed"));
+        }
+        // Seed via the Security.framework API, not the security CLI:
+        // `add-generic-password -w <value>` exposes key material in
+        // the subprocess argv, readable by any local process via ps /
+        // proc_pidinfo (audit 2026-08-02 O3; F1 crate direction).
+        security_framework::passwords::set_generic_password(service, var, value.as_bytes())
+            .map_err(|e| format!("keychain {service}: failed to seed {var}: {e}"))?;
+        log(&format!("keychain {service}: seeded {var}"));
     }
 
     Ok(())
@@ -536,6 +600,28 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         let err = res.expect_err("a symlinked credential must fail verification");
         assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn ensure_keys_file_force_unattended_fails_closed() {
+        // sweep 2026-08-07 K7: --force re-prompts for contents, which
+        // unattended mode cannot do — fail closed rather than silently
+        // skipping the re-create the operator asked for.
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("pm-force-unattended-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let keys = d.join(".env.keys");
+        fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let err =
+            ensure_keys_file(&keys, true, true).expect_err("force + unattended must fail closed");
+        assert!(err.contains("unattended"), "{err}");
+
+        // Non-force unattended with a valid file verifies fine.
+        ensure_keys_file(&keys, false, true).expect("valid file must verify without force");
+        let _ = fs::remove_dir_all(&d);
     }
 
     fn bundle_only_cfg() -> ExecConfig {
