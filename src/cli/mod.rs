@@ -47,7 +47,7 @@ pub struct Entry {
     pub key: String,
     /// Additionally allow this (non-root) user to fetch the credential.
     /// Used by the darwin module, where consumers are launchd daemons
-    /// connecting as their own service user rather than pid 1.
+    /// connecting as their own service user rather than uid 0 (root).
     #[serde(default)]
     pub peer_user: Option<String>,
 }
@@ -59,7 +59,8 @@ pub struct Args {
     pub config: PathBuf,
     /// Bind listener sockets even when not socket-activated.
     pub bind: bool,
-    /// Allow non-root peers to connect (dangerous, darwin only).
+    /// Allow non-root peers to connect (dev escape hatch; never overrides
+    /// a configured `peer_user` ACL — sweep 2026-08-07 D1).
     pub allow_nonroot: bool,
 }
 

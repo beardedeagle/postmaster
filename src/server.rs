@@ -23,7 +23,9 @@ use crate::adapter::KeyNaming;
 use crate::config::{Args, Config, Entry, KeysSource};
 use crate::keys::{KeyRing, resolve};
 
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Shared I/O deadline for socket reads and writes (sweep 2026-08-07
+/// D11 — one constant, so the two directions can't silently diverge).
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
 const SD_LISTEN_FDS_START: RawFd = 3;
 
@@ -36,12 +38,12 @@ pub fn log(msg: &str) {
 }
 
 /// Serve a single credential entry on a Unix socket. Handles one peer
-/// at a time (thread-per-socket); each peer must be PID 1 or an allowed
-/// service user.
+/// at a time (thread-per-socket); each peer must be uid 0 (root) or the
+/// configured peer_user (sweep 2026-08-07 D8).
 ///
 /// Connection limiting (audit 2026-08-02 A25, documented decision): the
 /// loop is serialized — one connection at a time, each accepted stream
-/// closed at the end of its iteration, writes bounded by WRITE_TIMEOUT —
+/// closed at the end of its iteration, writes bounded by IO_TIMEOUT —
 /// so per-connection FDs/threads never accumulate and pending connects
 /// are bounded by the kernel backlog. A trusted peer (root or the
 /// configured peer_user) can starve the listener with slow connections;
@@ -63,7 +65,11 @@ pub fn serve(
                 continue;
             }
         };
-        if !allow_nonroot {
+        // Peer ACL (sweep 2026-08-07 D1): a configured peer_user is
+        // ALWAYS enforced — --allow-nonroot widens root→configured-user,
+        // never root→anyone. The flag skips verification only when no
+        // peer_user is configured (the dev loop it exists for).
+        if !allow_nonroot || peer_uid.is_some() {
             match peer_euid(&stream) {
                 Ok(0) => {}
                 Ok(uid) if peer_uid == Some(uid) => {}
@@ -77,7 +83,7 @@ pub fn serve(
                 }
             }
         }
-        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         // Fresh resolution per request: rotation-friendly, nothing cached.
         match resolve(&entry, &ring, KeyNaming::Env) {
             Ok(value) => {
@@ -129,7 +135,7 @@ pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, St
 pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     let stream =
         UnixStream::connect(path).map_err(|e| format!("{}: connect: {e}", path.display()))?;
-    let _ = stream.set_read_timeout(Some(WRITE_TIMEOUT));
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let buf = Zeroizing::new(read_capped(stream, path)?);
     if buf.is_empty() {
         return Err(format!(
@@ -365,7 +371,8 @@ pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
 }
 
 /// Bind and listen on all configured credential sockets. Returns
-/// a vector of `(UnixListener, path, entry)` triples ready for serving.
+/// a vector of `(UnixListener, path)` pairs ready for serving (the entry
+/// is re-looked-up by the caller; sweep 2026-08-07 D9).
 pub fn acquire_listeners(
     cfg: &Config,
     bind: bool,
@@ -378,6 +385,27 @@ pub fn acquire_listeners(
         for path in cfg.credentials.keys() {
             let expected = peer_uids.get(path).copied().flatten();
             if let Some(parent) = path.parent() {
+                // Refuse a symlinked socket parent unconditionally in
+                // bind mode (sweep 2026-08-07 D2): create_dir_all,
+                // remove_file, and bind all follow a swapped parent, and
+                // the O_NOFOLLOW fd discipline below only runs when
+                // privileged with a configured peer_user.
+                match fs::symlink_metadata(parent) {
+                    Ok(md) if md.file_type().is_symlink() => {
+                        return Err(format!(
+                            "{}: socket parent is a symlink; refusing to follow",
+                            parent.display()
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(format!(
+                            "{}: cannot stat socket parent: {e}",
+                            parent.display()
+                        ));
+                    }
+                }
                 fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
                 // The parent directory is the filesystem half of the ACL:
                 // owned by the consumer's user, execute-only-for-owner, so
@@ -483,9 +511,65 @@ pub fn acquire_listeners(
     }
 }
 
+/// Enforce the absoluteness the config type docs promise (sweep 2026-08-07
+/// D14): a CWD-relative socket or keys path would resolve against whatever
+/// directory the daemon happened to start in.
+fn validate_absolute_paths(cfg: &Config) -> Result<(), String> {
+    for path in cfg.credentials.keys() {
+        if !path.is_absolute() {
+            return Err(format!(
+                "{}: socket path must be absolute (fail closed)",
+                path.display()
+            ));
+        }
+    }
+    if let KeysSource::File(p) = &cfg.keys
+        && !p.is_absolute()
+    {
+        return Err(format!(
+            "{}: keys file path must be absolute (fail closed)",
+            p.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Preflight: prove every credential is servable — and every peer_user
+/// resolvable — before accepting anyone. An empty resolved value is
+/// unservable (zero bytes means refusal on the wire, sweep 2026-08-07
+/// D4), so it fails here at startup naming the key rather than leaving
+/// the daemon looking healthy while the credential permanently fails
+/// with a misdiagnosing message.
+fn preflight_credentials(
+    cfg: &Config,
+    ring: &KeyRing,
+) -> Result<std::collections::HashMap<PathBuf, Option<u32>>, String> {
+    let mut peer_uids: std::collections::HashMap<PathBuf, Option<u32>> =
+        std::collections::HashMap::new();
+    for (path, entry) in &cfg.credentials {
+        let value = resolve(entry, ring, KeyNaming::Env)
+            .map_err(|e| format!("preflight {}: {e}", path.display()))?;
+        if value.is_empty() {
+            return Err(format!(
+                "preflight {}: {} resolved to an empty value, which can never be served (zero bytes means refusal on the wire)",
+                path.display(),
+                entry.key
+            ));
+        }
+        let uid = entry
+            .peer_user
+            .as_deref()
+            .map(uid_of)
+            .transpose()
+            .map_err(|e| format!("preflight {}: {e}", path.display()))?;
+        peer_uids.insert(path.clone(), uid);
+    }
+    Ok(peer_uids)
+}
+
 /// Run the credential daemon: harden the process, load keys, bind
-/// sockets, and serve credential requests. Returns on socket error
-/// or after all connections are drained (if not socket-activated).
+/// sockets, and serve credential requests. Runs until the process is
+/// terminated; returns only on startup-path failure (sweep 2026-08-07 D10).
 pub fn run(args: &Args) -> Result<(), String> {
     let file =
         fs::File::open(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
@@ -495,31 +579,25 @@ pub fn run(args: &Args) -> Result<(), String> {
     if cfg.credentials.is_empty() {
         return Err("config maps no credentials; nothing to do".into());
     }
+    validate_absolute_paths(&cfg)?;
 
     // The daemon's fetch contract is dotenvx-style env entries only; the
     // bundle adapter is an exec-mode surface, so the ring requires Env
     // naming alone here.
     let ring = Arc::new(KeyRing::load(&keys_path(&cfg.keys)?, &[KeyNaming::Env])?);
 
-    // Preflight: prove every credential is servable — and every peer_user
-    // resolvable — before accepting anyone.
-    let mut peer_uids: std::collections::HashMap<PathBuf, Option<u32>> =
-        std::collections::HashMap::new();
-    for (path, entry) in &cfg.credentials {
-        resolve(entry, &ring, KeyNaming::Env)
-            .map_err(|e| format!("preflight {}: {e}", path.display()))?;
-        let uid = entry
-            .peer_user
-            .as_deref()
-            .map(uid_of)
-            .transpose()
-            .map_err(|e| format!("preflight {}: {e}", path.display()))?;
-        peer_uids.insert(path.clone(), uid);
-    }
+    let peer_uids = preflight_credentials(&cfg, &ring)?;
     log(&format!(
         "preflight ok: {} credential(s) decryptable",
         cfg.credentials.len()
     ));
+    // --allow-nonroot never overrides a configured peer_user (sweep
+    // 2026-08-07 D1); say so once at startup when both are present.
+    if args.allow_nonroot && peer_uids.values().any(Option::is_some) {
+        log(
+            "note: --allow-nonroot does not override configured peer_user ACLs — peer_user sockets still verify the connecting uid",
+        );
+    }
 
     let listeners = acquire_listeners(&cfg, args.bind, &peer_uids)?;
     let mut handles = Vec::new();
@@ -609,5 +687,68 @@ mod tests {
         // /run/current-system/sw/bin/id.
         let id = verified_id_binary().unwrap();
         assert!(id.starts_with('/'));
+    }
+
+    #[test]
+    fn preflight_rejects_empty_resolved_value() {
+        // sweep 2026-08-07 D4: zero bytes means refusal on the wire, so
+        // an empty value must fail at startup, not at first fetch.
+        let dir = std::env::temp_dir().join(format!("pm-preflight-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let env_file = dir.join(".env");
+        fs::write(&env_file, "KEY=\n").unwrap();
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            PathBuf::from("/run/postmaster-credd/svc/KEY.sock"),
+            Entry {
+                env_file,
+                key: "KEY".to_string(),
+                peer_user: None,
+            },
+        );
+        let cfg = Config {
+            keys: KeysSource::File(dir.join(".env.keys")),
+            credentials,
+        };
+        let ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                Zeroizing::new("11".repeat(32)),
+            )],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        let err = preflight_credentials(&cfg, &ring).unwrap_err();
+        assert!(err.contains("empty value"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_absolute_paths_rejects_relative() {
+        // sweep 2026-08-07 D14: socket and keys paths must be absolute.
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            PathBuf::from("relative/key.sock"),
+            Entry {
+                env_file: PathBuf::from("/x/.env"),
+                key: "K".to_string(),
+                peer_user: None,
+            },
+        );
+        let cfg = Config {
+            keys: KeysSource::File(PathBuf::from("/abs/.env.keys")),
+            credentials,
+        };
+        let err = validate_absolute_paths(&cfg).unwrap_err();
+        assert!(err.contains("absolute"), "{err}");
+
+        // The keys-file leg: a relative keys path is caught too.
+        let cfg2 = Config {
+            keys: KeysSource::File(PathBuf::from("rel/.env.keys")),
+            credentials: std::collections::HashMap::new(),
+        };
+        let err = validate_absolute_paths(&cfg2).unwrap_err();
+        assert!(err.contains("absolute"), "{err}");
     }
 }

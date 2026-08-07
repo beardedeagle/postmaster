@@ -38,7 +38,7 @@ $ postmaster --config <file.json> [--bind] [--allow-nonroot]
 | --- | --- |
 | `--config <path>` | Configuration file (required) |
 | `--bind` | Bind listener sockets even if not socket-activated (macOS) |
-| `--allow-nonroot` | Allow non-root connections (dangerous) |
+| `--allow-nonroot` | Allow non-root connections (dev escape hatch; never overrides a configured `peer_user` ACL) |
 
 On Linux, postmaster is socket-activated: the `postmaster-credd.socket`
 unit owns the sockets and the daemon inherits them via
