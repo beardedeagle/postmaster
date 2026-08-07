@@ -3,6 +3,7 @@
 mod bundle;
 #[path = "../common/mod.rs"]
 mod common;
+mod daemon;
 mod env_mode;
 mod files_mode;
 mod keys_verify;
