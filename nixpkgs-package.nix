@@ -7,14 +7,14 @@
 # Steps before real submission:
 #   1. Tag a release in this repo (e.g. v0.1.0) that matches Cargo.toml version.
 #   2. Replace the placeholder hash with the real one:
-#        nix-prefetch-url --unpack https://github.com/beardedeagle/envelope/archive/refs/tags/v0.1.0.tar.gz
+#        nix-prefetch-url --unpack https://github.com/beardedeagle/postmaster/archive/refs/tags/v0.1.0.tar.gz
 #        (or use nix-update / pkgs/by-name update machinery later)
 #   3. Add yourself to maintainers/maintainer-list.nix if not present.
 #   4. Set meta.maintainers appropriately.
 #   5. Run nixpkgs-review and ensure ofborg builds on linux + darwin.
 #
 # Notes:
-# - The Rust crate lives in the "postmaster/" subdirectory of the repo.
+# - The Rust crate lives at the repository root.
 # - We use cargoLock (preferred when a lockfile exists and there are no git deps).
 # - No native build inputs needed (pure Rust + rustix; "pure" feature on ecies avoids openssl).
 
@@ -29,15 +29,13 @@ rustPlatform.buildRustPackage rec {
 
   src = fetchFromGitHub {
     owner = "beardedeagle";
-    repo = "envelope";
+    repo = "postmaster";
     rev = "v${version}";
     hash = "sha256-PLACEHOLDER"; # update after tagging
   };
 
-  sourceRoot = "${src.name}/postmaster";
-
   cargoLock = {
-    lockFile = src + "/postmaster/Cargo.lock";
+    lockFile = src + "/Cargo.lock";
     # While ecies is git-pinned via [patch.crates-io] (audit 2026-08-02 A7):
     # the git dep's fetch hash. Drop once the upstream ecies PR (ecies/rs#159)
     # ships on crates.io and the patch section is removed.
@@ -46,7 +44,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "postmaster credential bridge: serves decrypted secret values as systemd LoadCredential AF_UNIX sources";
-    homepage = "https://github.com/beardedeagle/envelope";
+    homepage = "https://github.com/beardedeagle/postmaster";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ ]; # replace when you have an entry
     mainProgram = "postmaster";

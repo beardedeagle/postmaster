@@ -18,6 +18,15 @@ fmt-check:
 clippy:
     cargo +{{stable_toolchain}} clippy --all-targets -- -D warnings
 
+# Release-profile clippy (house battery gate; sweep 2026-08-07 R2)
+clippy-release:
+    cargo +{{stable_toolchain}} clippy --all-targets --release -- -D warnings
+
+# Linux-target clippy (house battery gate; sweep 2026-08-07 R2). The
+# target is pinned in rust-toolchain.toml, so rustup installs it.
+clippy-linux:
+    cargo +{{stable_toolchain}} clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
 build:
     cargo +{{stable_toolchain}} build --locked
 
@@ -68,7 +77,7 @@ audit:
 # Aggregate
 # =============================================================================
 
-ci-rust: fmt-check clippy build test
+ci-rust: fmt-check clippy clippy-release clippy-linux build test
 ci: ci-rust flake-check
 
 # =============================================================================

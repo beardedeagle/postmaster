@@ -1,4 +1,4 @@
-# cargo-deny configuration for envelope / postmaster.
+# cargo-deny configuration for postmaster.
 # https://embarkstudios.github.io/cargo-deny/
 
 [graph]

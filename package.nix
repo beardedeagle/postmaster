@@ -42,7 +42,7 @@ rustPlatform.buildRustPackage {
       guaranteeing that plaintext secrets only ever appear inside
       unit-private unswappable credential ramfs.
     '';
-    homepage = "https://github.com/beardedeagle/envelope";
+    homepage = "https://github.com/beardedeagle/postmaster";
     license = lib.licenses.mit;
     mainProgram = "postmaster";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
