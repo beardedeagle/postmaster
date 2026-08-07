@@ -405,4 +405,36 @@ mod tests {
         assert_eq!(resolved[1].0, "KEY_B");
         assert_eq!(&resolved[1].1[..], b"value2");
     }
+
+    #[test]
+    fn resolve_bundle_requires_a_postmaster_key_entry() {
+        // sweep 2026-08-07 T14: a ring built for a different naming (the
+        // bundle-ring gap's unit-test shape) must fail closed with the
+        // missing-entry error, never a silent skip or decrypt failure.
+        let ct = enc("SECRET", "unreachable");
+        let bundle = make_bundle(vec![("SECRET", &ct, Encoding::Utf8)]);
+        let env_only_ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                zeroize::Zeroizing::new("22".repeat(32)),
+            )],
+            &[crate::adapter::KeyNaming::Env],
+        )
+        .unwrap();
+        let err = resolve_bundle(&bundle, &env_only_ring, Path::new("/test")).unwrap_err();
+        assert!(
+            err.contains("key ring has no POSTMASTER_KEY entry"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn resolve_bundle_rejects_invalid_base64() {
+        // sweep 2026-08-07 T14: malformed base64 in a ciphertext field is
+        // a hard parse error naming the entry, not a decrypt failure.
+        let bundle = make_bundle(vec![("SECRET", "!!!not-base64!!!", Encoding::Utf8)]);
+        let ring = crate::keys::tests::make_test_ring();
+        let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
+        assert!(err.contains("SECRET is not valid base64"), "{err}");
+    }
 }

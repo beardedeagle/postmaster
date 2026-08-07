@@ -139,6 +139,13 @@ fn credentials_mode_fetch_loop() {
         sd = secrets_dir.display()
     );
     let out = run_exec(&cfg, &sh, &[]);
+    if !out.status.success() {
+        // Hang guard (sweep 2026-08-07 T3): a regression that fails
+        // before connecting would leave the mock parked in accept() and
+        // the join below would hang the whole suite. Nudge the listener
+        // with a dummy connection so the thread can finish.
+        let _ = std::os::unix::net::UnixStream::connect(&sock);
+    }
     server.join().unwrap();
     assert!(
         out.status.success(),
@@ -156,5 +163,130 @@ fn credentials_mode_fetch_loop() {
     assert!(
         !secrets_dir.join("K").exists(),
         "the sibling monitor must remove plaintext files on service death"
+    );
+}
+
+#[test]
+fn files_mode_exec_failure_leaves_only_the_sentinel() {
+    // sweep 2026-08-07 T6: an execvp failure (audit 2026-08-02 A9) must
+    // unwind the plaintext writes — after a failed exec the secrets dir
+    // holds ONLY the managed sentinel, never secret files.
+    let d = common::tmpdir("files-execfail");
+    let secrets_dir = d.join("secrets");
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+    let env = common::write_env_file(
+        &d,
+        ".env.production",
+        &[
+            format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
+            format!("SECRET=\"{}\"", common::enc("exec-fail-secret")),
+        ],
+    );
+    let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"files","keys":[{{"file":"{}"}}],"env_files":["{}"],"secrets_dir":"{}"}}"#,
+            keys.display(),
+            env.display(),
+            secrets_dir.display()
+        ),
+    );
+    let mut c = Command::new(env!("CARGO_BIN_EXE_postmaster"));
+    c.args(["exec", "--config"])
+        .arg(&cfg)
+        .args(["--", "/nonexistent-pm-binary"])
+        .env_remove("SECRET");
+    let out = c.output().unwrap();
+    assert!(!out.status.success());
+
+    let leftovers: Vec<String> = std::fs::read_dir(&secrets_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        leftovers,
+        vec![postmaster::secret_files::MANAGED_SENTINEL.to_string()],
+        "only the managed sentinel may survive a failed exec"
+    );
+}
+
+#[test]
+fn files_mode_passthrough_nul_fails_closed_with_cleanup() {
+    // sweep 2026-08-07 T10: a passthrough value containing NUL cannot
+    // become an env var — fail closed AND unwind the secret file that
+    // was already written for it.
+    let d = common::tmpdir("files-ptnul");
+    let secrets_dir = d.join("secrets");
+    std::fs::create_dir_all(&secrets_dir).unwrap();
+    let env = common::write_env_file(
+        &d,
+        ".env.production",
+        &[
+            format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
+            format!("SECRET=\"{}\"", common::enc("before\0after")),
+        ],
+    );
+    let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"files","keys":[{{"file":"{}"}}],"env_files":["{}"],"secrets_dir":"{}","passthrough":["SECRET"]}}"#,
+            keys.display(),
+            env.display(),
+            secrets_dir.display()
+        ),
+    );
+    let out = run_exec(&cfg, "true", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("passthrough value contains NUL"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        !secrets_dir.join("SECRET").exists(),
+        "the written secret file must be unwound on the passthrough-NUL failure"
+    );
+}
+
+#[test]
+fn files_mode_refuses_symlinked_secrets_dir() {
+    // sweep 2026-08-07 T11: a symlinked secrets_dir is a hard error
+    // before any plaintext is written — and the link target stays
+    // untouched.
+    let d = common::tmpdir("files-dirlink");
+    let real = d.join("real-secrets");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = d.join("linked-secrets");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let env = common::write_env_file(
+        &d,
+        ".env.production",
+        &[
+            format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
+            format!("SECRET=\"{}\"", common::enc("unreachable")),
+        ],
+    );
+    let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"files","keys":[{{"file":"{}"}}],"env_files":["{}"],"secrets_dir":"{}"}}"#,
+            keys.display(),
+            env.display(),
+            link.display()
+        ),
+    );
+    let out = run_exec(&cfg, "true", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("secrets_dir is a symlink"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        std::fs::read_dir(&real).unwrap().next().is_none(),
+        "the symlink target must stay untouched"
     );
 }

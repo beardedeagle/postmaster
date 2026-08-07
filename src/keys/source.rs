@@ -117,15 +117,27 @@ mod tests {
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
         }
+        // Guard against an ambient valid key var in the test runner's own
+        // environment (e.g. DOTENV_PRIVATE_KEY exported in CI): with one
+        // present, the environment source SUCCEEDS and the terminal error
+        // is unobservable — skip rather than flake (sweep 2026-08-07 T16).
+        // Only the Env prefix counts here: these namings require Env alone.
+        let ambient = std::env::vars_os().any(|(k, _)| {
+            k.to_str()
+                .is_some_and(|k| crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), k))
+        });
+        if ambient {
+            return;
+        }
         let specs = vec![
             KeySourceSpec::Credential("nonexistent".to_string()),
             KeySourceSpec::Environment,
         ];
         let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
-        // The error should come from the environment source (terminal),
+        // The error must come from the environment source (terminal),
         // proving credential fell through rather than erroring.
         assert!(
-            err.contains("environment:") || err.contains("no usable key source"),
+            err.contains("environment:"),
             "credential should be skippable; got: {err}"
         );
     }
@@ -356,5 +368,40 @@ mod tests {
             ring.candidates(dotenv_var).is_none(),
             "an unrequired naming must not enter the ring"
         );
+    }
+
+    #[test]
+    fn load_ring_credential_loads_present_file() {
+        // sweep 2026-08-07 T9: the positive credential leg — a present,
+        // well-formed credential file loads through the same selection
+        // path the negative legs reject.
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("pm-keysource-load-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let cred_dir = d.join("creds");
+        fs::create_dir_all(&cred_dir).unwrap();
+        let cred = cred_dir.join("dotenv-keys");
+        fs::write(&cred, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        fs::set_permissions(&cred, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
+        }
+        let ring = load_ring(
+            &[KeySourceSpec::Credential("dotenv-keys".to_string())],
+            &[],
+            &[KeyNaming::Env],
+        );
+        unsafe {
+            std::env::remove_var("CREDENTIALS_DIRECTORY");
+        }
+        let _ = fs::remove_dir_all(&d);
+
+        let ring = ring.expect("a present credential file must load");
+        assert!(ring.candidates("DOTENV_PRIVATE_KEY").is_some());
     }
 }

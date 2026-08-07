@@ -707,4 +707,86 @@ mod tests {
             std::env::remove_var(bundle);
         }
     }
+
+    #[test]
+    fn ensure_keys_dir_creates_0700_and_corrects_wide_modes() {
+        // sweep 2026-08-07 T7: the provisioning primitives had no direct
+        // coverage — create sets exactly 0700, and a pre-existing 0755
+        // dir is corrected in place.
+        use std::os::unix::fs::PermissionsExt;
+        // Canonicalize the temp base: on macOS it sits under /var →
+        // /private/var, and the O5 prefix walk would (correctly) refuse
+        // the symlinked /var component for reasons unrelated to this test.
+        let d = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("pm-ensure-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+
+        let created = d.join("new-keys");
+        ensure_keys_dir(&created, false).expect("create should succeed");
+        let mode = fs::metadata(&created).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "fresh keys dir must be 0700, got {mode:o}");
+
+        let wide = d.join("wide-keys");
+        fs::create_dir_all(&wide).unwrap();
+        fs::set_permissions(&wide, fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_keys_dir(&wide, false).expect("verify/correct should succeed");
+        let mode = fs::metadata(&wide).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "a 0755 keys dir must be corrected to 0700");
+
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ensure_keys_dir_refuses_a_symlinked_prefix() {
+        // sweep 2026-08-07 T7 (audit 2026-08-02 O5): create_dir_all
+        // follows intermediate symlinks, so the prefix walk must refuse
+        // them before anything is created.
+        // Canonicalize the temp base (macOS /var → /private/var) so the
+        // walk reaches OUR planted symlink instead of refusing the
+        // OS-provided /var component first.
+        let d = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("pm-ensure-dir-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let real = d.join("real");
+        fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, d.join("link")).unwrap();
+
+        let err = ensure_keys_dir(&d.join("link").join("keys"), false)
+            .expect_err("a symlinked path component must be refused");
+        assert!(err.contains("symlink"), "{err}");
+        assert!(
+            !real.join("keys").exists(),
+            "nothing may be created through the symlink"
+        );
+
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ensure_keys_file_corrects_mode_and_missing_unattended_fails() {
+        // sweep 2026-08-07 T7: a 0644 keys file is corrected to 0600; a
+        // missing file in unattended mode fails closed (no prompt).
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("pm-ensure-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let keys = d.join(".env.keys");
+        fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
+
+        ensure_keys_file(&keys, false, true).expect("verify/correct should succeed");
+        let mode = fs::metadata(&keys).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a 0644 keys file must be corrected to 0600");
+
+        let missing = d.join("absent.keys");
+        let err = ensure_keys_file(&missing, false, true)
+            .expect_err("missing file + unattended must fail closed");
+        assert!(err.contains("unattended mode"), "{err}");
+
+        let _ = fs::remove_dir_all(&d);
+    }
 }

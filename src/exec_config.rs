@@ -279,15 +279,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_var_for_edge_cases() {
-        assert!(
-            KeyNaming::Env
-                .key_var_for(std::path::Path::new("no-dot-env"))
-                .is_err()
-        );
-    }
-
-    #[test]
     fn exec_config_parses() {
         let json = r#"{
       "mode": "files",

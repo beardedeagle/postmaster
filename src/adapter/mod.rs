@@ -117,6 +117,19 @@ mod tests {
                 .unwrap(),
             "DOTENV_PRIVATE_KEY_PRODUCTION"
         );
+        assert_eq!(
+            KeyNaming::Env
+                .key_var_for(Path::new("/x/.env.staging_v2"))
+                .unwrap(),
+            "DOTENV_PRIVATE_KEY_STAGING_V2"
+        );
+    }
+
+    #[test]
+    fn key_var_for_requires_the_dot_env_convention() {
+        // Consolidated from the keys/exec_config test copies (sweep
+        // 2026-08-07 T13): the mapping lives here, so its legs do too.
+        assert!(KeyNaming::Env.key_var_for(Path::new("no-dot-env")).is_err());
     }
 
     #[test]

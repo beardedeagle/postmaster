@@ -441,29 +441,7 @@ pub mod tests {
     }
 
     #[test]
-    fn key_var_for_basic() {
-        assert_eq!(
-            KeyNaming::Env
-                .key_var_for(std::path::Path::new(".env"))
-                .unwrap(),
-            "DOTENV_PRIVATE_KEY"
-        );
-        assert_eq!(
-            KeyNaming::Env
-                .key_var_for(std::path::Path::new(".env.production"))
-                .unwrap(),
-            "DOTENV_PRIVATE_KEY_PRODUCTION"
-        );
-        assert_eq!(
-            KeyNaming::Env
-                .key_var_for(std::path::Path::new(".env.staging_v2"))
-                .unwrap(),
-            "DOTENV_PRIVATE_KEY_STAGING_V2"
-        );
-    }
-
-    #[test]
-    fn load_rotated_keys_and_plaintext_env() {
+    fn resolve_plaintext_passthrough_with_empty_ring() {
         // Create a real .env file with a plaintext value (simulating --plain)
         let env_dir = std::env::temp_dir();
         let env_path = env_dir.join(format!(
@@ -722,5 +700,57 @@ pub mod tests {
         .unwrap();
         assert!(ring.candidates("DOTENV_PRIVATE_KEY").is_some());
         assert!(ring.candidates("DOTENV_PRIVATE_KEYFOO").is_none());
+    }
+
+    #[test]
+    fn resolve_all_refuses_symlinked_env_file() {
+        // sweep 2026-08-07 T5: the O_NOFOLLOW ciphertext open (audit
+        // 2026-08-02 A13) — a planted symlink at a configured .env path
+        // is a hard error, never a read-through.
+        let d = tdir("symlink");
+        std::fs::write(d.join(".env.real"), "A=plain\n").unwrap();
+        std::os::unix::fs::symlink(d.join(".env.real"), d.join(".env")).unwrap();
+        let ring = KeyRing(HashMap::new());
+        let err = resolve_all(
+            &[d.join(".env")],
+            &ring,
+            false,
+            true,
+            &|_| false,
+            KeyNaming::Env,
+        )
+        .unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn decrypt_value_fails_closed_on_bad_base64_and_missing_ring_entry() {
+        // sweep 2026-08-07 T14: decrypt_value's two fail-closed legs,
+        // exercised directly (the resolve paths reach them only
+        // indirectly).
+        let env_file = Path::new(".env");
+        let ring = KeyRing(HashMap::new());
+
+        // Malformed base64 after the encrypted: prefix → parse error
+        // naming the file and key, never a decrypt attempt.
+        let err = decrypt_value(
+            env_file,
+            "KEY",
+            "encrypted:!!!not-base64",
+            &ring,
+            KeyNaming::Env,
+        )
+        .unwrap_err();
+        assert!(err.contains("KEY is not valid base64"), "{err}");
+
+        // Well-formed base64 but the ring lacks the file's mapped key
+        // variable → missing-entry error.
+        let b64 = BASE64.encode(b"well-formed");
+        let raw = format!("encrypted:{b64}");
+        let err = decrypt_value(env_file, "KEY", &raw, &ring, KeyNaming::Env).unwrap_err();
+        assert!(
+            err.contains("key ring has no DOTENV_PRIVATE_KEY entry"),
+            "{err}"
+        );
     }
 }

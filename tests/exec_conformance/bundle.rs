@@ -123,3 +123,100 @@ fn mixed_env_and_bundle_exec_resolves_both_adapters() {
     assert_eq!(std::fs::read(d.join("secret.out")).unwrap(), b"from-bundle");
     assert_eq!(std::fs::read(d.join("plain.out")).unwrap(), val.as_bytes());
 }
+
+#[test]
+fn bundle_exec_refuses_symlinked_bundle_file() {
+    // sweep 2026-08-07 T5: the O_NOFOLLOW open on bundle ciphertext
+    // (audit 2026-08-02 A13) must hold end-to-end — a planted symlink at
+    // a configured bundle path is a hard error, never a read-through.
+    let d = common::tmpdir("bundle-symlink");
+    let bundle = write_bundle(&d, &[("SECRET", "unreachable")]);
+    let keys = write_keys(&d, false);
+    let link = d.join("linked.bundle.json");
+    std::os::unix::fs::symlink(&bundle, &link).unwrap();
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"env","keys":[{{"file":"{}"}}],"bundle_files":["{}"]}}"#,
+            keys.display(),
+            link.display()
+        ),
+    );
+    let out = run_exec(&cfg, "true", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("symlink"), "stderr: {stderr}");
+}
+
+#[test]
+fn bundle_env_precedence_matches_env_adapter() {
+    // sweep 2026-08-07 T10: bundle entries follow the same precedence
+    // contract as .env values — the process environment wins unless
+    // overload.
+    let d = common::tmpdir("bundle-prec");
+    let bundle = write_bundle(&d, &[("SECRET", "from-bundle")]);
+    let keys = write_keys(&d, false);
+    let cfg = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"env","keys":[{{"file":"{}"}}],"bundle_files":["{}"],"overload":false}}"#,
+            keys.display(),
+            bundle.display()
+        ),
+    );
+    let sh = format!("printf %s \"$SECRET\" > '{d}'/out1", d = d.display());
+    let out = run_exec(&cfg, &sh, &[("SECRET", "preset")]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(d.join("out1")).unwrap(), b"preset");
+
+    let cfg_overload = write_config(
+        &d,
+        &format!(
+            r#"{{"mode":"env","keys":[{{"file":"{}"}}],"bundle_files":["{}"],"overload":true}}"#,
+            keys.display(),
+            bundle.display()
+        ),
+    );
+    let sh2 = format!("printf %s \"$SECRET\" > '{d}'/out2", d = d.display());
+    let out2 = run_exec(&cfg_overload, &sh2, &[("SECRET", "preset")]);
+    assert!(
+        out2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    assert_eq!(std::fs::read(d.join("out2")).unwrap(), b"from-bundle");
+}
+
+#[test]
+fn bundle_nul_value_is_a_hard_error_under_any_strictness() {
+    // sweep 2026-08-07 T10 (X6): an env-bound bundle value containing NUL
+    // is a HARD error — one rule for every env-bound value. strict:false
+    // must NOT skip it the way it skips undecryptable values.
+    let d = common::tmpdir("bundle-nul");
+    let bundle = write_bundle(&d, &[("SECRET", "before\0after")]);
+    let keys = write_keys(&d, false);
+    for strict in [true, false] {
+        let cfg = write_config(
+            &d,
+            &format!(
+                r#"{{"mode":"env","keys":[{{"file":"{}"}}],"bundle_files":["{}"],"strict":{strict}}}"#,
+                keys.display(),
+                bundle.display()
+            ),
+        );
+        let out = run_exec(&cfg, "true", &[]);
+        assert!(
+            !out.status.success(),
+            "strict:{strict} must still fail closed on a NUL value"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("NUL byte"),
+            "strict:{strict} stderr: {stderr}"
+        );
+    }
+}

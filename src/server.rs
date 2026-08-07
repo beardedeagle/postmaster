@@ -751,4 +751,19 @@ mod tests {
         let err = validate_absolute_paths(&cfg2).unwrap_err();
         assert!(err.contains("absolute"), "{err}");
     }
+
+    #[test]
+    fn read_capped_passes_at_cap_and_fails_over_cap() {
+        // sweep 2026-08-07 T4: the A6 cap boundary itself — an at-cap
+        // read passes byte-exact; one byte over fails rather than
+        // truncates (a truncated secret must never be served whole).
+        let at_cap = std::io::repeat(0x41).take(MAX_READ_BYTES);
+        let got = read_capped(at_cap, Path::new("/test")).unwrap();
+        assert_eq!(got.len() as u64, MAX_READ_BYTES);
+        assert!(got.iter().all(|b| *b == 0x41));
+
+        let over_cap = std::io::repeat(0x41).take(MAX_READ_BYTES + 1);
+        let err = read_capped(over_cap, Path::new("/test")).unwrap_err();
+        assert!(err.contains("size cap"), "{err}");
+    }
 }

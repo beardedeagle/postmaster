@@ -760,4 +760,38 @@ mod tests {
 
         assert_eq!(wait_monitor_exit(monitor, Duration::from_secs(5)), 0);
     }
+
+    /// A service that is ALREADY dead when the monitor starts (death
+    /// observed on the first tick) must still trigger cleanup and an
+    /// immediate monitor exit — the monitor must never hang waiting on a
+    /// process that died before it began watching (sweep 2026-08-07 T15).
+    #[test]
+    fn pre_dead_service_triggers_immediate_cleanup_and_exit() {
+        let dir = tdir("predead");
+        let names = write_dummies(&dir);
+        let mut service = Command::new("sleep").arg("30").spawn().unwrap();
+        let service_pid = Pid::from_child(&service);
+        // Kill AND reap before the monitor starts: a zombie still answers
+        // kill(pid, 0), so the monitor would correctly see "alive". After
+        // the reap the pid is gone (ESRCH); reuse inside the test window
+        // is negligible.
+        kill_process(service_pid, Signal::KILL).unwrap();
+        let status = service.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+
+        let monitor = fork_monitor(
+            service_pid,
+            Some(&dir),
+            names,
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        );
+
+        assert_eq!(wait_monitor_exit(monitor, Duration::from_secs(5)), 0);
+        assert!(
+            !dir.join("A").exists() && !dir.join("B").exists(),
+            "cleanup must run even when the service died before the monitor started"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
