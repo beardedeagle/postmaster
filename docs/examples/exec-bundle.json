@@ -1,0 +1,11 @@
+{
+  "mode": "env",
+  "keys": [
+    "environment"
+  ],
+  "bundle_files": [
+    "/nix/store/example-postmaster-bundle-myapp/secrets.postmaster.bundle.json"
+  ],
+  "strict": true,
+  "overload": false
+}
