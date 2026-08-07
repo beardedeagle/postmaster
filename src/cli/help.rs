@@ -7,15 +7,17 @@ postmaster --config <file.json> [--bind] [--allow-nonroot]\n  \
 postmaster fetch <socket-path>\n  \
 postmaster exec --config <exec.json> [--check] [--verify-keys] -- <command> [args…]\n  \
 postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--keys-dir <path>]\n  \
+postmaster cleanup --config <exec.json>\n  \
 postmaster help [subcommand]\n  \
 postmaster --version\n\n\
 SUBCOMMANDS:\n  \
 exec     Decrypt secrets and exec a child process with them injected\n  \
 fetch    Fetch a single secret from a postmaster daemon socket\n  \
 setup    Verify environment, create keys directory, seed keychain (idempotent)\n  \
+cleanup  Remove plaintext secret files from secrets_dir (ExecStopPost)\n  \
 help     Show help for a subcommand or this message\n\n\
 OPTIONS:\n  \
---config <path>  Configuration file (required for serve, exec, setup)\n  \
+--config <path>  Configuration file (required for serve, exec, setup, cleanup)\n  \
 --bind           (serve) Bind listener sockets even if not socket-activated\n  \
 --allow-nonroot  (serve) Allow non-root connections (dangerous)\n  \
 --check          (exec) Validate config shape only, no decryption or exec\n  \
@@ -68,6 +70,7 @@ OPTIONS:\n  \
 --config <path>   Exec config JSON (required)\n  \
 --recheck          Verification only — no creation or modification\n  \
 --unattended       Non-interactive mode for automation (fail closed, no prompts)\n  \
+--non-interactive  Alias for --unattended\n  \
 --force            Re-create or re-seed even if already correct\n  \
 --keys-dir <path>  Override the default keys directory\n\n\
 Default keys directory: /var/lib/postmaster (Linux),\n\

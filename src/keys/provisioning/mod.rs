@@ -14,11 +14,11 @@ use crate::server::log;
 mod cleanup;
 mod setup;
 
-/// The `postmaster cleanup` command, re-exported so
-/// `crate::key_provisioning::cleanup` keeps resolving.
+/// The `postmaster cleanup` command, re-exported at the crate root for
+/// `main()` via lib.rs.
 pub use cleanup::cleanup;
-/// The `postmaster setup` command, re-exported so
-/// `crate::key_provisioning::setup` keeps resolving.
+/// The `postmaster setup` command, re-exported at the crate root for
+/// `main()` via lib.rs.
 pub use setup::setup;
 
 /// Default keys directory path: `/var/lib/postmaster` on Linux,

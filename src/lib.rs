@@ -32,9 +32,6 @@ pub use adapter::bundle;
 /// The CLI module under its former name, so `crate::config` keeps resolving.
 pub use cli as config;
 pub use cli::{Invocation, parse_args, parse_args_from};
-/// Key provisioning under its former name, so `crate::key_provisioning`
-/// keeps resolving.
-pub use keys::provisioning as key_provisioning;
 pub use keys::provisioning::{cleanup, setup};
 /// Key-source selection under its former name, so `crate::key_source`
 /// keeps resolving.
@@ -43,10 +40,20 @@ pub use server::{fetch, harden_process, run};
 
 /// Re-exported for binary use. The real main is here so tests can call into it.
 pub fn main() -> std::process::ExitCode {
-    harden_process();
+    // Harden only the arms that can touch secret material (sweep
+    // 2026-08-07 D17): --help/--version and --check must not print
+    // hardening noise (e.g. an mlockall failure) for invocations that
+    // never decrypt. Serve/Exec/Fetch/Setup/Cleanup stay hardened BEFORE
+    // any decryption and before execvp, exactly as before.
     let result = match parse_args() {
-        Ok(Invocation::Serve(args)) => run(&args),
-        Ok(Invocation::Fetch(path)) => fetch(&path),
+        Ok(Invocation::Serve(args)) => {
+            harden_process();
+            run(&args)
+        }
+        Ok(Invocation::Fetch(path)) => {
+            harden_process();
+            fetch(&path)
+        }
         Ok(Invocation::Exec {
             config,
             check: true,
@@ -57,15 +64,24 @@ pub fn main() -> std::process::ExitCode {
             check: false,
             verify_keys,
             argv,
-        }) => launcher::exec(&config, &argv, verify_keys),
+        }) => {
+            harden_process();
+            launcher::exec(&config, &argv, verify_keys)
+        }
         Ok(Invocation::Setup {
             config,
             recheck,
             unattended,
             force,
             keys_dir,
-        }) => setup(&config, recheck, unattended, force, keys_dir),
-        Ok(Invocation::Cleanup { config }) => cleanup(&config),
+        }) => {
+            harden_process();
+            setup(&config, recheck, unattended, force, keys_dir)
+        }
+        Ok(Invocation::Cleanup { config }) => {
+            harden_process();
+            cleanup(&config)
+        }
         #[allow(clippy::print_stdout, clippy::print_stderr)]
         Ok(Invocation::Help(sub)) => {
             let text = match sub.as_deref() {
