@@ -1,5 +1,10 @@
 # Test-Only env Mutation
 
+> **At a glance:** some tests must change the process environment,
+> which Rust 2024 marks `unsafe` because it can race other threads.
+> Every such test holds one shared process-wide lock, so env-mutating
+> tests can never run — or race — concurrently.
+
 ## Location
 
 ```text

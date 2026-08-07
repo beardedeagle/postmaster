@@ -1,5 +1,10 @@
 # Signal Deferral (TerminationGuard)
 
+> **At a glance:** while postmaster decrypts and injects, termination
+> signals are blocked so a well-timed `Ctrl-C` or `systemctl stop`
+> cannot strand half-written plaintext. The original mask is captured
+> and restored before launch — the service never inherits it.
+
 ## Location
 
 ```text

@@ -112,7 +112,9 @@ Postmaster is the local secret materialization stage in a 5-stage
 pipeline: custody (Vault/SSM/1Password/TPM2) → rendering (Nix/Terraform/
 CDK/Ansible/Salt/Puppet) → delivery (credentials/files/keychain/env) →
 materialization (postmaster) → launch (execvp). Each stage is owned by a
-different system; postmaster owns exactly materialization.
+different system; postmaster owns exactly materialization. The
+stage-by-stage breakdown lives in
+[The secret pipeline](docs/src/architecture/postmaster.md#the-secret-pipeline).
 
 The `exec.json` contract and `postmaster exec --check` conformance suite
 are the interface between postmaster and every integration. An

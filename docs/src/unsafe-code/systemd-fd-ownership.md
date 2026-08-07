@@ -1,5 +1,10 @@
 # systemd fd Ownership (Linux)
 
+> **At a glance:** on Linux, systemd hands postmaster ready-made
+> sockets as inherited file descriptors. Adopting them is the one
+> `unsafe` act on the serving path — valid exactly because systemd's
+> `sd_listen_fds(3)` contract says which descriptors they are.
+
 ## Location
 
 ```text

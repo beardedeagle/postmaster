@@ -100,41 +100,12 @@ stops being an adversary. The entire secret surface collapses to one
 
 ## The Secret Pipeline
 
-Postmaster owns exactly one stage in a 5-stage pipeline. Understanding
-which stage each system owns is the key to understanding what postmaster
-is (and is not).
-
-```mermaid
-flowchart LR
-    subgraph s1["1. Custody"]
-        vault["Vault / SSM /\n1Password / TPM2"]
-    end
-    subgraph s2["2. Rendering"]
-        nix["Nix / Terraform /\nCDK / Ansible"]
-    end
-    subgraph s3["3. Delivery"]
-        cred["systemd cred /\nfile / keychain"]
-    end
-    subgraph s4["4. Materialization"]
-        pm["postmaster\ndecrypt + inject"]
-    end
-    subgraph s5["5. Launch"]
-        exec["execvp\nchild = MainPID"]
-    end
-
-    vault --> nix
-    nix --> cred
-    cred --> pm
-    pm --> exec
-```
-
-| Stage | Who owns it | What happens |
-| ----- | ----------- | ------------ |
-| 1. Custody | Vault, AWS SSM, 1Password, TPM2 | Private keys live in a source/custody system |
-| 2. Rendering | Nix, Terraform, CDK, Ansible, Salt, Puppet | Encrypted artifacts + key material + service wiring get onto the host |
-| 3. Delivery | systemd, files, keychain, env | Key material reaches postmaster at runtime via local sources |
-| 4. Materialization | **postmaster** | Postmaster decrypts and injects — this is the only stage it owns |
-| 5. Launch | execvp | Process image replaced; child binary is MainPID |
+Postmaster owns exactly one stage in a 5-stage pipeline: custody
+(Vault/SSM/1Password/TPM2) → rendering (Nix/Terraform/CDK/Ansible) →
+delivery (systemd credentials/files/keychain/env) → **materialization
+(postmaster)** → launch (execvp). The stage diagram, table, and
+per-stage detail live in
+[postmaster — the secret pipeline](./architecture/postmaster.md#the-secret-pipeline).
 
 Postmaster does not participate in stages 1-3. It does not fetch from
 remote systems, does not deploy infrastructure, and owns no service

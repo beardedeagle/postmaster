@@ -1,5 +1,40 @@
 # Sibling Launch Monitor
 
+> **At a glance:** a tiny forked sibling — born after every secret has
+> been zeroized — watches the service for its whole life. It forwards
+> stop signals, escalates to SIGKILL after a short grace, and deletes
+> plaintext secret files on every death path, including `kill -9`.
+
+## Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant L as Launcher (parent)
+    participant M as Monitor (fork-child)
+    participant S as Service (exec'd parent)
+
+    L->>L: zeroize plaintext; block stop signals
+    L->>M: fork()
+    Note over M: scrub inherited env pairs (wipe_pair); mask stays blocked for life
+    L->>S: restore mask; execvp becomes service
+    loop poll tick
+        M->>S: liveness (pidfd+poll / kqueue NOTE_EXIT)
+        M->>M: stop signal pending? (sigpending then sigwait)
+    end
+    alt stop signal (TERM/INT/HUP/QUIT)
+        M->>S: forward the signal
+        Note over M,S: bounded grace (250 ms)
+        alt service exits within the grace
+            M->>M: cleanup plaintext files; exit 0
+        else grace expires
+            M->>S: SIGKILL
+            M->>M: cleanup plaintext files; exit 0
+        end
+    else service death (exit, crash, kill -9)
+        M->>M: cleanup plaintext files; exit 0
+    end
+```
+
 ## Location
 
 ```text
