@@ -18,8 +18,14 @@ pub(crate) fn is_key_var_name(prefix: &str, name: &str) -> bool {
 /// Implementation of [`KeyRing::from_env`]; the contract is documented on
 /// the method.
 pub(super) fn from_env(namings: &[KeyNaming]) -> Result<KeyRing, String> {
+    // vars_os + skip non-UTF-8 names/values: std::env::vars() PANICS during
+    // iteration if any inherited entry is not valid Unicode, which under
+    // panic=abort aborts the whole launcher on an arbitrary inherited
+    // variable (sweep 2026-08-07 K3). Key-var names match [A-Za-z0-9_] and
+    // key values are hex, so nothing admissible is lost.
     KeyRing::from_pairs(
-        std::env::vars()
+        std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .filter(|(k, _)| namings.iter().any(|n| is_key_var_name(n.key_prefix(), k)))
             .map(|(k, v)| (k, Zeroizing::new(v))),
         namings,

@@ -292,7 +292,6 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
     #[cfg(not(target_os = "macos"))]
     let _ = wanted;
     let mut checked = 0_u32;
-    let mut found = 0_u32;
 
     for spec in &cfg.keys {
         match spec {
@@ -301,13 +300,37 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 let dir = std::env::var_os("CREDENTIALS_DIRECTORY")
                     .ok_or("$CREDENTIALS_DIRECTORY is not set")?;
                 let p = Path::new(&dir).join(name);
-                if !p.exists() {
-                    return Err(format!(
-                        "{}: credential source not found under $CREDENTIALS_DIRECTORY",
-                        p.display()
-                    ));
+                // Mirror load_ring's discipline (sweep 2026-08-07 K4):
+                // verification must not pass what resolution rejects —
+                // exists() follows symlinks, but the loader refuses a
+                // symlinked credential outright.
+                match fs::symlink_metadata(&p) {
+                    Ok(md) if md.file_type().is_symlink() => {
+                        return Err(format!(
+                            "{}: credential source is a symlink; refusing to follow",
+                            p.display()
+                        ));
+                    }
+                    Ok(md) if md.is_file() => {}
+                    Ok(_) => {
+                        return Err(format!(
+                            "{}: credential source is not a regular file",
+                            p.display()
+                        ));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(format!(
+                            "{}: credential source not found under $CREDENTIALS_DIRECTORY",
+                            p.display()
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "{}: cannot stat credential source: {e}",
+                            p.display()
+                        ));
+                    }
                 }
-                found += 1;
             }
             KeySourceSpec::File(path) => {
                 checked += 1;
@@ -317,15 +340,26 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                         path.display()
                     ));
                 }
+                // NONBLOCK is inert on regular files and prevents a FIFO
+                // from hanging verification at open; the file-type check
+                // then rejects anything that isn't a regular file (sweep
+                // 2026-08-07 K5).
                 let oflags = rustix::fs::OFlags::RDONLY
                     | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC;
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NONBLOCK;
                 let fd =
                     rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
                         format!("{}: {e} (refusing to follow a symlink)", path.display())
                     })?;
                 let stat = rustix::fs::fstat(&fd)
                     .map_err(|e| format!("{}: fstat: {e}", path.display()))?;
+                if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
+                    return Err(format!(
+                        "{}: not a regular file (fail closed)",
+                        path.display()
+                    ));
+                }
                 let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
                 if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
                     return Err(format!(
@@ -342,7 +376,6 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                         stat.st_uid
                     ));
                 }
-                found += 1;
             }
             KeySourceSpec::Keychain(service) => {
                 #[cfg(target_os = "macos")]
@@ -362,7 +395,6 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                             }
                         }
                     }
-                    found += 1;
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -384,11 +416,16 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 // verification must not pass what resolution rejects.
                 for naming in cfg.required_namings() {
                     let prefix = naming.key_prefix();
-                    if !std::env::vars().any(|(k, _)| crate::keys::is_key_var_name(prefix, &k)) {
+                    // vars_os: std::env::vars() panics during iteration on
+                    // non-Unicode entries — an abort under panic=abort, not
+                    // a clean verification failure (sweep 2026-08-07 K3).
+                    if !std::env::vars_os().any(|(k, _)| {
+                        k.to_str()
+                            .is_some_and(|k| crate::keys::is_key_var_name(prefix, k))
+                    }) {
                         return Err(format!("environment: no {prefix}* variables set"));
                     }
                 }
-                found += 1;
             }
         }
     }
@@ -397,8 +434,11 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
         return Err("no key sources configured (configure keys=[…])".into());
     }
 
+    // Every per-source failure above early-returns, so reaching the log
+    // means checked == verified — report the count, not a fraction that
+    // is always N/N (sweep 2026-08-07 K12).
     log(&format!(
-        "setup: {found}/{checked} key source(s) verified — environment ready"
+        "setup: {checked} key source(s) verified — environment ready"
     ));
     Ok(())
 }
@@ -461,6 +501,41 @@ mod tests {
             let err = res.expect_err("a prefix-substring variable must fail verification");
             assert!(err.contains("environment:"), "{err}");
         }
+    }
+
+    #[test]
+    fn verify_key_sources_credential_rejects_symlink() {
+        // sweep 2026-08-07 K4: verification must not pass what resolution
+        // rejects — exists() followed symlinks; the loader refuses them.
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("pm-verify-cred-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let cred_dir = d.join("creds");
+        fs::create_dir_all(&cred_dir).unwrap();
+        let real = d.join("real-keys");
+        fs::write(&real, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, cred_dir.join("link-keys")).unwrap();
+
+        let cfg: ExecConfig = serde_json::from_str(
+            r#"{"mode":"env","keys":[{"credential":"link-keys"}],"env_files":["/x/.env"]}"#,
+        )
+        .unwrap();
+
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
+        }
+        let res = verify_key_sources(&cfg, &[]);
+        unsafe {
+            std::env::remove_var("CREDENTIALS_DIRECTORY");
+        }
+        let _ = fs::remove_dir_all(&d);
+        let err = res.expect_err("a symlinked credential must fail verification");
+        assert!(err.contains("symlink"), "{err}");
     }
 
     fn bundle_only_cfg() -> ExecConfig {

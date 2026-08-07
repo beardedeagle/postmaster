@@ -55,7 +55,19 @@ pub fn load_ring(
                                 p.display()
                             ));
                         }
-                        Err(_) => { /* absent: fall through to next source */ }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            // absent: fall through to next source
+                        }
+                        // A permission-denied or malformed credential dir is
+                        // NOT "absent" — it is misconfigured. Fail loudly
+                        // rather than silently selecting a source the
+                        // operator didn't expect (sweep 2026-08-07 K8).
+                        Err(e) => {
+                            return Err(format!(
+                                "{}: cannot stat credential source: {e}",
+                                p.display()
+                            ));
+                        }
                     }
                 }
                 // absent credential: fall through to the next source
@@ -149,6 +161,46 @@ mod tests {
         assert!(
             err.contains("symlink"),
             "credential symlink should be rejected; got: {err}"
+        );
+    }
+
+    #[test]
+    fn load_ring_credential_stat_error_is_terminal() {
+        // sweep 2026-08-07 K8: a permission-denied credential dir is
+        // misconfigured, not "absent" — it must hard-error rather than
+        // fall through to the next source.
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            // chmod 000 does not exclude root; the EACCES leg is
+            // unobservable in a root test run.
+            return;
+        }
+        let d = std::env::temp_dir().join(format!("pm-keysource-eacces-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let cred_dir = d.join("locked");
+        fs::create_dir_all(&cred_dir).unwrap();
+        fs::set_permissions(&cred_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
+        // thread-safe). Serialized via the process-wide ENV_LOCK
+        // (crate::test_util) shared by every env-mutating test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("CREDENTIALS_DIRECTORY", &cred_dir);
+        }
+        let specs = vec![
+            KeySourceSpec::Credential("keys".to_string()),
+            KeySourceSpec::Environment,
+        ];
+        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
+        unsafe {
+            std::env::remove_var("CREDENTIALS_DIRECTORY");
+        }
+        fs::set_permissions(&cred_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&d);
+        assert!(
+            err.contains("cannot stat credential source"),
+            "stat failure must be terminal, not a fall-through; got: {err}"
         );
     }
 

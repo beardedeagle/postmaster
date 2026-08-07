@@ -28,16 +28,29 @@ mod verify;
 /// Re-exported so `crate::keys::verify_external_binary` keeps resolving.
 pub use verify::verify_external_binary;
 
-/// The exact predicate `KeyRing::from_env` admits, re-exported so setup
-/// verification accepts precisely the variables resolution would load
-/// (audit 2026-08-02 A16).
+/// The exact predicate `KeyRing::from_env` and `KeyRing::from_pairs`
+/// admit, re-exported so setup verification accepts precisely the
+/// variables resolution would load (audit 2026-08-02 A16; from_pairs
+/// shares the predicate since sweep 2026-08-07 K6).
 pub(crate) use env::is_key_var_name;
 
 /// Full variable name (adapter-specific, e.g. DOTENV_PRIVATE_KEY[_<ENV>])
 /// → candidate secret keys. Multiple candidates per name come from
 /// comma-separated rotation convention; decryption tries each in order.
-#[derive(Debug)]
 pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
+
+// Redacted Debug: variable names only, never key material. A derived impl
+// would print every 32-byte key verbatim — zeroize's `Zeroizing` derives
+// its own Debug pass-through to the inner value — a latent leak channel on
+// a public type (sweep 2026-08-07 K1). Tests need *a* Debug impl for
+// `Result::expect_err`; this keeps that working without the leak.
+impl std::fmt::Debug for KeyRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRing")
+            .field("vars", &self.0.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
 
 impl KeyRing {
     /// Look up candidate keys for a given key variable name.
@@ -63,8 +76,11 @@ impl KeyRing {
         load::load(path, namings)
     }
 
-    /// Core parser shared by every key source: keep keys matching any of
-    /// the required adapters' key prefixes, split comma-separated rotation
+    /// Core parser shared by every key source: keep keys exactly matching
+    /// the required adapters' key prefixes (`PREFIX` or `PREFIX_<suffix>` —
+    /// the A16 predicate; a bare starts_with admitted unreachable
+    /// prefix-collision material like `DOTENV_PRIVATE_KEYFOO` from keys
+    /// files, sweep 2026-08-07 K6), split comma-separated rotation
     /// candidates, hex-decode to 32-byte zeroized keys. Empty result is an
     /// error (fail closed). Takes `Zeroizing<String>` values so callers
     /// never hand key material as a plain heap String that drops without
@@ -77,7 +93,10 @@ impl KeyRing {
     ) -> Result<Self, String> {
         let mut map: HashMap<String, Vec<Zeroizing<[u8; 32]>>> = HashMap::new();
         for (name, mut value) in pairs {
-            if !namings.iter().any(|n| name.starts_with(n.key_prefix())) {
+            if !namings
+                .iter()
+                .any(|n| is_key_var_name(n.key_prefix(), &name))
+            {
                 value.zeroize();
                 continue;
             }
@@ -249,7 +268,6 @@ pub fn resolve(
 pub type ResolvedVars = Vec<(String, Zeroizing<Vec<u8>>)>;
 
 /// Outcome of a [`resolve_all`] pass.
-#[derive(Debug)]
 pub struct Resolution {
     /// Resolved (name, plaintext) pairs in injection order.
     pub resolved: ResolvedVars,
@@ -259,6 +277,23 @@ pub struct Resolution {
     /// (audit 2026-08-02 A3). Always empty under `strict: true`, where
     /// the first failure aborts the whole pass instead.
     pub failed: Vec<(String, String)>,
+}
+
+// Redacted Debug, same channel as K1 (sweep 2026-08-07 K2): names only —
+// a derived impl would print the decrypted plaintext values themselves.
+impl std::fmt::Debug for Resolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolution")
+            .field(
+                "resolved",
+                &self.resolved.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field(
+                "failed",
+                &self.failed.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 /// Resolve every key across `files` per the precedence contract
@@ -623,5 +658,69 @@ pub mod tests {
         assert!(out.resolved.is_empty());
         assert_eq!(out.failed.len(), 1);
         assert_eq!(out.failed[0].0, "A");
+    }
+
+    #[test]
+    fn keyring_debug_redacts_key_material() {
+        // sweep 2026-08-07 K1: a derived Debug would print every 32-byte
+        // key verbatim (Zeroizing's Debug passes through to the inner
+        // value). Names only.
+        let ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                Zeroizing::new("11".repeat(32)),
+            )],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        let dbg = format!("{ring:?}");
+        assert!(dbg.contains("DOTENV_PRIVATE_KEY"));
+        assert!(
+            !dbg.contains("17, 17"),
+            "debug output must not contain raw key bytes: {dbg}"
+        );
+    }
+
+    #[test]
+    fn resolution_debug_redacts_plaintext() {
+        // sweep 2026-08-07 K2: same channel — a derived Debug would print
+        // the decrypted plaintext values themselves.
+        let r = Resolution {
+            resolved: vec![(
+                "MY_SECRET".to_string(),
+                Zeroizing::new(b"super-secret-plaintext".to_vec()),
+            )],
+            failed: vec![("OTHER".to_string(), "decrypt failed".to_string())],
+        };
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("MY_SECRET"));
+        assert!(dbg.contains("OTHER"));
+        assert!(
+            !dbg.contains("super-secret"),
+            "debug output must not contain plaintext: {dbg}"
+        );
+    }
+
+    #[test]
+    fn from_pairs_uses_the_exact_key_var_predicate() {
+        // sweep 2026-08-07 K6: bare starts_with admitted
+        // DOTENV_PRIVATE_KEYFOO from keys files as unreachable dead
+        // material; the A16 predicate drops it exactly as from_env does.
+        let ring = KeyRing::from_pairs(
+            [
+                (
+                    "DOTENV_PRIVATE_KEYFOO".to_string(),
+                    Zeroizing::new("22".repeat(32)),
+                ),
+                (
+                    "DOTENV_PRIVATE_KEY".to_string(),
+                    Zeroizing::new("33".repeat(32)),
+                ),
+            ],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        assert!(ring.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(ring.candidates("DOTENV_PRIVATE_KEYFOO").is_none());
     }
 }

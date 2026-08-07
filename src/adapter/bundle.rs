@@ -45,8 +45,10 @@ pub struct Bundle {
     pub entries: std::collections::BTreeMap<String, BundleEntry>,
 }
 
-/// A recipient in the bundle: public routing metadata used to select
-/// local private key material.
+/// A recipient in the bundle: public routing metadata reserved for
+/// future recipient selection. Parsed and shape-validated only today —
+/// resolution selects ring candidates by the fixed `POSTMASTER_KEY`
+/// variable, never by recipient (sweep 2026-08-07 K10).
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Recipient {

@@ -10,8 +10,14 @@ use crate::adapter::KeyNaming;
 /// Implementation of [`KeyRing::load`]; the contract is documented on the
 /// method.
 pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
-    let oflags =
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+    // NONBLOCK is inert on regular files; on a FIFO it turns the otherwise
+    // blocking open into an immediate success that the file-type check
+    // below rejects — a FIFO here must never hang the launcher at open
+    // (sweep 2026-08-07 K5).
+    let oflags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC
+        | rustix::fs::OFlags::NONBLOCK;
     let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
         format!(
             "keys file {}: {e} (refusing to follow a symlink)",
@@ -20,6 +26,15 @@ pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String
     })?;
     let stat =
         rustix::fs::fstat(&fd).map_err(|e| format!("keys file {}: fstat: {e}", path.display()))?;
+    // Regular files only: Mode carries no S_IFMT bits, so a directory would
+    // pass the permission mask below and fail later with an opaque parse
+    // error (sweep 2026-08-07 K5).
+    if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
+        return Err(format!(
+            "keys file {}: not a regular file (fail closed)",
+            path.display()
+        ));
+    }
     let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
     // Reject group or world accessibility. 0o077 masks both RWXG and RWXO.
     if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
@@ -61,6 +76,17 @@ mod tests {
             Err(e) if e.contains("not valid hex") => {}
             other => panic!("expected bad hex error, got {other:?}"),
         });
+    }
+
+    #[test]
+    fn load_rejects_directory_keys_file() {
+        // sweep 2026-08-07 K5: Mode carries no S_IFMT bits, so a directory
+        // would pass the permission mask — reject by file type.
+        let dir = tdir("dir-as-keys");
+        match KeyRing::load(&dir, &[KeyNaming::Env]) {
+            Err(e) if e.contains("not a regular file") => {}
+            other => panic!("expected not-a-regular-file error, got {other:?}"),
+        }
     }
 
     #[test]
