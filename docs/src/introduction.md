@@ -22,7 +22,7 @@ holds secrets in memory.
 | Platform / SRE | [Key provisioning](./getting-started/key-provisioning.md) and the [Threat model](./architecture/threat-model.md) |
 | Security engineer | The [Threat model](./architecture/threat-model.md) and [Materialization ABI](./architecture/materialization-abi.md) |
 | Integration author | The [Launcher contract](./reference/launcher-contract.md) and [CLI reference](./reference/cli.md) |
-| Product / project manager | This introduction and the [postmaster](./architecture/postmaster.md) overview |
+| Product / project manager, engineering leadership | The [Executive overview](./executive-overview.md), then this introduction |
 
 ### Quick glossary
 
