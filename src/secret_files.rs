@@ -212,6 +212,12 @@ pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
     }
     for name in &names {
         let Some(name_str) = name.to_str() else {
+            // Every other skip in this loop logs; a foreign file with a
+            // non-UTF8 name must not persist silently (sweep 2026-08-07 X7).
+            crate::server::log(&format!(
+                "{}: prune: skipping non-UTF8 entry name",
+                dir.display()
+            ));
             continue;
         };
         // The sentinel is infrastructure, not a secret — never prune it.

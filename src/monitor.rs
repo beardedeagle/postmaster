@@ -35,15 +35,20 @@
 //!    latency, never to the grace cap.
 //!
 //! Fork-child discipline (the soundness contract for `launcher.rs`'s
-//! `fork`): the fork parent may be multithreaded (it is under
-//! `cargo test`), so between fork and exit the monitor performs no
-//! allocation and takes no stdio locks — only the async-signal-safe
-//! syscall set: signal mask/wait ops, `pidfd_open`/`poll`/`kevent`,
-//! `kill`/`pidfd_send_signal`, `unlinkat`, `nanosleep`, raw `write(2)`
-//! for diagnostics, and `_exit`/`exit_group`. All inputs (`names`, the
-//! dir fd) are allocated pre-fork and moved in. Exit never runs
-//! destructors, atexit handlers, or stdio flushes (inherited buffers
-//! must not flush twice).
+//! `fork`): the production fork parent is single-threaded at fork time,
+//! so between fork and exit the monitor performs one bounded exception
+//! and otherwise only the async-signal-safe syscall set. The exception:
+//! the inherited `extra` env pairs (plaintext in env mode) are scrubbed
+//! first — `wipe_pair` zeroizes in place, then drops (destructors and
+//! `free()` in the child) — sound only because no other thread exists to
+//! hold a malloc lock; under `cargo test` (multithreaded) test children
+//! fork with an empty `extra`, so no child ever frees there. Otherwise:
+//! no allocation, no stdio locks — only signal mask/wait ops,
+//! `pidfd_open`/`poll`/`kevent`, `kill`/`pidfd_send_signal`, `unlinkat`,
+//! `nanosleep`, raw `write(2)` for diagnostics, and `_exit`/`exit_group`.
+//! All inputs (`names`, the dir fd) are allocated pre-fork and moved in.
+//! Exit never runs destructors, atexit handlers, or stdio flushes
+//! (inherited buffers must not flush twice).
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};

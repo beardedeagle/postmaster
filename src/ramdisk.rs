@@ -1,5 +1,7 @@
 //! macOS ramdisk verification — ensures plaintext secret files land only
-//! on a RAM-backed HFS disk image owned by the service user.
+//! beneath a verified RAM-backed HFS mount: the mount proves RAM-backed
+//! via hdiutil, and `secrets_dir` must be contained in it, real (not a
+//! symlink), and owned by the service user (sweep 2026-08-07 X1).
 //!
 //! This module implements the `ramdiskGuard` invariant that was previously
 //! templated in `modules/darwin.nix`. On Linux the ramdisk check is not
@@ -77,8 +79,21 @@ fn device_is_ram_backed(device: &str, hdiutil_out: &str) -> bool {
     false
 }
 
+/// True when `dir` names a path lexically beneath `mount_point`
+/// (component-wise, with no `..` escape). Lexical only — the caller has
+/// already proven `dir` a real, non-symlink directory and `mount_point`
+/// present in mount output (sweep 2026-08-07 X1).
+fn path_beneath(dir: &Path, mount_point: &Path) -> bool {
+    match dir.strip_prefix(mount_point) {
+        Ok(rest) => !rest
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir)),
+        Err(_) => false,
+    }
+}
+
 /// darwin ramdisk guard (was ramdiskGuard in modules/darwin.nix): plaintext
-/// lands only on the postmaster ramdisk, in a directory this user owns.
+/// lands only beneath the postmaster ramdisk, in a directory this user owns.
 pub fn verify_ramdisk(mount_point: &Path, secrets_dir: &Path) -> Result<(), String> {
     // Trust boundary (audit 2026-08-02 O2): a compromised /sbin/mount or
     // hdiutil could report persistent disk as the RAM-backed postmaster
@@ -138,6 +153,18 @@ pub fn verify_ramdisk(mount_point: &Path, secrets_dir: &Path) -> Result<(), Stri
         return Err(format!(
             "{}: missing or not owned by this service user (is postmaster-ramdisk healthy?)",
             secrets_dir.display()
+        ));
+    }
+    // Containment (sweep 2026-08-07 X1): the checks above prove the mount
+    // is the RAM-backed postmaster ramdisk and, independently, that
+    // secrets_dir is a real euid-owned directory — nothing so far related
+    // the two. A hand-written config pointing secrets_dir at persistent
+    // disk would pass both and land plaintext off the ramdisk.
+    if !path_beneath(secrets_dir, mount_point) {
+        return Err(format!(
+            "{}: secrets_dir is not beneath the verified ramdisk mount {}; refusing to write plaintext outside the ramdisk",
+            secrets_dir.display(),
+            mount_point.display()
         ));
     }
     Ok(())
@@ -203,5 +230,29 @@ image-type      : read/write
 
         // Device not in hdiutil output at all
         assert!(!device_is_ram_backed("/dev/disk99", hdiutil));
+    }
+
+    #[test]
+    fn path_beneath_enforces_containment() {
+        // sweep 2026-08-07 X1: the guard must relate secrets_dir to the
+        // verified mount, not check each independently.
+        let mp = Path::new("/private/var/run/postmaster");
+        assert!(path_beneath(
+            Path::new("/private/var/run/postmaster/myapp"),
+            mp
+        ));
+        assert!(path_beneath(mp, mp), "the mount root itself is contained");
+        assert!(!path_beneath(Path::new("/private/var/run/other"), mp));
+        // Component-wise: a sibling whose name merely shares a prefix is
+        // NOT contained.
+        assert!(!path_beneath(
+            Path::new("/private/var/run/postmaster-evil"),
+            mp
+        ));
+        // `..` escape after a lexical prefix is rejected.
+        assert!(!path_beneath(
+            Path::new("/private/var/run/postmaster/../other"),
+            mp
+        ));
     }
 }

@@ -4,7 +4,7 @@
 
 ```
 src/monitor.rs — the monitor loop, liveness watches, signal ops, exit
-src/launcher.rs — the fork(2) site and the Linux TerminationGuard leg
+src/launcher.rs — the fork(2) site and both TerminationGuard legs (macOS + Linux)
 Unsafe blocks: fork(2) (libc, both platforms); rustix `runtime`
   kernel_sigprocmask/kernel_sigwait (Linux); libc pthread_sigmask/
   sigpending/sigwait/kqueue/kevent/_exit (macOS);

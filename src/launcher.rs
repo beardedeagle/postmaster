@@ -41,7 +41,11 @@ use crate::server::{fetch_bytes, log, read_capped};
 /// on Linux too, because the fork+monitor model runs there as well.
 #[cfg(target_os = "macos")]
 pub(crate) struct TerminationGuard {
-    old: libc::sigset_t,
+    /// `None` only if the block call failed (logged); restore then no-ops
+    /// rather than installing an empty mask that would unblock signals the
+    /// launcher's parent deliberately blocked — mirrors the Linux leg
+    /// (sweep 2026-08-07 X2).
+    old: Option<libc::sigset_t>,
 }
 
 #[cfg(target_os = "macos")]
@@ -57,17 +61,25 @@ impl TerminationGuard {
             }
             let mut old: libc::sigset_t = std::mem::zeroed();
             // pthread form: correct in single- and multi-threaded processes.
-            libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
-            Self { old }
+            if libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old) != 0 {
+                // Cannot realistically fail (bad arguments are impossible
+                // here) — but if it ever does, log and run unguarded
+                // rather than silently pretend the window is protected.
+                log("termination-guard: pthread_sigmask failed");
+                return Self { old: None };
+            }
+            Self { old: Some(old) }
         }
     }
 
     /// Restore the saved signal mask. The parent calls this before
     /// execvp — the child must not inherit blocked termination signals.
     pub(crate) fn restore_mask(&self) {
-        unsafe {
-            // SAFETY: restoring a previously saved valid mask.
-            libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
+        if let Some(old) = &self.old {
+            unsafe {
+                // SAFETY: restoring a previously saved valid mask.
+                libc::pthread_sigmask(libc::SIG_SETMASK, old, std::ptr::null_mut());
+            }
         }
     }
 }
@@ -250,18 +262,17 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
             if !cfg.overload && std::env::var_os(&name).is_some() {
                 continue;
             }
-            // NUL check for utf8 entries that would become env vars
+            // NUL check for utf8 entries that would become env vars.
+            // One rule for every env-bound value (sweep 2026-08-07 X6):
+            // NUL is a hard error, identical to the .env path in
+            // env_pairs — no strict-gated skip.
             if matches!(cfg.mode, ExecMode::Env)
                 && encoding == crate::bundle::Encoding::Utf8
                 && value.contains(&0)
             {
-                if cfg.strict {
-                    return Err(format!(
-                        "{name}: value contains a NUL byte; cannot be an environment variable (use files mode)"
-                    ));
-                }
-                log(&format!("non-strict: skipping {name}: NUL byte in value"));
-                continue;
+                return Err(format!(
+                    "{name}: value contains a NUL byte; cannot be an environment variable (use files mode)"
+                ));
             }
             resolved.push((name, value));
         }
@@ -451,11 +462,18 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     let service_pid = rustix::process::getpid();
     // SAFETY: fork(2) in a single-threaded process (the exec path spawns
     // no threads; the daemon's worker threads exist only in serve mode).
-    // The fork-child executes only monitor::run — the async-signal-safe
-    // syscall set documented in monitor.rs: no allocation, no stdio
-    // locks, no destructors — and exits via _exit/exit_group. rustix
-    // deliberately has no fork wrapper; on Linux this is the one libc FFI
-    // call on the exec path, flagged in docs/src/unsafe-code/monitor.md.
+    // The fork-child first SCRUBS the inherited `extra` env pairs in
+    // place (monitor::wipe_pair: zeroize, then drop — destructors and
+    // free() in the child), then executes only monitor::run's
+    // async-signal-safe syscall set (no allocation, no stdio locks, no
+    // destructors — documented in monitor.rs) and exits via
+    // _exit/exit_group. The scrub's free()s are sound here because the
+    // production fork parent is single-threaded at fork, so no malloc
+    // lock can be held by another thread; under `cargo test`
+    // (multithreaded) test children fork with no `extra` to scrub.
+    // rustix deliberately has no fork wrapper; on Linux this is the one
+    // libc FFI call on the exec path, flagged in
+    // docs/src/unsafe-code/monitor.md.
     match unsafe { libc::fork() } {
         -1 => {
             // No monitor means no stop semantics and no cleanup on
