@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Remediated all 33 findings of the 2026-08-02 security audit (5 HIGH,
-  11 MEDIUM, 17 LOW/INFO — 12 fixed, 4 documented as accepted).
+  11 MEDIUM, 17 LOW/INFO — all fixed or resolved except four documented
+  as accepted: A14, A18, A24-stale, A25).
 - Bundle entries are now name-bound: a ciphertext decrypts only under its
   own entry name (AES-GCM AAD); relocating it fails authentication.
   Suite bumped to `ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad`;
@@ -35,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fields (root and nested); Linux `id` resolved from verified absolute
   paths only; setup verification reuses the runtime key-variable
   predicate; bundle `encoding: "utf8"` is validated at resolution.
+- Remediated all 60 findings of the 2026-08-07 full-repo clean sweep
+  (code, tests, docs, repo files): redacted `Debug` on `KeyRing` and
+  `Resolution` (latent key-material/plaintext leak channels); env key
+  loading skips non-UTF-8 entries instead of panicking under
+  panic=abort; credential-source stat errors are terminal rather than
+  fall-through; `setup --force` is real (keychain re-seed, keys-file
+  re-prompt; force+unattended fails closed); daemon refuses a symlinked
+  socket parent and non-absolute config paths, and rejects empty
+  credentials at preflight; `--allow-nonroot` no longer overrides a
+  configured `peer_user` ACL; ramdisk verification enforces lexical
+  path containment; NUL in an env-bound bundle value is a hard error
+  under any strictness (one rule for every env-bound value).
 
 ### Changed
 
@@ -47,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (setup-rust, setup-nix — the latter verifies the pinned installer's
   sha256 before executing), actions pinned by sha, workflows consume
   just recipes.
+- Monitor tests extracted to `src/monitor/tests.rs` (`monitor.rs`
+  797 → 503 lines, same module path and visibility).
+- Markdown linting consolidated into `.markdownlint-cli2.jsonc` (cli2
+  never read `.markdownlintignore`); the two dead config files were
+  deleted and `just lint-md` (pinned markdownlint-cli2) now gates in
+  lefthook pre-commit, with `deny`+`audit` in pre-push.
+- CI housekeeping: the duplicated `deny` job left ci.yml (security.yml
+  owns it), security.yml's path filters include the workflow file
+  itself, the docs job installs a pinned mdbook/mdbook-mermaid, and
+  cargo-deny/cargo-audit installs are version-pinned.
+- `ci-rust` now includes `clippy-release` and `clippy-linux` recipes,
+  and rust-toolchain.toml pins the `x86_64-unknown-linux-gnu` target.
 
 ### Added
 
@@ -55,6 +80,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ownership, test-only env mutation).
 - `multiple_crate_versions` clippy lint plus `[bans] multiple-versions`
   in deny.toml (syn skipped for the wasm-gated duplicate).
+- Daemon end-to-end conformance (`tests/exec_conformance/daemon.rs`):
+  the real binary under `--bind --allow-nonroot`, a real `fetch`
+  roundtrip with a socket-mode assertion, and preflight refusal before
+  any bind.
+- Regression coverage across the sweep's audit seams: the `read_capped`
+  cap boundary, symlink refusal end-to-end (env file, bundle file,
+  secrets dir), execvp-failure cleanup leaving only the sentinel,
+  passthrough-NUL cleanup, bundle precedence and NUL semantics,
+  provisioning primitive modes, the positive credential-source leg, and
+  the monitor's pre-dead-service leg.
+- Executive overview page (leadership/PM audience) plus at-a-glance
+  intros across the unsafe-code section and a monitor lifecycle
+  mermaid diagram.
+
+### Fixed
+
+- Bundle configs resolve keys end-to-end again: `load_ring` admitted
+  only `DOTENV_PRIVATE_KEY*` (Env naming) at every source leg, so
+  `POSTMASTER_KEY` never entered the ring and every bundle exec failed
+  ("key ring has no POSTMASTER_KEY entry"). The ring now admits exactly
+  the namings the config's artifacts require — no more (least
+  privilege), no less. (e1f1c21; sweep O27)
+- Darwin serve mode starts: `acquire_listeners` fchmod()ed the bound
+  socket fd (audit 2026-08-02 finding #7), but Darwin `fchmod(2)`
+  rejects socket fds (EINVAL) — every `--bind` startup failed. Socket
+  permissions are now umask-borne at bind time on darwin (no TOCTOU
+  window; Linux keeps the fd-based fchmod). Caught by the new daemon
+  end-to-end conformance test.
+- `docs/schema/exec.schema.json` realigned with the parser:
+  `bundle_files` added, env/files modes accept `env_files` and/or
+  `bundle_files`, credentials mode rejects `bundle_files`, and the `$id`
+  points at postmaster — guarded by a fields-vs-schema tripwire test
+  and a new bundle example.
+- Docs factual sweep (30+ corrections): a phantom exit code 2, `env`
+  mislabeled as the default mode, argv-exposing keychain seeding
+  examples, a store-path key-source example the parser rejects, "does
+  not supervise" contradicting the sibling monitor, stale unsafe-code
+  counts, undocumented `POSTMASTER_KEY` and 16 MiB read cap, and
+  envelope/dotenvx naming in the examples.
+
+### Removed
+
+- Dead `/postmaster/target/` gitignore line and the inert `docs/book/`
+  gitattributes pattern (gitattributes has no dir-recursion syntax).
+- Duplicated `key_var_for` test copies in keys/exec_config (the legs
+  live in adapter/mod.rs where the mapping lives).
 
 ## [0.1.0] - 2026-07-28
 
