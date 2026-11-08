@@ -75,13 +75,18 @@ does not expose. Mode bits alone do not restrict extended ACL grants on macOS.
 Directory checks reject grants to principals other than root or the effective
 user that permit replacement or inherited reads of fresh files. Fresh private
 files have their ACLs cleared before plaintext writes.
+Runtime key-file loading and file-source setup rechecks use the same
+descriptor-based inspection to reject untrusted read or mutation grants without
+changing the source ACL. Root and the effective user remain trusted principals.
 
 The wrapper owns each ACL and qualifier allocation and frees it once with
 `acl_free`. Entry pointers borrow the live ACL; output pointers have initialized
 storage and stay valid through each call. Qualifiers use Darwin's fixed
 16-byte UUID layout and are compared with UUIDs resolved for trusted users.
 Descriptor borrows keep the file open throughout each call. Failures return
-errors before plaintext is written.
+errors before plaintext is read or written.
 
 Native tests install replacement and inheritance grants in private fixtures,
 verify rejection, and check that published files have no extended entries.
+Key-file tests cover read/write grants, trusted-user grants, read-only modes,
+and repeated runtime loads and file-source setup rechecks without ACL mutation.

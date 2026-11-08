@@ -187,7 +187,10 @@ where secret material is read or written:
   (`mode & 0o077 == 0`) and that the owner matches the current
   effective user ID.
   This fd-based approach eliminates the TOCTOU window between open
-  and permission check.
+  and permission check. On macOS, the same descriptor is checked for ACL
+  grants that let principals other than root or the effective user read or
+  modify the file. File-source setup rechecks use the same validation.
+  Both checks leave source ACLs intact.
 - **Credential source paths** are checked with `symlink_metadata`
   before loading, rejecting symlinks at the path level. The
   `O_NOFOLLOW` open in `KeyRing::load` provides defense-in-depth at
@@ -229,8 +232,10 @@ does invoke in secret-adjacent paths (`/usr/bin/id`, `/sbin/mount`,
 
 - **macOS:** `codesign -v` verifies a valid Apple code signature
   (defense-in-depth; the binaries are also SIP-protected).
-- **Linux:** verified as regular files owned by root (uid 0) and not
-  world-writable.
+- **Linux:** verified as regular files owned by root (uid 0) with no group
+  or other write permissions. `id` lookup resolves system aliases, including
+  the NixOS system profile, verifies the target and its directory ancestry,
+  then invokes the resolved target.
 
 ### Input validation
 

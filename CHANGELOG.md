@@ -28,7 +28,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `DOTENV_PRIVATE_KEY*`; bundles use `POSTMASTER_KEY`.
 - Reads macOS Keychain items through the Security.framework API.
 - Hides private-key terminal input and restores settings before pending
-  termination or suspend signals. Forced key-file replacement verifies inode
+  termination or suspend signals. Failed or interrupted terminal reads discard
+  unread input; successful reads retain queued values. Idle noncanonical reads
+  wait for input, and prompt failures restore settings before returning errors.
+  Forced key-file replacement verifies inode
   identity and ownership before publishing a fresh owner-only file.
 - Authorizes daemon dotenv files against trusted `env_file_sha256` hashes
   before parsing or decryption, at startup and on every fetch. Multiple hashes
@@ -38,7 +41,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   closed when unavailable or invalid.
 - Checks private key files through an opened descriptor for ownership and
   restrictive permissions. It rejects final-component symlinks and private
-  key paths in the Nix store.
+  key paths in the Nix store. On macOS, runtime loading and file-source setup
+  rechecks reject untrusted read or mutation ACL grants without changing files.
 - Keeps runtime key loading and setup verification on the same
   key-variable naming rules. Environment loading skips non-UTF-8 entries.
 - Supports `env` mode for direct environment injection.
@@ -89,8 +93,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parsing bounds source bytes, assignments, and expanded values before growth,
   while syntax errors omit input contents.
 - Verifies external tools before use with macOS code-signature checks or
-  Linux ownership and permission checks. Linux `id` lookup uses verified
-  absolute paths.
+  Linux ownership and permission checks. Linux helpers reject group or other
+  write permissions. `id` lookup resolves system aliases, including NixOS
+  profiles, verifies the target and its directory ancestry, then invokes it.
 - Validates daemon configuration at the root and nested credential
   mappings. Startup rejects relative paths, symlinked socket parents,
   and empty credentials.
@@ -133,6 +138,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pinned installer digest before execution. Official GitHub actions
   and helper tools use pinned versions. Nix installer temporary files
   work with GNU and macOS `mktemp`.
+  Cargo tool installation honors `CARGO_INSTALL_ROOT` and `CARGO_HOME` and
+  verifies the selected executables before adding their directory to `PATH`.
 - Runs formatting, Clippy, and Markdown lint from pre-commit hooks.
   Pre-push hooks run the Rust gate, dependency policy, and advisory checks.
   The Rust gate includes native, release, and Linux-target Clippy; the

@@ -395,13 +395,18 @@ this mode — it dispatches on whether `sockets` is empty:
 - **Keys file permissions and ownership.** `KeyRing::load` opens the
   keys file with `O_NOFOLLOW` and `fstat`s the fd to verify: no
   group/world access (`mode & 0o077 == 0`), and owned by the current
-  euid. A world-readable or symlinked keys file fails closed.
+  euid. A world-readable or symlinked keys file fails closed. On macOS,
+  runtime loading and file-source setup rechecks also reject ACL grants that let
+  principals other than root or the effective user read or modify the file.
+  These checks do not change the source file's ACL.
 - **External binary verification.** Keychain access uses the
   Security.framework API in-process — no external binary is invoked for
   it. The external binaries postmaster does invoke (`/usr/bin/id`,
   `/sbin/mount`, `/usr/bin/hdiutil` on macOS) are verified first:
   `codesign -v` on macOS; on Linux, verified as regular files owned by
-  root (uid 0) and not world-writable.
+  root (uid 0) with no group or other write permissions. Linux `id` lookup
+  resolves system aliases, verifies the target and its directory ancestry,
+  then invokes that resolved target. This includes the NixOS system profile.
 - **`verify_ramdisk` (darwin ramdisk guard).** When set, before any
   plaintext is written the launcher runs two checks: it shells out to
   `/sbin/mount` and requires the configured mount point to appear as an

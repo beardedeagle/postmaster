@@ -67,6 +67,8 @@ impl KeyRing {
     ///     file accidentally `chmod 0644` would expose private keys to every
     ///     process on the host; fail closed instead.
     ///   - `st_uid == euid`: the file must be owned by the service user.
+    ///   - macOS ACLs: reject read or mutation grants to principals other
+    ///     than root or the effective user without changing the source ACL.
     ///
     /// `namings` is the required adapter set; entries under other
     /// prefixes are dropped (and zeroized) at parse time.

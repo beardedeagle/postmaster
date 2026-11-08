@@ -42,11 +42,15 @@ impl TestPty {
     }
 
     pub fn spawn(&mut self, command: &mut Command) {
+        self.spawn_with_stderr(command, Stdio::from(self.slave.try_clone().unwrap()));
+    }
+
+    pub fn spawn_with_stderr(&mut self, command: &mut Command, stderr: Stdio) {
         self.child = Some(
             command
                 .stdin(Stdio::from(self.slave.try_clone().unwrap()))
                 .stdout(Stdio::from(self.slave.try_clone().unwrap()))
-                .stderr(Stdio::from(self.slave.try_clone().unwrap()))
+                .stderr(stderr)
                 .spawn()
                 .unwrap(),
         );

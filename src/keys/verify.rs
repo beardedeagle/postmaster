@@ -13,7 +13,7 @@ use std::path::Path;
 /// bypass or a misconfigured environment.
 ///
 /// On Linux: verify the file is a regular file, owned by root (uid 0),
-/// and not world-writable. There is no universal code-signing mechanism
+/// and not group/other writable. There is no universal code-signing mechanism
 /// on Linux, so ownership and permission checks are the practical
 /// defense-in-depth boundary.
 ///
@@ -62,9 +62,9 @@ pub fn verify_external_binary(path: &Path) -> Result<(), String> {
                 md.uid()
             ));
         }
-        if md.mode() & 0o002 != 0 {
+        if md.mode() & 0o022 != 0 {
             return Err(format!(
-                "{}: external binary is world-writable; refusing to trust",
+                "{}: external binary is group/other writable; refusing to trust",
                 path.display()
             ));
         }
@@ -76,6 +76,29 @@ pub fn verify_external_binary(path: &Path) -> Result<(), String> {
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn root_owned_helpers_reject_group_and_other_write_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = crate::test_util::temp_dir::TestDir::new("helper-modes");
+        let path = dir.join("helper");
+        std::fs::write(&path, b"root-controlled helper").unwrap();
+        for mode in [0o775, 0o757, 0o777] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(
+                verify_external_binary(&path).is_err(),
+                "mode {mode:o} must fail"
+            );
+        }
+        for mode in [0o555, 0o755] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            verify_external_binary(&path).unwrap();
+        }
+    }
 
     #[test]
     #[cfg(target_os = "macos")]

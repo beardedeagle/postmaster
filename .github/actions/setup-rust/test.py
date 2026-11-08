@@ -1,4 +1,4 @@
-"""Exercise optional tool setup without installing packages.
+"""Exercise Cargo tool setup without installing packages.
 
 Run: python3 .github/actions/setup-rust/test.py [path-to-bash]
 """
@@ -15,6 +15,7 @@ action_dir = Path(__file__).resolve().parent
 action = (action_dir / "action.yml").read_text()
 bash = Path(sys.argv[1] if len(sys.argv) > 1 else "/bin/bash").resolve()
 tools = {
+    "just": ("Install just", "JUST_VERSION", "1.51.0"),
     "cargo-deny": ("Install cargo-deny", "CARGO_DENY_VERSION", "0.20.2"),
     "cargo-audit": ("Install cargo-audit", "CARGO_AUDIT_VERSION", "0.22.2"),
     "mdbook": ("Install mdbook", "MDBOOK_VERSION", "0.5.4"),
@@ -22,7 +23,7 @@ tools = {
 }
 scenarios = (
     "current", "outdated", "broken", "missing", "install-fails", "installed-wrong",
-    "custom-root",
+    "custom-root", "default-home",
 )
 failures = []
 for tool, (step, version_var, version) in tools.items():
@@ -31,8 +32,10 @@ for tool, (step, version_var, version) in tools.items():
     for scenario in scenarios:
         with tempfile.TemporaryDirectory(prefix="postmaster-setup-") as tmp:
             root = Path(tmp)
+            home = root / "home"
+            home.mkdir()
             cargo_home = root / "cargo home"
-            install_root = root / "install root" if scenario == "custom-root" else cargo_home
+            install_root = root / "install root" if scenario == "custom-root" else (home / ".cargo" if scenario == "default-home" else cargo_home)
             bin_dir = install_root / "bin"
             bin_dir.mkdir(parents=True)
             shims = root / "shims"
@@ -42,6 +45,7 @@ for tool, (step, version_var, version) in tools.items():
             env = os.environ.copy()
             env.pop("CARGO_INSTALL_ROOT", None)
             env.update(
+                HOME=str(home),
                 PATH=f"{shims}:/usr/bin:/bin",
                 CARGO_HOME=str(cargo_home),
                 CARGO_INSTALL_TARGET_DIR=str(root / "build target"),
@@ -53,6 +57,8 @@ for tool, (step, version_var, version) in tools.items():
                 TEST_SCENARIO=scenario,
                 TEST_INSTALL_ROOT=str(install_root),
             )
+            if scenario == "default-home":
+                env.pop("CARGO_HOME", None)
             if scenario == "custom-root":
                 env["CARGO_INSTALL_ROOT"] = str(install_root)
             for name, (_, var, pinned) in tools.items():
@@ -113,4 +119,4 @@ chmod +x "$TEST_INSTALL_ROOT/bin/$TEST_TOOL"
 
 if failures:
     raise SystemExit("\n".join(failures))
-print(f"Optional tool setup: {len(tools) * len(scenarios)} cases pass")
+print(f"Cargo tool setup: {len(tools) * len(scenarios)} cases pass")

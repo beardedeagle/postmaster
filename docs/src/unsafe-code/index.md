@@ -28,7 +28,7 @@ Every `unsafe` block requires:
 | `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`, raw stderr write) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
-| `secret_files/acl.rs` | macOS | Inspect directory ACL grants and clear new private-file ACLs | [macos-libc-boundary](./macos-libc-boundary.md#extended-acls) |
+| `secret_files/acl.rs` | macOS | Inspect directory and key-file ACL grants; clear new private-file ACLs | [macos-libc-boundary](./macos-libc-boundary.md#extended-acls) |
 | `test_util/pty.rs` | all, test-only | Create and own pseudo-terminal descriptors for input restoration tests | [signal-deferral](./signal-deferral.md#tests) |
 | `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |
 | `keys/source.rs`, `keys/env.rs`, `keys/provisioning/mod.rs` (test modules) | all, test-only | `set_var`/`remove_var` (unsafe on edition 2024) | [test-env-mutation](./test-env-mutation.md) |

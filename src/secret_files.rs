@@ -4,8 +4,8 @@
 //! All file operations use `O_NOFOLLOW` and fd-based permissions to
 //! eliminate TOCTOU race conditions against symlink attacks. The secrets
 //! directory is pinned once by an open fd (`O_DIRECTORY|O_NOFOLLOW`) and
-//! every create, stat, and unlink is relative to that pinned inode —
-//! paths are never re-resolved.
+//! output creation, entry checks, and cleanup are relative to that pinned inode.
+//! Exported-path validation separately checks lexical and resolved ancestry.
 
 use std::ffi::OsString;
 use std::fs;
@@ -23,6 +23,15 @@ mod acl;
 pub(crate) fn clear_file_acl(fd: impl AsFd) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     acl::clear(fd)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = fd;
+    Ok(())
+}
+
+/// Check private-file ACL grants on the opened inode without changing it.
+pub(crate) fn validate_private_file_acl(fd: impl AsFd) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    acl::validate_private_file(fd)?;
     #[cfg(not(target_os = "macos"))]
     let _ = fd;
     Ok(())

@@ -52,6 +52,8 @@ pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String
             stat.st_uid
         ));
     }
+    crate::secret_files::validate_private_file_acl(&fd)
+        .map_err(|e| format!("keys file {}: {e}", path.display()))?;
     let file = std::fs::File::from(fd);
     let iter = dotenvy::from_read_iter(file);
     let mut pairs = Vec::new();
@@ -70,6 +72,80 @@ mod tests {
     use super::*;
     use crate::keys::tests::{tdir, with_temp_keys};
     use std::io::Write;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn runtime_load_rejects_untrusted_acls_without_mutating_read_only_keys() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let identity = std::process::Command::new("/usr/bin/id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        assert!(identity.status.success());
+        let username = String::from_utf8(identity.stdout).unwrap();
+        for mode in [0o400, 0o600] {
+            with_temp_keys(
+                &format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32)),
+                |path| {
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+                    for grant in ["everyone allow read", "everyone allow write"] {
+                        assert!(
+                            std::process::Command::new("/bin/chmod")
+                                .args(["+a", grant])
+                                .arg(path)
+                                .status()
+                                .unwrap()
+                                .success()
+                        );
+                        for _ in 0..2 {
+                            assert!(
+                                KeyRing::load(path, &[KeyNaming::Env])
+                                    .unwrap_err()
+                                    .contains("ACL")
+                            );
+                        }
+                        let config = path.with_extension("json");
+                        std::fs::write(
+                            &config,
+                            serde_json::json!({
+                                "mode": "env", "keys": [{"file": path}],
+                                "env_files": [path.parent().unwrap().join(".env")]
+                            })
+                            .to_string(),
+                        )
+                        .unwrap();
+                        assert!(
+                            crate::keys::provisioning::setup(&config, true, true, false, None)
+                                .unwrap_err()
+                                .contains("ACL")
+                        );
+                        assert_eq!(
+                            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                            mode
+                        );
+                        assert!(
+                            std::process::Command::new("/bin/chmod")
+                                .arg("-N")
+                                .arg(path)
+                                .status()
+                                .unwrap()
+                                .success()
+                        );
+                    }
+                    let trusted = format!("user:{} allow read,write", username.trim());
+                    assert!(
+                        std::process::Command::new("/bin/chmod")
+                            .args(["+a", &trusted])
+                            .arg(path)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    KeyRing::load(path, &[KeyNaming::Env]).unwrap();
+                },
+            );
+        }
+    }
 
     #[test]
     fn load_rejects_bad_hex() {

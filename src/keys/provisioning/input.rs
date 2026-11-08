@@ -1,6 +1,6 @@
 //! Secret stdin input with terminal echo suppressed and restored before signal delivery.
 
-use std::io::{BufRead as _, IsTerminal as _, Read as _};
+use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
 
 use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use zeroize::Zeroizing;
@@ -11,7 +11,13 @@ struct EchoGuard {
 }
 
 impl EchoGuard {
-    fn restore(&mut self) -> Result<(), String> {
+    fn restore(&mut self, discard_input: bool) -> Result<(), String> {
+        let discarded = if discard_input && (self.terminal.is_some() || self.flags.is_some()) {
+            rustix::termios::tcflush(std::io::stdin(), rustix::termios::QueueSelector::IFlush)
+                .map_err(|e| format!("cannot discard terminal input: {e}"))
+        } else {
+            Ok(())
+        };
         let terminal = if let Some(original) = &self.terminal {
             tcsetattr(std::io::stdin(), OptionalActions::Now, original)
                 .map_err(|e| format!("cannot restore terminal settings: {e}"))
@@ -30,13 +36,13 @@ impl EchoGuard {
         if flags.is_ok() {
             self.flags = None;
         }
-        terminal.and(flags)
+        discarded.and(terminal).and(flags)
     }
 }
 
 impl Drop for EchoGuard {
     fn drop(&mut self) {
-        if let Err(e) = self.restore() {
+        if let Err(e) = self.restore(true) {
             crate::server::log(&e);
         }
     }
@@ -44,12 +50,12 @@ impl Drop for EchoGuard {
 
 /// Read one line or a multiline EOF-terminated value without terminal echo.
 /// Redirected input uses stdin's existing buffer. Errors never include input values.
-#[allow(clippy::print_stderr)]
 pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<String>, String> {
     let stdin = std::io::stdin();
     let mut value = Zeroizing::new(String::new());
     if !stdin.is_terminal() {
-        eprintln!("{prompt}");
+        writeln!(std::io::stderr().lock(), "{prompt}")
+            .map_err(|e| format!("cannot write secret input prompt: {e}"))?;
         let mut input = stdin.lock();
         if single_line {
             input.read_line(&mut value)
@@ -71,6 +77,10 @@ pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<S
     no_echo
         .local_modes
         .remove(LocalModes::ECHO | LocalModes::ECHONL);
+    if !no_echo.local_modes.contains(LocalModes::ICANON) {
+        no_echo.special_codes[rustix::termios::SpecialCodeIndex::VMIN] = 1;
+        no_echo.special_codes[rustix::termios::SpecialCodeIndex::VTIME] = 0;
+    }
     let mut echo = EchoGuard {
         terminal: Some(original),
         flags: Some(flags),
@@ -79,7 +89,8 @@ pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<S
         .map_err(|e| format!("cannot make terminal input nonblocking: {e}"))?;
     tcsetattr(&stdin, OptionalActions::Now, &no_echo)
         .map_err(|e| format!("cannot suppress terminal echo: {e}"))?;
-    eprintln!("{prompt}");
+    writeln!(std::io::stderr().lock(), "{prompt}")
+        .map_err(|e| format!("cannot write secret input prompt: {e}"))?;
     let mut input = stdin.lock();
     loop {
         if signals.input_pending()? {
@@ -108,7 +119,10 @@ pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<S
             Err(e) => return Err(format!("cannot wait for secret input: {e}")),
         }
     }
-    echo.restore()?;
+    if signals.input_pending()? {
+        return Err("secret input interrupted".into());
+    }
+    echo.restore(false)?;
     Ok(value)
 }
 
@@ -122,9 +136,19 @@ mod tests {
         let Ok(style) = std::env::var("POSTMASTER_TEST_INPUT") else {
             return;
         };
-        let result = read_secret("secret-ready", style == "line");
+        let result = read_secret("secret-ready", style != "multiline");
+        if style == "prompt-error" {
+            assert!(result.unwrap_err().contains("prompt"));
+            return;
+        }
         assert!(result.is_ok(), "input failed");
         assert_eq!(result.unwrap().trim(), "PRIVATE_SENTINEL");
+        if style == "two-lines" {
+            assert_eq!(
+                read_secret("second-secret-ready", true).unwrap().trim(),
+                "NEXT_SENTINEL"
+            );
+        }
     }
 
     #[test]
@@ -198,5 +222,83 @@ mod tests {
         assert!(pty.wait().success());
         assert_eq!(tcgetattr(&pty.slave).unwrap().local_modes, mode.local_modes);
         assert!(!String::from_utf8_lossy(&pty.output).contains("PRIVATE_SENTINEL"));
+    }
+
+    #[test]
+    fn idle_noncanonical_terminal_waits_for_input_and_restores_minimum() {
+        let mut pty = crate::test_util::pty::TestPty::new();
+        let mut original = tcgetattr(&pty.slave).unwrap();
+        original.local_modes.remove(LocalModes::ICANON);
+        original.special_codes[rustix::termios::SpecialCodeIndex::VMIN] = 0;
+        original.special_codes[rustix::termios::SpecialCodeIndex::VTIME] = 0;
+        tcsetattr(&pty.slave, OptionalActions::Now, &original).unwrap();
+        pty.spawn(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "keys::provisioning::input::tests::input_child",
+                    "--nocapture",
+                ])
+                .env("POSTMASTER_TEST_INPUT", "line"),
+        );
+        pty.expect("secret-ready");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        pty.send(b"PRIVATE_SENTINEL\n");
+        assert!(pty.wait().success());
+        let restored = tcgetattr(&pty.slave).unwrap();
+        assert_eq!(restored.local_modes, original.local_modes);
+        assert_eq!(
+            restored.special_codes[rustix::termios::SpecialCodeIndex::VMIN],
+            0
+        );
+        assert_eq!(
+            restored.special_codes[rustix::termios::SpecialCodeIndex::VTIME],
+            0
+        );
+    }
+
+    #[test]
+    fn prompt_error_returns_without_leaving_terminal_modified() {
+        let mut pty = crate::test_util::pty::TestPty::new();
+        let original = tcgetattr(&pty.slave).unwrap().local_modes;
+        let flags = rustix::fs::fcntl_getfl(&pty.slave).unwrap();
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        pty.spawn_with_stderr(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "keys::provisioning::input::tests::input_child",
+                    "--nocapture",
+                ])
+                .env("POSTMASTER_TEST_INPUT", "prompt-error"),
+            std::process::Stdio::from(writer),
+        );
+        assert!(pty.wait().success());
+        assert_eq!(tcgetattr(&pty.slave).unwrap().local_modes, original);
+        assert_eq!(
+            rustix::fs::fcntl_getfl(&pty.slave)
+                .unwrap()
+                .contains(rustix::fs::OFlags::NONBLOCK),
+            flags.contains(rustix::fs::OFlags::NONBLOCK)
+        );
+    }
+
+    #[test]
+    fn successful_line_reads_preserve_the_next_queued_value() {
+        let mut pty = crate::test_util::pty::TestPty::new();
+        pty.spawn(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "keys::provisioning::input::tests::input_child",
+                    "--nocapture",
+                ])
+                .env("POSTMASTER_TEST_INPUT", "two-lines"),
+        );
+        pty.expect("secret-ready");
+        pty.send(b"PRIVATE_SENTINEL\nNEXT_SENTINEL\n");
+        assert!(pty.wait().success());
+        assert!(!String::from_utf8_lossy(&pty.output).contains("SENTINEL"));
     }
 }

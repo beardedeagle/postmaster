@@ -270,16 +270,16 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
     // O_NOFOLLOW|CLOEXEC fd) is invoked, and if none verifies the lookup
     // fails closed.
     #[cfg(target_os = "macos")]
-    let id: &str = {
+    let id = {
         crate::keys::verify_external_binary(Path::new("/usr/bin/id"))?;
-        "/usr/bin/id"
+        PathBuf::from("/usr/bin/id")
     };
     #[cfg(not(target_os = "macos"))]
-    let id: &str = verified_id_binary()?;
-    let out = std::process::Command::new(id)
+    let id = verified_id_binary()?;
+    let out = std::process::Command::new(&id)
         .args(["-u", name])
         .output()
-        .map_err(|e| format!("{id}: {e}"))?;
+        .map_err(|e| format!("{}: {e}", id.display()))?;
     if !out.status.success() {
         return Err(format!("peer_user {name:?}: no such user"));
     }
@@ -294,12 +294,12 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
 /// Candidates are well-known absolute paths in preference order; the
 /// NixOS path covers systems without /usr/bin or /bin.
 #[cfg(not(target_os = "macos"))]
-fn verified_id_binary() -> Result<&'static str, String> {
+fn verified_id_binary() -> Result<PathBuf, String> {
     const CANDIDATES: [&str; 3] = ["/usr/bin/id", "/bin/id", "/run/current-system/sw/bin/id"];
     let mut failures: Vec<String> = Vec::new();
     for path in CANDIDATES {
         match verify_id_candidate(path) {
-            Ok(()) => return Ok(path),
+            Ok(target) => return Ok(target),
             Err(e) => failures.push(e),
         }
     }
@@ -310,15 +310,18 @@ fn verified_id_binary() -> Result<&'static str, String> {
     ))
 }
 
-/// Verify one `id(1)` candidate by fstat on the opened fd
-/// (O_NOFOLLOW|CLOEXEC, so a symlink at the path is rejected at open):
-/// must be a regular file, owned by root, with no group/other write
-/// bits. Same fd-based discipline as the keys-file checks — nothing is
-/// ever re-resolved by path.
+/// Resolve a system alias, verify its protected target by opened fd, and return
+/// that target for invocation. The final open uses O_NOFOLLOW|CLOEXEC.
+/// The target must be a regular file owned by root with no group/other write
+/// bits. Type, owner and mode are checked on the same opened inode.
 #[cfg(not(target_os = "macos"))]
-fn verify_id_candidate(path: &str) -> Result<(), String> {
+fn verify_id_candidate(path: &str) -> Result<PathBuf, String> {
+    let target = fs::canonicalize(path).map_err(|e| format!("{path}: resolve: {e}"))?;
+    crate::secret_files::validate_directory_path(
+        target.parent().ok_or("id requires a parent directory")?,
+    )?;
     let fd = rustix::fs::open(
-        path,
+        &target,
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
@@ -338,7 +341,7 @@ fn verify_id_candidate(path: &str) -> Result<(), String> {
     {
         return Err(format!("{path}: group/other writable; refusing to trust"));
     }
-    Ok(())
+    Ok(target)
 }
 
 /// Resolve the keys file path from a `KeysSource` configuration.
@@ -766,7 +769,40 @@ mod tests {
         // systems have /usr/bin/id or /bin/id, NixOS has
         // /run/current-system/sw/bin/id.
         let id = verified_id_binary().unwrap();
-        assert!(id.starts_with('/'));
+        assert!(id.is_absolute());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn id_lookup_accepts_trusted_nix_style_aliases() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = crate::test_util::temp_dir::TestDir::new("id-alias");
+        let target = dir.join("store/bin");
+        fs::create_dir_all(&target).unwrap();
+        fs::copy("/usr/bin/id", target.join("id")).unwrap();
+        fs::set_permissions(target.join("id"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir(dir.join("current-system")).unwrap();
+        std::os::unix::fs::symlink(dir.join("store"), dir.join("current-system/sw")).unwrap();
+        std::os::unix::fs::symlink("id", target.join("id-link")).unwrap();
+        let alias = dir.join("current-system/sw/bin/id-link");
+        let verified = verify_id_candidate(alias.to_str().unwrap()).unwrap();
+        assert_eq!(verified, target.join("id"));
+        fs::remove_file(target.join("id-link")).unwrap();
+        let out = std::process::Command::new(&verified)
+            .arg("-u")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"0\n");
+        fs::set_permissions(&verified, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            verify_id_candidate(verified.to_str().unwrap())
+                .unwrap_err()
+                .contains("writable")
+        );
     }
 
     #[test]

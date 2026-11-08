@@ -32,10 +32,13 @@ running no destructors). The parent calls `restore_mask()` before
 Setup reuses the guard while reading secrets from a terminal. `block_input()`
 also blocks SIGTSTP, so suspension cannot hand back a terminal with echo disabled.
 Terminal reads use nonblocking stdin, including buffered and noncanonical
-input. The loop checks pending signals while polling, restores terminal
-settings and stdin flags, then restores the saved signal mask. Setup refuses
-terminal input if
-masking fails. Redirected input keeps stdin's existing buffer and normal signal
+input. Noncanonical reads temporarily use `VMIN=1` and `VTIME=0`, so an idle
+read does not look like EOF. The loop checks pending signals while polling.
+Failed or interrupted reads flush unread terminal input before restoring
+terminal settings, stdin flags, and the saved signal mask. Successful reads
+retain queued values. Prompt writes return errors, allowing restoration even
+when stderr fails. Setup refuses terminal input if masking fails.
+Redirected input keeps stdin's existing buffer and normal signal
 behavior. Linux uses rustix's raw signal APIs; Darwin uses libc.
 
 ## Why Unsafe
@@ -82,8 +85,11 @@ mirroring production) and by the exec integration suites
 flag-handler test was removed with the handler.
 
 Input tests use pseudo-terminals to check hidden single-line and multiline
-input, read failures, and terminal restoration. Real setup subprocesses cover
+input, idle noncanonical reads, prompt failures, queued values, and terminal
+restoration. Real setup subprocesses cover
 initial files, forced rotation, redirected input, and SIGTERM during input.
+The interrupted canonical-input test checks what the next terminal reader
+receives.
 The test-only `openpty` call receives valid output pointers and null optional
 settings; each returned descriptor transfers exactly once into an owning
 `File`. The harness kills and waits for its child on teardown.

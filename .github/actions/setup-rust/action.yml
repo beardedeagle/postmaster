@@ -77,32 +77,7 @@ runs:
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
-        # Probe by actually running `just`, not `command -v just`: a mise/asdf
-        # shim on PATH satisfies `command -v` but fails at call time with
-        # "No version is set for shim: just" when no version is pinned. If it
-        # does not run, or runs but reports a version other than the pin, install
-        # the pinned just and prepend ~/.cargo/bin so the real binary shadows
-        # any lingering shim for the rest of the job.
-        install_pinned_just() {
-          cargo install just --version "$JUST_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
-          if [[ -n "${GITHUB_PATH:-}" ]]; then
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          fi
-          "$HOME/.cargo/bin/just" --version
-        }
-        if found="$(just --version 2>/dev/null)"; then
-          # `just --version` reports "just X.Y.Z"
-          found_version="${found#just }"
-          if [[ "$found_version" == "$JUST_VERSION" ]]; then
-            echo "just already available at pinned version: $(command -v just) -> $found"
-          else
-            echo "just version mismatch: found '$found', pinned is 'just $JUST_VERSION'; installing pinned version"
-            install_pinned_just
-          fi
-        else
-          echo "no runnable just found; installing pinned just $JUST_VERSION"
-          install_pinned_just
-        fi
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" just "$JUST_VERSION" "$CARGO_INSTALL_TARGET_DIR"
 
     - name: Install cargo-deny
       if: ${{ inputs.install-cargo-deny == 'true' }}

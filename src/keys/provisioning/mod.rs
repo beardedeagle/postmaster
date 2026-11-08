@@ -441,6 +441,8 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                         stat.st_uid
                     ));
                 }
+                crate::secret_files::validate_private_file_acl(&fd)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
             }
             KeySourceSpec::Keychain(service) => {
                 #[cfg(target_os = "macos")]

@@ -130,7 +130,9 @@ Default keys directory:
 Secret terminal input has echo disabled until the read finishes. Postmaster
 restores terminal settings before delivering a pending termination or suspend
 signal. Key files accept multiline input through EOF; Keychain values use one
-trimmed line. Redirected input keeps the same format and buffering.
+trimmed line. Failed or interrupted terminal reads discard unread input before
+restoration. Successful reads retain queued values. Redirected input keeps the
+same format and buffering.
 
 Forced key-file replacement verifies ownership, regular-file type, and single
 link count before changing permissions. It pins the parent, checks that the

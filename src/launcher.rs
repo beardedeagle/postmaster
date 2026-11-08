@@ -157,8 +157,8 @@ impl TerminationGuard {
         for sig in signals {
             set.insert(*sig);
         }
-        // SAFETY: the set holds only the four standard termination
-        // signals — none reserved by any libc in the process (glibc
+        // SAFETY: the set holds standard termination signals and, for
+        // terminal input, TSTP — none reserved by any libc (glibc
         // reserves 32/33, untouched). The launcher is single-threaded at
         // this point (the exec path spawns no threads; worker threads
         // exist only in serve mode).

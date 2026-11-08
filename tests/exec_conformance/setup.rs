@@ -122,6 +122,31 @@ fn partial_noncanonical_input_does_not_delay_terminal_restoration() {
 }
 
 #[test]
+fn interrupted_canonical_input_is_discarded_before_the_next_reader() {
+    let dir = common::tmpdir("canonical-interrupt");
+    let mut pty = pty::TestPty::new();
+    let original = rustix::termios::tcgetattr(&pty.slave).unwrap().local_modes;
+    assert!(original.contains(rustix::termios::LocalModes::ICANON));
+    pty.spawn(&mut setup_command(&dir, false));
+    pty.expect("[y/N]");
+    pty.send(b"y\n");
+    pty.expect("Paste the keys file contents");
+    pty.send(b"PRIVATE_SENTINEL");
+    pty.signal(rustix::process::Signal::TERM);
+    assert!(!pty.wait().success());
+    assert_eq!(
+        rustix::termios::tcgetattr(&pty.slave).unwrap().local_modes,
+        original
+    );
+    // Complete the next canonical line; it must contain none of the interrupted secret.
+    pty.send(b"\n");
+    let mut next = [0; 128];
+    let count = pty.slave.read(&mut next).unwrap();
+    assert_eq!(&next[..count], b"\n");
+    assert!(!dir.join(".env.keys").exists());
+}
+
+#[test]
 fn redirected_rotation_preserves_old_handles_and_read_only_files() {
     for mode in [0o400, 0o600] {
         let dir = common::tmpdir("rotation-pipe");

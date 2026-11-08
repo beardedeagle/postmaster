@@ -10,14 +10,12 @@ use std::env;
 use zeroize::Zeroizing;
 
 type Result<T> = std::result::Result<T, &'static str>;
-type Error = &'static str;
 const INVALID: &str = "invalid dotenv syntax";
 const LIMIT: &str = "dotenv resource limit exceeded";
 const MAX_VALUE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PARSED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 65_536;
 
-// for readability's sake
 type ParsedLine = Result<Option<(String, Zeroizing<String>)>>;
 
 fn parse_line(
@@ -43,13 +41,9 @@ impl<'parse> LineParser<'parse> {
     ) -> LineParser<'parse> {
         LineParser {
             substitution_data,
-            line: line.trim_end(), // we don’t want trailing whitespace
+            line: line.trim_end(),
             budget,
         }
-    }
-
-    fn err(&self) -> Error {
-        INVALID
     }
 
     fn parse_line(&mut self) -> ParsedLine {
@@ -95,7 +89,7 @@ impl<'parse> LineParser<'parse> {
             .line
             .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         {
-            return Err(self.err());
+            return Err(INVALID);
         }
         let index = match self
             .line
@@ -111,7 +105,7 @@ impl<'parse> LineParser<'parse> {
 
     fn expect_equal(&mut self) -> Result<()> {
         if !self.line.starts_with('=') {
-            return Err(self.err());
+            return Err(INVALID);
         }
         self.line = &self.line[1..];
         Ok(())
@@ -142,17 +136,13 @@ fn parse_value(
     let mut escaped = false;
     let mut expecting_end = false;
 
-    //FIXME can this be done without yet another allocation per line?
     let mut output = Zeroizing::new(String::new());
 
     let mut substitution_mode = SubstitutionMode::None;
     let mut substitution_name = String::new();
 
     for c in input.chars() {
-        //the regex _should_ already trim whitespace off the end
-        //expecting_end is meant to permit: k=v #comment
-        //without affecting: k=v#comment
-        //and throwing on: k=v w
+        // A whitespace-separated comment ends the value; an attached # stays literal.
         if expecting_end {
             if c == ' ' || c == '\t' {
                 continue;
@@ -162,10 +152,6 @@ fn parse_value(
                 return Err(INVALID);
             }
         } else if escaped {
-            //TODO I tried handling literal \r but various issues
-            //imo not worth worrying about until there's a use case
-            //(actually handling backslash 0x10 would be a whole other matter)
-            //then there's \v \f bell hex... etc
             match c {
                 '\\' | '\'' | '"' | '$' | ' ' => push_char(&mut output, c)?,
                 'n' => push_char(&mut output, '\n')?, // handle \n case
@@ -243,7 +229,6 @@ fn parse_value(
         }
     }
 
-    //XXX also fail if escaped? or...
     if substitution_mode == SubstitutionMode::EscapedBlock || strong_quote || weak_quote {
         Err(INVALID)
     } else {

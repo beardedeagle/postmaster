@@ -55,6 +55,15 @@ pub(super) fn clear(fd: impl AsFd) -> Result<(), String> {
 
 /// Reject extended grants that let another principal replace directory entries.
 pub(super) fn validate(fd: impl AsFd) -> Result<(), String> {
+    validate_grants(fd, MUTATE, true)
+}
+
+/// Reject untrusted access to private file contents without changing its ACL.
+pub(super) fn validate_private_file(fd: impl AsFd) -> Result<(), String> {
+    validate_grants(fd, MUTATE | (1 << 1), false)
+}
+
+fn validate_grants(fd: impl AsFd, forbidden: u64, check_inheritance: bool) -> Result<(), String> {
     // SAFETY: every out pointer is initialized storage, entry pointers borrow the live ACL,
     // and qualifiers are owned UUID allocations with the platform's fixed 16-byte layout.
     unsafe {
@@ -65,7 +74,7 @@ pub(super) fn validate(fd: impl AsFd) -> Result<(), String> {
             return if matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::ENOENT)) {
                 Ok(())
             } else {
-                Err(format!("cannot read directory ACL: {e}"))
+                Err(format!("cannot read ACL: {e}"))
             };
         }
         let mut root = [0; 16];
@@ -86,28 +95,32 @@ pub(super) fn validate(fd: impl AsFd) -> Result<(), String> {
                 };
             }
             if index == 1024 {
-                return Err("directory ACL has too many entries".into());
+                return Err("ACL has too many entries".into());
             }
             let mut tag = 0;
             let mut permissions = 0;
             if acl_get_tag_type(entry, &mut tag) != 0
                 || acl_get_permset_mask_np(entry, &mut permissions) != 0
             {
-                return Err("cannot inspect directory ACL permissions".into());
+                return Err("cannot inspect ACL permissions".into());
             }
             if tag != ALLOW {
                 continue;
             }
             let mut flags = std::ptr::null_mut();
-            if acl_get_flagset_np(entry, &mut flags) != 0 {
-                return Err("cannot inspect directory ACL inheritance".into());
+            if check_inheritance && acl_get_flagset_np(entry, &mut flags) != 0 {
+                return Err("cannot inspect ACL inheritance".into());
             }
-            let inherited = acl_get_flag_np(flags, FILE_INHERIT);
+            let inherited = if check_inheritance {
+                acl_get_flag_np(flags, FILE_INHERIT)
+            } else {
+                0
+            };
             if inherited < 0 {
-                return Err("cannot inspect directory ACL inheritance".into());
+                return Err("cannot inspect ACL inheritance".into());
             }
             // An inherited grant can expose a fresh inode before its ACL is cleared.
-            if permissions & MUTATE == 0 && !(inherited == 1 && permissions & (1 << 1) != 0) {
+            if permissions & forbidden == 0 && !(inherited == 1 && permissions & (1 << 1) != 0) {
                 continue;
             }
             let qualifier = Allocation(acl_get_qualifier(entry));
@@ -116,7 +129,12 @@ pub(super) fn validate(fd: impl AsFd) -> Result<(), String> {
             }
             let uuid = std::slice::from_raw_parts(qualifier.0.cast::<u8>(), 16);
             if uuid != root && uuid != user {
-                return Err("directory ACL permits untrusted replacement".into());
+                return Err(if check_inheritance {
+                    "directory ACL permits untrusted replacement"
+                } else {
+                    "private file ACL permits untrusted access"
+                }
+                .into());
             }
         }
     }

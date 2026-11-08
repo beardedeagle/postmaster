@@ -48,6 +48,11 @@ by the effective uid of the loading process, so `chown` it to the
 service user (or run the file-owning step as that user) — a root-owned
 keys file fails closed for a service running as a normal user.
 
+On macOS, runtime loading and file-source `setup --recheck` also reject ACL
+grants that let anyone other than root or the effective user read or modify the
+key file.
+These checks leave the file and its ACL intact, including read-only files.
+
 ## Strategy B: TPM2 / host-sealed blob
 
 Fully declarative — the key is sealed to the host's TPM2 and can only
@@ -116,10 +121,12 @@ Security.framework API (`security-framework` crate).
 
 `postmaster setup` hides terminal input for both key files and Keychain values.
 It restores terminal settings when input finishes, fails, or receives a
-catchable termination or suspend signal. Redirected key-file input still
-accepts multiple lines through EOF. `--force` publishes a fresh 0600 key-file
-inode after confirmation and refuses a substituted, foreign, linked, or
-special file. Existing open handles keep the old contents.
+catchable termination or suspend signal. Failed or interrupted terminal reads
+discard unread input before restoration, so a partial secret cannot reach the
+next terminal reader. Successful reads retain queued values. Redirected
+key-file input still accepts multiple lines through EOF. `--force` publishes
+a fresh 0600 key-file inode after confirmation and refuses a substituted,
+foreign, linked, or special file. Existing open handles keep the old contents.
 
 ## Rotation
 
