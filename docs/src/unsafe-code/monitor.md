@@ -1,9 +1,9 @@
 # Sibling Launch Monitor
 
-> **At a glance:** a tiny forked sibling — born after every secret has
-> been zeroized — watches the service for its whole life. It forwards
-> stop signals, escalates to SIGKILL after a short grace, and deletes
-> plaintext secret files on every death path, including `kill -9`.
+> **At a glance:** a sibling process watches the service until it exits.
+> It forwards stop signals, escalates to SIGKILL after a 250 ms grace, and
+> removes secret files after exit, a crash, or `kill -9`. It scrubs projected
+> environment pairs but retains the launcher's original environment.
 
 ## Lifecycle
 
@@ -13,9 +13,9 @@ sequenceDiagram
     participant M as Monitor (fork-child)
     participant S as Service (exec'd parent)
 
-    L->>L: zeroize plaintext; block stop signals
+    L->>L: block stop signals; materialize; wipe ring and resolved buffers
     L->>M: fork()
-    Note over M: scrub inherited env pairs (wipe_pair); mask stays blocked for life
+    Note over M: scrub projected pairs; retain original environment; keep mask blocked
     L->>S: restore mask; execvp becomes service
     loop poll tick
         M->>S: liveness (pidfd+poll / kqueue NOTE_EXIT)
@@ -48,10 +48,11 @@ Unsafe blocks: fork(2) (libc, both platforms); rustix `runtime`
 
 ## Purpose
 
-The sibling-monitor launch supervision design (2026-08-05) closes the
-launch-handoff stop-semantics gap and adds plaintext cleanup on **every**
-service-death path. After validation, plaintext writes, and zeroization —
-and before `execvp` — the launcher `fork()`s. The parent restores its
+The sibling monitor closes the launch-handoff stop-semantics gap and
+adds plaintext cleanup on **every** service-death path. After
+validation, plaintext writes, and zeroization of the key ring and resolved
+buffers, and before `execvp`,
+the launcher `fork()`s. The parent restores its
 pre-guard signal mask and execs the service (MainPID unchanged); the
 fork-child becomes the monitor: it keeps the four termination signals
 blocked for life, consumes them synchronously (sigpending/sigwait — no
@@ -64,6 +65,11 @@ runs `cleanup_written` before exiting — on stop, on natural exit, on
 were retired with this design: the monitor is the single owner of stop
 semantics, so no async-signal context exists anywhere.
 
+The scrub does not erase the monitor's original process environment.
+Private keys supplied through environment variables can remain there for
+the monitor's lifetime. Use a non-environment key source to avoid that
+exposure. See [Private-key environment variables](../architecture/threat-model.md#private-key-environment-variables).
+
 ## Why Unsafe
 
 - **`fork(2)` has no rustix wrapper** (a deliberate rustix omission), so
@@ -72,7 +78,7 @@ semantics, so no async-signal context exists anywhere.
   exception to the "rustix linux_raw / no libc FFI on Linux" doctrine.
   Everything else on the Linux leg is rustix.
 - **Linux signal masking and synchronous consumption** use rustix's
-  `runtime` module (`kernel_sigprocmask`, `kernel_sigwait`,
+  experimental runtime API (`kernel_sigprocmask`, `kernel_sigwait`,
   `kernel_sigpending`, `exit_group`) — rustix's experimental, doc-hidden
   API for libc-like runtimes. It is the only rustix route to signal masks
   (there is no `rustix::process::sigprocmask`), and taking it avoids libc
@@ -91,7 +97,7 @@ semantics, so no async-signal context exists anywhere.
   (monitor diagnostics) are fd-ownership assertions of the same kind as
   the systemd socket boundary.
 
-Liveness findings that shaped the code: rustix 1.x **does** cover
+rustix 1.x provides
 `pidfd_open`/`pidfd_send_signal` (Linux-only) and `poll`, so the pidfd
 leg needs no fallback in practice; `kill(pid, 0)` polling is kept only
 for kernels without `pidfd_open` (< 5.3) and for kqueue failure. An
@@ -101,11 +107,14 @@ cleanup (on macOS, xnu drops exited procs from the pid table before they
 are reaped, so NOTE_EXIT registration on an already-exited service fails
 `ESRCH` — handled as death, not as a fallback trigger).
 
+rustix 1.1.6 exports the experimental API as `runtime_448b8ad740e2a26f`.
+The launcher and monitor import it as `runtime`.
+
 ## UB Vectors and Mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
-| Fork in a threaded process | The child inherits locked malloc/stdio state | The exec path is single-threaded at fork (worker threads exist only in serve mode). The child performs no allocation, no stdio locks, no destructor runs — only the async-signal-safe syscall set documented at the top of `monitor.rs` — and exits via `_exit`/`exit_group` (no atexit, no stdio flush). Tests fork from the multithreaded harness under the same discipline |
+| Fork in a threaded process | The child inherits locked malloc/stdio state | The production launcher is single-threaded at fork. The monitor first scrubs and frees projected env pairs; this exception requires that single-threaded parent. Test children pass an empty pair list. The loop then uses the syscall set documented in `monitor.rs`, without allocation or stdio locks, and exits via `_exit`/`exit_group` |
 | Invalid `sigset_t` | Uninitialized set passed to sigwait/sigpending | `KernelSigSet::empty()` (rustix) / `zeroed()` + `sigemptyset` (libc) |
 | Blocking sigwait hang | `sigwait` blocks until a set member is pending | Called only after `sigpending` shows a member pending — single-threaded, so nothing else can dequeue it first |
 | Mask clobber | Restoring a mask never captured | Linux guard stores `None` on block failure (logged); restore then no-ops |
@@ -120,7 +129,7 @@ are reaped, so NOTE_EXIT registration on an already-exited service fails
 | Risk | Likelihood | Impact |
 |------|------------|--------|
 | rustix `runtime` API changes in a future rustix | Low (lockfile-pinned; build fails loudly at update time) | Build breakage, not a runtime defect |
-| Monitor dies before the service | Very low (tiny, secretless loop) | Cleanup falls to the pre-existing backstops: `ExecStopPost`, ramdisk teardown, next-launch `prune_stale` — the same floor as before the monitor |
+| Monitor dies before the service | Monitor failure or external termination | Cleanup falls to integration-provided `ExecStopPost`, ramdisk teardown, and next-launch `prune_stale` |
 | Job-control stop (SIGTSTP) of the monitor's process group | Interactive sessions only | The monitor suspends with the service; cleanup waits for continuation — backstops remain |
 | Service unkillable in D-state after SIGKILL | Kernel pathology | The monitor's post-SIGKILL death wait is unbounded by design (abandoning cleanup is worse); the manager's own escalation path still applies |
 | Polling fallback on a pre-5.3 kernel | Legacy kernels only | Zombie-blindness until the parent reaps (systemd reaps promptly); PID-reuse exposure as documented |

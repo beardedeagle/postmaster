@@ -40,7 +40,7 @@ fn default_keys_dir() -> PathBuf {
 /// If it exists, verify permissions and ownership are correct, correcting
 /// the mode whenever wrong. `force` has no directory effect — there is
 /// nothing to re-seed in a directory; force governs the keys file and the
-/// keychain items (sweep 2026-08-07 K7).
+/// keychain items.
 #[allow(clippy::print_stderr)]
 fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
     if keys_dir.exists() {
@@ -122,7 +122,7 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
 /// exists but has wrong permissions, fix them.
 ///
 /// `--force` re-prompts for the contents even when the file is already
-/// correct (manual key rotation, sweep 2026-08-07 K7). Force requires
+/// correct (manual key rotation). Force requires
 /// interactive mode: unattended has no operator to paste contents.
 #[allow(clippy::print_stderr)]
 fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), String> {
@@ -267,8 +267,7 @@ fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), St
 
 /// Verify keychain items exist for the wanted key variables. If they
 /// don't exist and we're in interactive mode, offer to seed them.
-/// `--force` re-seeds EVERY wanted item, present or not (sweep
-/// 2026-08-07 K7). On macOS only.
+/// `--force` re-seeds EVERY wanted item, present or not. On macOS only.
 #[cfg(target_os = "macos")]
 #[allow(clippy::print_stderr)]
 fn ensure_keychain_items(

@@ -1,9 +1,7 @@
-//! `postmaster exec` — the envelope launcher. Reads a public JSON config,
-//! loads private keys, decrypts values natively (same ecies path as the
-//! daemon), injects via the configured mode, and execvp's the target.
-//! This file OWNS the injection boundary formerly templated as shell in
-//! modules/lib.nix: values are opaque bytes end to end — no interpolation,
-//! no eval, no shell.
+//! Read a public launch config, load keys, decrypt inputs, and project values
+//! before replacing the launcher with the target binary through `execvp`.
+//! Decrypted values are injected as bytes without shell evaluation. Plaintext
+//! dotenv inputs follow `dotenvy` parsing rules, including variable substitution.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -12,11 +10,14 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use rustix::runtime_448b8ad740e2a26f as runtime;
+
 use crate::adapter::KeyNaming;
 use crate::bundle::{parse_bundle, resolve_bundle};
 use crate::exec_config::{ExecConfig, ExecMode};
 use crate::key_source::load_ring;
-use crate::keys::resolve_all;
+use crate::keys::{is_private_key_var_name, resolve_all};
 use crate::monitor::{self, STOP_SIGNALS};
 use crate::ramdisk::verify_ramdisk;
 use crate::secret_files::{
@@ -25,7 +26,7 @@ use crate::secret_files::{
 use crate::server::{fetch_bytes, log, read_capped};
 
 /// Guard deferring termination signals across the window where plaintext
-/// secret files exist on the ramdisk/tmpfs (audit 2026-08-02 A11). A
+/// secret files exist on the ramdisk/tmpfs. A
 /// signal landing mid-write would otherwise strand partial plaintext, so
 /// the four termination signals (`STOP_SIGNALS`) are *blocked* across the
 /// window. The sibling monitor is then forked — it inherits the blocked
@@ -34,8 +35,8 @@ use crate::server::{fetch_bytes, log, read_capped};
 /// signal state.
 ///
 /// The sigaction flag-handler and second pre-exec gate this guard used
-/// to implement were retired with the sibling-monitor design
-/// (2026-08-05): the monitor owns stop semantics, so no async handler is
+/// to implement were retired with the sibling-monitor design: the
+/// monitor owns stop semantics, so no async handler is
 /// needed anywhere. What remains is the deterministic write window
 /// (`block`) and the pre-exec mask restore (`restore_mask`) — now real
 /// on Linux too, because the fork+monitor model runs there as well.
@@ -43,8 +44,7 @@ use crate::server::{fetch_bytes, log, read_capped};
 pub(crate) struct TerminationGuard {
     /// `None` only if the block call failed (logged); restore then no-ops
     /// rather than installing an empty mask that would unblock signals the
-    /// launcher's parent deliberately blocked — mirrors the Linux leg
-    /// (sweep 2026-08-07 X2).
+    /// launcher's parent deliberately blocked — mirrors the Linux leg.
     old: Option<libc::sigset_t>,
 }
 
@@ -97,13 +97,13 @@ impl Drop for TerminationGuard {
 pub(crate) struct TerminationGuard {
     /// `None` only if the block call failed (logged); restore then no-ops
     /// rather than clobbering a mask that was never captured.
-    old: Option<rustix::runtime::KernelSigSet>,
+    old: Option<runtime::KernelSigSet>,
 }
 
 #[cfg(target_os = "linux")]
 impl TerminationGuard {
     pub(crate) fn block() -> Self {
-        let mut set = rustix::runtime::KernelSigSet::empty();
+        let mut set = runtime::KernelSigSet::empty();
         for sig in STOP_SIGNALS {
             set.insert(sig);
         }
@@ -112,9 +112,7 @@ impl TerminationGuard {
         // reserves 32/33, untouched). The launcher is single-threaded at
         // this point (the exec path spawns no threads; worker threads
         // exist only in serve mode).
-        match unsafe {
-            rustix::runtime::kernel_sigprocmask(rustix::runtime::How::BLOCK, Some(&set))
-        } {
+        match unsafe { runtime::kernel_sigprocmask(runtime::How::BLOCK, Some(&set)) } {
             Ok(old) => Self { old: Some(old) },
             Err(e) => {
                 // rt_sigprocmask cannot realistically fail here (EINVAL/
@@ -132,9 +130,7 @@ impl TerminationGuard {
         if let Some(old) = &self.old {
             // SAFETY: restoring a mask previously returned by the kernel
             // for this thread.
-            let _ = unsafe {
-                rustix::runtime::kernel_sigprocmask(rustix::runtime::How::SETMASK, Some(old))
-            };
+            let _ = unsafe { runtime::kernel_sigprocmask(runtime::How::SETMASK, Some(old)) };
         }
     }
 }
@@ -164,8 +160,8 @@ pub fn check_config(config_path: &Path) -> Result<(), String> {
 }
 
 /// Preflight key freshness check: fail if any encrypted env value was
-/// skipped during resolution because the key ring could not decrypt it
-/// (audit 2026-08-02 A3). Under `strict: false` a partial key rotation
+/// skipped during resolution because the key ring could not decrypt it.
+/// Under `strict: false` a partial key rotation
 /// would otherwise pass silently here — the old check only caught total
 /// failure (empty resolved set) — and the child would launch with a
 /// partial secret set. The failure list recorded by `resolve_all` makes
@@ -174,7 +170,7 @@ pub fn check_config(config_path: &Path) -> Result<(), String> {
 /// Bundle files need no scan here: `resolve_bundle` is all-or-nothing —
 /// the first undecryptable entry aborts `decrypt()` regardless of
 /// `strict`, so stale bundle keys already fail closed before this check
-/// runs (audit 2026-08-02 A4).
+/// runs.
 fn verify_key_freshness(failed: &[(String, String)]) -> Result<(), String> {
     if let Some((k, _)) = failed.first() {
         return Err(format!(
@@ -239,7 +235,12 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
         (r.resolved, r.failed)
     };
 
-    // Resolve bundle files (if any) via the bundle adapter
+    let mut positions: HashMap<String, usize> = resolved
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| (name.clone(), i))
+        .collect();
+    // Bundle files follow env files and use the same first/last-wins contract.
     for bundle_path in &cfg.bundle_files {
         // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13):
         // refuse to read through a planted symlink.
@@ -274,7 +275,14 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
                     "{name}: value contains a NUL byte; cannot be an environment variable (use files mode)"
                 ));
             }
-            resolved.push((name, value));
+            if let Some(&i) = positions.get(&name) {
+                if cfg.overload {
+                    resolved[i].1 = value;
+                }
+            } else {
+                positions.insert(name.clone(), resolved.len());
+                resolved.push((name, value));
+            }
         }
     }
 
@@ -510,6 +518,15 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     sig_guard.restore_mask();
     let mut cmd = std::process::Command::new(program);
     cmd.args(&argv[1..]).envs(extra);
+    // Remove after projection so resolved values cannot reintroduce private-key variables.
+    let private_key_names: Vec<_> = std::env::vars_os()
+        .map(|(name, _)| name)
+        .chain(cmd.get_envs().map(|(name, _)| name.to_os_string()))
+        .filter(|name| name.to_str().is_some_and(is_private_key_var_name))
+        .collect();
+    for name in private_key_names {
+        cmd.env_remove(name);
+    }
     let err = cmd.exec(); // only returns on failure
     // execvp failed: the process image was NOT replaced, so any
     // plaintext secret files written above would otherwise persist

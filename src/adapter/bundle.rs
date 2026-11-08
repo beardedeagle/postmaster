@@ -4,7 +4,7 @@
 //! The bundle format is a JSON file with:
 //! - `format`: must be `"postmaster.bundle"` (fail closed on unknown)
 //! - `version`: integer, must be `1`
-//! - `profile`: optional public selection metadata (not a secret)
+//! - `profile`: optional public metadata, not used for key selection
 //! - `suite`: mandatory crypto suite identifier (must match the ECIES path)
 //! - `recipients`: array of `{ id, public_key }` — public routing metadata
 //! - `entries`: map of key name → `{ encoding, ciphertext }`
@@ -13,7 +13,7 @@
 //! encrypted and authenticated. Each entry's ciphertext is additionally
 //! bound to its key name as AES-GCM additional authenticated data (AAD):
 //! a ciphertext cut from one entry and pasted under another name fails
-//! decryption (audit 2026-08-02 A7). Entries use the same identifier
+//! decryption. Entries use the same identifier
 //! rule as `.env`-derived keys: `[A-Za-z_][A-Za-z0-9_]*`.
 
 use std::path::Path;
@@ -23,7 +23,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-use crate::keys::{KeyRing, is_ident};
+use crate::keys::{KeyRing, is_ident, is_private_key_var_name};
 
 /// The top-level bundle container.
 #[derive(Deserialize, Debug)]
@@ -33,7 +33,7 @@ pub struct Bundle {
     pub format: String,
     /// Must be `1`.
     pub version: u32,
-    /// Optional public selection metadata (not a secret).
+    /// Optional public metadata, not used to select keys or entries.
     #[serde(default)]
     pub profile: Option<String>,
     /// Mandatory crypto suite identifier.
@@ -48,13 +48,14 @@ pub struct Bundle {
 /// A recipient in the bundle: public routing metadata reserved for
 /// future recipient selection. Parsed and shape-validated only today —
 /// resolution selects ring candidates by the fixed `POSTMASTER_KEY`
-/// variable, never by recipient (sweep 2026-08-07 K10).
+/// variable, never by recipient.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Recipient {
     /// Public identifier for this recipient (e.g., `"host:api-01"`).
     pub id: String,
-    /// Compressed secp256k1 public key (hex-encoded).
+    /// Public-key metadata, conventionally compressed secp256k1 hex.
+    /// Parsed as a string; not used for decryption.
     pub public_key: String,
 }
 
@@ -62,9 +63,8 @@ pub struct Recipient {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct BundleEntry {
-    /// Either `"utf8"` or `"bytes"`. `env` projection rejects bytes that
-    /// cannot become a POSIX environment value; `files` and `credentials`
-    /// preserve byte-exact values.
+    /// Either `"utf8"` or `"bytes"`. UTF-8 is validated during resolution.
+    /// Env projection rejects NUL bytes; files preserve byte-exact values.
     pub encoding: Encoding,
     /// Base64-encoded ECIES ciphertext.
     pub ciphertext: String,
@@ -74,9 +74,9 @@ pub struct BundleEntry {
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
-    /// UTF-8 string value (env projection rejects non-UTF-8).
+    /// UTF-8 string value, validated during resolution in every mode.
     Utf8,
-    /// Raw byte value (files/credentials preserve byte-exact).
+    /// Raw byte value; files preserve it and env projection rejects NUL.
     Bytes,
 }
 
@@ -86,7 +86,7 @@ pub enum Encoding {
 /// (authentication failure), not just here.
 const SUITE: &str = "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad";
 
-/// Parse a bundle JSON file from raw bytes.
+/// Parse a bundle JSON file, rejecting invalid metadata and reserved key names.
 pub fn parse_bundle(raw: &[u8], path: &Path) -> Result<Bundle, String> {
     let bundle: Bundle =
         serde_json::from_slice(raw).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -115,6 +115,12 @@ pub fn parse_bundle(raw: &[u8], path: &Path) -> Result<Bundle, String> {
         if !is_ident(name) {
             return Err(format!(
                 "{}: refusing non-identifier key {name:?}",
+                path.display()
+            ));
+        }
+        if is_private_key_var_name(name) {
+            return Err(format!(
+                "{}: key {name:?} is reserved for private-key provisioning",
                 path.display()
             ));
         }
@@ -151,8 +157,8 @@ pub fn resolve_bundle(
         // entry fails authentication here (audit 2026-08-02 A7).
         let mut decrypted: Option<Zeroizing<Vec<u8>>> = None;
         for sk in candidates {
-            if let Ok(pt) = ecies::decrypt_with_aad(&sk[..], &ciphertext, name.as_bytes()) {
-                decrypted = Some(Zeroizing::new(pt));
+            if let Some(pt) = crate::aad::decrypt(&sk[..], &ciphertext, name.as_bytes()) {
+                decrypted = Some(pt);
                 break;
             }
         }
@@ -187,6 +193,7 @@ pub fn resolve_bundle(
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
+    use crate::test_util::aad_fixture::encrypt;
     use std::collections::BTreeMap;
 
     fn test_pk_hex() -> String {
@@ -222,7 +229,7 @@ mod tests {
 
     fn enc(name: &str, value: &str) -> String {
         let pk = hex::decode(test_pk_hex()).unwrap();
-        let ct = ecies::encrypt_with_aad(&pk, value.as_bytes(), name.as_bytes()).unwrap();
+        let ct = encrypt(&pk, value.as_bytes(), name.as_bytes());
         BASE64.encode(ct)
     }
 
@@ -344,10 +351,11 @@ mod tests {
         let other_sk_bytes = hex::decode(&other_sk).unwrap();
         let other_sk = ecies::SecretKey::parse_slice(&other_sk_bytes).unwrap();
         let other_pk = ecies::PublicKey::from_secret_key(&other_sk);
-        let ct = BASE64.encode(
-            ecies::encrypt_with_aad(&other_pk.serialize_compressed(), b"unreachable", b"SECRET")
-                .unwrap(),
-        );
+        let ct = BASE64.encode(encrypt(
+            &other_pk.serialize_compressed(),
+            b"unreachable",
+            b"SECRET",
+        ));
         let bundle = make_bundle(vec![("SECRET", &ct, Encoding::Utf8)]);
         let ring = crate::keys::tests::make_test_ring();
         let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();
@@ -358,7 +366,7 @@ mod tests {
     fn resolve_bundle_handles_bytes_encoding() {
         let binary_val = b"\x00\x01\x02\xff";
         let pk = hex::decode(test_pk_hex()).unwrap();
-        let ct = BASE64.encode(ecies::encrypt_with_aad(&pk, binary_val, b"TLS_KEY").unwrap());
+        let ct = BASE64.encode(encrypt(&pk, binary_val, b"TLS_KEY"));
         let bundle = make_bundle(vec![("TLS_KEY", &ct, Encoding::Bytes)]);
         let ring = crate::keys::tests::make_test_ring();
         let resolved = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap();
@@ -373,7 +381,7 @@ mod tests {
         // `encoding: "bytes"` stays byte-exact.
         let invalid = b"\xff\xfe";
         let pk = hex::decode(test_pk_hex()).unwrap();
-        let ct = BASE64.encode(ecies::encrypt_with_aad(&pk, invalid, b"GREETING").unwrap());
+        let ct = BASE64.encode(encrypt(&pk, invalid, b"GREETING"));
         let ring = crate::keys::tests::make_test_ring();
 
         let bundle = make_bundle(vec![("GREETING", &ct, Encoding::Utf8)]);

@@ -6,7 +6,7 @@ injects them into a child process via environment variables, files, or
 systemd credentials — then `execvp`s the target binary directly. No Node,
 no shell, no separate CLI process in the runtime path.
 
-## Audience Quickstart (Plain Language)
+## Audience Quickstart
 
 **What this is:** a tool that takes encrypted secrets (like database
 passwords and API tokens) and safely puts them into your service's
@@ -52,16 +52,16 @@ each have tradeoffs:
 - **Manual env vars** put plaintext secrets in the systemd unit file or
   the container spec — visible in `ps`, `systemctl cat`, and crash dumps.
 
-Postmaster takes a different approach: decrypt locally, inject directly,
-replace the process image. The secret material exists in process memory
-for a brief window, never touches persistent disk, and the process that
-held the secrets is gone the moment your binary starts.
+Postmaster decrypts locally, injects directly, and replaces the launcher
+with your binary. It wipes its key ring and resolved buffers before launch.
+Deployments provide RAM-backed secret storage and configure swap and dump
+protection. The application keeps access to the secrets it uses.
 
 ## What postmaster Does
 
 1. **Decrypts** encrypted `.env` files (or `postmaster_bundle` JSON
-   containers) using the `ecies` crate — native Rust, no network calls,
-   no external CLIs, no shell.
+   containers) using native Rust cryptography. Bundle entries use Postmaster's
+   AAD decoder with released ECIES helpers and RustCrypto AES-GCM.
 
 2. **Injects** decrypted values into the child via one of three modes:
    - `env` — environment variables (12-factor apps)
@@ -71,7 +71,7 @@ held the secrets is gone the moment your binary starts.
 
 3. **Launches** the target binary via `execvp` — postmaster is replaced
    by your binary. The child process IS `MainPID` from its first
-   instruction. No parent process holds secrets.
+   instruction. A sibling monitor handles stop signals and file cleanup.
 
 4. **Cleans up** — `postmaster cleanup` removes plaintext secret files
    after the child exits, wired to `ExecStopPost` in systemd.
@@ -94,9 +94,9 @@ flowchart LR
 The ciphertext is designed to be public. Every value is
 ECIES/secp256k1-encrypted individually — the public key embedded in
 the file only permits encrypting new values, never decrypting existing
-ones. So the world-readable Nix store, git repo, or artifact registry
-stops being an adversary. The entire secret surface collapses to one
-64-hex private key per environment.
+ones. This allows encrypted values in the Nix store, git, or an artifact
+registry. Private keys still need separate protection. Anyone with the public
+key can encrypt replacement values, so artifact write access remains trusted.
 
 ## The Secret Pipeline
 
@@ -109,10 +109,16 @@ per-stage detail live in
 
 Postmaster does not participate in stages 1-3. It does not fetch from
 remote systems, does not deploy infrastructure, and owns no service
-lifecycle policy — no restarts, no health checks (a secretless sibling
+lifecycle policy — no restarts, no health checks (a sibling
 monitor forwards stop signals and cleans up plaintext; the service
 manager supervises the service itself). It decrypts, injects, and gets
 out of the way.
+
+The monitor scrubs the projected environment pairs, but retains the original
+process environment. Environment-supplied private keys can remain there.
+The optional credential daemon also retains its key ring while serving
+requests. See the [Threat model](./architecture/threat-model.md) for these
+limits and the deployment requirements.
 
 ## Capability Horizon
 

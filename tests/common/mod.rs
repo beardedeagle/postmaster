@@ -4,6 +4,9 @@
 //! fixture verification (README); these helpers guard OUR semantics.
 #![allow(dead_code, clippy::unwrap_used, clippy::panic, missing_docs)]
 
+#[path = "../../src/test_util/aad_fixture.rs"]
+pub mod aad_fixture;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

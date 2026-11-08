@@ -1,6 +1,6 @@
-//! Tests for the sibling monitor, extracted from monitor.rs (sweep
-//! 2026-08-07 X8). Same module path (`monitor::tests`), same
-//! crate-internal visibility — nothing here changed but location.
+//! Tests for the sibling monitor, extracted from monitor.rs. Same
+//! module path (`monitor::tests`), same crate-internal visibility —
+//! nothing here changed but location.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use super::*;
@@ -269,7 +269,7 @@ fn env_mode_monitor_with_no_files_exits_on_service_death() {
 /// A service that is ALREADY dead when the monitor starts (death
 /// observed on the first tick) must still trigger cleanup and an
 /// immediate monitor exit — the monitor must never hang waiting on a
-/// process that died before it began watching (sweep 2026-08-07 T15).
+/// process that died before it began watching.
 #[test]
 fn pre_dead_service_triggers_immediate_cleanup_and_exit() {
     let dir = tdir("predead");

@@ -27,8 +27,7 @@ pub enum KeyNaming {
     /// `.env.production` → `DOTENV_PRIVATE_KEY_PRODUCTION`.
     Env,
     /// The `postmaster_bundle` adapter. Uses `POSTMASTER_KEY` as its
-    /// key variable naming (no per-environment suffix — the bundle's
-    /// `profile` field handles environment selection). No metadata
+    /// key variable naming, regardless of filename or `profile`. No metadata
     /// prefix (the bundle format is structured JSON, not flat key-value).
     Bundle,
 }
@@ -56,8 +55,7 @@ impl KeyNaming {
     /// Map an artifact filename to the key variable name it needs.
     /// `.env` → `DOTENV_PRIVATE_KEY`, `.env.production` →
     /// `DOTENV_PRIVATE_KEY_PRODUCTION`. Bundle files map to a single
-    /// key variable regardless of filename (the `profile` field inside
-    /// the bundle handles environment selection).
+    /// key variable regardless of filename. `profile` does not select a key.
     pub fn key_var_for(self, artifact_path: &Path) -> Result<String, String> {
         match self {
             KeyNaming::Env => {

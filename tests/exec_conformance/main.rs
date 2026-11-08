@@ -80,6 +80,8 @@ fn run_exec(config: &Path, sh: &str, envs: &[(&str, &str)]) -> std::process::Out
         // (sweep 2026-08-07 T8).
         .env_remove("SECRET")
         .env_remove("PLAIN")
+        .env_remove("FIRST")
+        .env_remove("LAST")
         .env_remove("A")
         .env_remove("GOOD")
         .env_remove("BAD")

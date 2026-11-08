@@ -7,12 +7,19 @@ use crate::adapter::KeyNaming;
 
 /// True for exactly `PREFIX` or `PREFIX_<nonempty suffix>`. A bare
 /// prefix match would slurp unrelated variables like
-/// `DOTENV_PRIVATE_KEYFOO` as key material (audit 2026-08-02 A16).
+/// `DOTENV_PRIVATE_KEYFOO` as key material.
 pub(crate) fn is_key_var_name(prefix: &str, name: &str) -> bool {
     name == prefix
         || name
             .strip_prefix(prefix)
             .is_some_and(|rest| rest.len() > 1 && rest.starts_with('_'))
+}
+
+/// Whether `name` is a private-key variable for any supported adapter.
+pub(crate) fn is_private_key_var_name(name: &str) -> bool {
+    [KeyNaming::Env, KeyNaming::Bundle]
+        .into_iter()
+        .any(|n| is_key_var_name(n.key_prefix(), name))
 }
 
 /// Implementation of [`KeyRing::from_env`]; the contract is documented on

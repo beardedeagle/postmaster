@@ -26,13 +26,14 @@ pub struct ExecConfig {
     /// Encrypted env files, in precedence order (first wins unless overload).
     #[serde(default)]
     pub env_files: Vec<PathBuf>,
-    /// Encrypted `postmaster_bundle` files, in precedence order.
+    /// Encrypted `postmaster_bundle` files, resolved after `env_files`.
     /// Each file is a JSON container with `format: "postmaster.bundle"`.
-    /// Entries are merged with `env_files` entries; bundle keys use the
-    /// same identifier rule and the same injection modes.
+    /// The first definition wins unless `overload` selects the last.
+    /// Bundle keys use the same identifier rule and injection modes.
     #[serde(default)]
     pub bundle_files: Vec<PathBuf>,
-    /// Any undecryptable value aborts before exec (fail closed).
+    /// Undecryptable dotenv values abort before exec unless false.
+    /// Bundle authentication failures always abort.
     #[serde(default = "default_true")]
     pub strict: bool,
     /// File values override process env; later files override earlier.
@@ -44,7 +45,7 @@ pub struct ExecConfig {
     /// files mode: keys ALSO exported as real env vars.
     #[serde(default)]
     pub passthrough: Vec<String>,
-    /// credentials mode: keys exposed as $CREDENTIALS_DIRECTORY/<KEY>.
+    /// credentials mode: keys exposed as `$CREDENTIALS_DIRECTORY/<KEY>`.
     #[serde(default)]
     pub credential_keys: Vec<String>,
     /// credentials mode, darwin: key → postmaster socket to fetch from.
@@ -84,7 +85,7 @@ pub enum KeySourceSpec {
     File(PathBuf),
     /// Read from macOS Keychain (terminal, macOS only).
     Keychain(String),
-    /// Read `DOTENV_PRIVATE_KEY*` from the process environment.
+    /// Read the required adapters' private-key variables from the environment.
     Environment,
 }
 

@@ -15,6 +15,7 @@
 // NEW duplicates — remove this allow when syn 2 leaves the tree.
 #![allow(clippy::multiple_crate_versions)]
 
+mod aad;
 pub mod adapter;
 pub mod cli;
 pub mod exec_config;

@@ -16,8 +16,7 @@ mod help;
 pub use help::{HELP_CLEANUP, HELP_EXEC, HELP_FETCH, HELP_SETUP, HELP_TOP};
 
 /// Full configuration loaded from the JSON file produced by the Nix module.
-/// Unknown fields are rejected (audit 2026-08-02 A21) — same strictness
-/// as the exec config.
+/// Unknown fields are rejected — same strictness as the exec config.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -40,7 +39,7 @@ pub enum KeysSource {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 /// A single credential mapping served by postmaster. Unknown fields are
-/// rejected (audit 2026-08-02 A21) — same strictness as `Config`.
+/// rejected — same strictness as `Config`.
 pub struct Entry {
     /// encrypted env file (a Nix store path; ciphertext is public).
     pub env_file: PathBuf,
@@ -61,7 +60,7 @@ pub struct Args {
     /// Bind listener sockets even when not socket-activated.
     pub bind: bool,
     /// Allow non-root peers to connect (dev escape hatch; never overrides
-    /// a configured `peer_user` ACL — sweep 2026-08-07 D1).
+    /// a configured `peer_user` ACL).
     pub allow_nonroot: bool,
 }
 
@@ -84,9 +83,9 @@ pub enum Invocation {
         check: bool,
         /// Preflight: fail unless EVERY value in every env file
         /// decrypts. Catches stale keys from a previous rotation cycle
-        /// that are valid hex but no longer match the ciphertext (audit
-        /// finding #4); under `strict: false` any skipped/undecryptable
-        /// value also aborts the launch (fail-closed).
+        /// that are valid hex but no longer match the ciphertext; under
+        /// `strict: false` any skipped/undecryptable value also aborts
+        /// the launch (fail-closed).
         verify_keys: bool,
         /// Child argv — everything after `--` on the command line.
         argv: Vec<String>,
@@ -114,8 +113,7 @@ pub enum Invocation {
     /// `ExecStopPost` in systemd or equivalent lifecycle hooks in other
     /// service managers. Does not decrypt — only removes files that
     /// postmaster would have written. Bulk removal is refused for a
-    /// non-empty directory lacking the `.postmaster-managed` sentinel
-    /// (audit 2026-08-02 A19).
+    /// non-empty directory lacking the `.postmaster-managed` sentinel.
     Cleanup {
         /// Path to the exec config JSON.
         config: PathBuf,
@@ -130,8 +128,8 @@ pub enum Invocation {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Consume the value of a value-taking option, rejecting another flag as
-/// the value (sweep 2026-08-07 D6): `--config --check` must not parse
-/// `"--check"` as the config path.
+/// the value: `--config --check` must not parse `"--check"` as the
+/// config path.
 fn option_value(
     it: &mut std::iter::Peekable<impl Iterator<Item = String>>,
     flag: &str,

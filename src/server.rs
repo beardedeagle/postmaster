@@ -23,8 +23,8 @@ use crate::adapter::KeyNaming;
 use crate::config::{Args, Config, Entry, KeysSource};
 use crate::keys::{KeyRing, resolve};
 
-/// Shared I/O deadline for socket reads and writes (sweep 2026-08-07
-/// D11 — one constant, so the two directions can't silently diverge).
+/// Shared I/O deadline for socket reads and writes (one constant, so
+/// the two directions can't silently diverge).
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
 const SD_LISTEN_FDS_START: RawFd = 3;
@@ -39,9 +39,9 @@ pub fn log(msg: &str) {
 
 /// Serve a single credential entry on a Unix socket. Handles one peer
 /// at a time (thread-per-socket); each peer must be uid 0 (root) or the
-/// configured peer_user (sweep 2026-08-07 D8).
+/// configured peer_user.
 ///
-/// Connection limiting (audit 2026-08-02 A25, documented decision): the
+/// Connection limiting (documented decision): the
 /// loop is serialized — one connection at a time, each accepted stream
 /// closed at the end of its iteration, writes bounded by IO_TIMEOUT —
 /// so per-connection FDs/threads never accumulate and pending connects
@@ -103,14 +103,13 @@ pub fn serve(
     }
 }
 
-/// Maximum bytes accepted for any single secret, bundle, or config
+/// Maximum bytes accepted for a credential fetch payload, bundle JSON, or config
 /// read. These payloads are small; the cap keeps a hostile or broken
 /// peer (or a swapped-in special file) from forcing unbounded heap
-/// allocation (audit 2026-08-02 A6). 16 MiB is far above any legitimate
-/// payload.
+/// allocation. 16 MiB is far above any legitimate payload.
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Read `reader` to EOF with a hard size cap (audit 2026-08-02 A6).
+/// Read `reader` to EOF with a hard size cap.
 /// Fails rather than truncates when the stream exceeds the cap — a
 /// truncated secret must never be served as if complete.
 pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, String> {
@@ -198,8 +197,8 @@ fn peer_euid(stream: &UnixStream) -> std::io::Result<u32> {
     Ok(euid)
 }
 
-/// Apply process-level hardening: disable core dumps, prevent ptrace
-/// attachment, and pin memory (Linux only). Called once at startup.
+/// Attempt to disable dumps and peer tracing and lock memory on Linux.
+/// Failures are logged. Dumpability and memory locks reset across exec.
 #[cfg(target_os = "linux")]
 pub fn harden_process() {
     // No core dumps, no ptrace from non-privileged peers. Best-effort by
@@ -224,8 +223,8 @@ pub fn harden_process() {
     }
 }
 
-/// Apply process-level hardening: disable core dumps and prevent ptrace
-/// attachment (macOS only). Called once at startup.
+/// Attempt to disable core dumps and, in release builds, peer tracing on macOS.
+/// Failures are logged.
 #[cfg(target_os = "macos")]
 pub fn harden_process() {
     // Closest analog to PR_SET_DUMPABLE for dumps: no core files, ever.
@@ -315,7 +314,7 @@ fn verified_id_binary() -> Result<&'static str, String> {
 /// (O_NOFOLLOW|CLOEXEC, so a symlink at the path is rejected at open):
 /// must be a regular file, owned by root, with no group/other write
 /// bits. Same fd-based discipline as the keys-file checks — nothing is
-/// ever re-resolved by path (audit 2026-08-02 O2).
+/// ever re-resolved by path.
 #[cfg(not(target_os = "macos"))]
 fn verify_id_candidate(path: &str) -> Result<(), String> {
     let fd = rustix::fs::open(
@@ -373,12 +372,10 @@ pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
 /// RAII guard that sets the process umask so a bound unix socket is born
 /// with `mode` (sockets are created `0777 & ~umask`) and restores the
 /// prior mask on drop. Darwin-only: Linux fchmod()s the already-bound
-/// socket fd (audit finding #7), which Darwin cannot do — fchmod(2)
-/// rejects socket fds with EINVAL (found by the T2 end-to-end
-/// conformance test, sweep 2026-08-07) — and a path chmod would reopen
-/// the #7 TOCTOU (a swapped-in symlink redirecting the chmod to an
-/// attacker-chosen file). Being born with the right mode has no window
-/// at all.
+/// socket fd, which Darwin cannot do — fchmod(2) rejects socket fds
+/// with EINVAL — and a path chmod would reopen the same TOCTOU (a
+/// swapped-in symlink redirecting the chmod to an attacker-chosen
+/// file). Being born with the right mode has no window at all.
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct UmaskGuard(libc::mode_t);
@@ -408,7 +405,7 @@ impl Drop for UmaskGuard {
 
 /// Bind and listen on all configured credential sockets. Returns
 /// a vector of `(UnixListener, path)` pairs ready for serving (the entry
-/// is re-looked-up by the caller; sweep 2026-08-07 D9).
+/// is re-looked-up by the caller).
 pub fn acquire_listeners(
     cfg: &Config,
     bind: bool,
@@ -559,9 +556,9 @@ pub fn acquire_listeners(
     }
 }
 
-/// Enforce the absoluteness the config type docs promise (sweep 2026-08-07
-/// D14): a CWD-relative socket or keys path would resolve against whatever
-/// directory the daemon happened to start in.
+/// Enforce the absoluteness the config type docs promise: a CWD-relative
+/// socket or keys path would resolve against whatever directory the
+/// daemon happened to start in.
 fn validate_absolute_paths(cfg: &Config) -> Result<(), String> {
     for path in cfg.credentials.keys() {
         if !path.is_absolute() {
@@ -584,8 +581,8 @@ fn validate_absolute_paths(cfg: &Config) -> Result<(), String> {
 
 /// Preflight: prove every credential is servable — and every peer_user
 /// resolvable — before accepting anyone. An empty resolved value is
-/// unservable (zero bytes means refusal on the wire, sweep 2026-08-07
-/// D4), so it fails here at startup naming the key rather than leaving
+/// unservable (zero bytes means refusal on the wire), so it fails here
+/// at startup naming the key rather than leaving
 /// the daemon looking healthy while the credential permanently fails
 /// with a misdiagnosing message.
 fn preflight_credentials(
@@ -615,9 +612,9 @@ fn preflight_credentials(
     Ok(peer_uids)
 }
 
-/// Run the credential daemon: harden the process, load keys, bind
-/// sockets, and serve credential requests. Runs until the process is
-/// terminated; returns only on startup-path failure (sweep 2026-08-07 D10).
+/// Load keys, bind sockets, and serve credential requests.
+/// The caller applies process hardening before calling. Runs until the process is
+/// terminated; returns only on startup-path failure.
 pub fn run(args: &Args) -> Result<(), String> {
     let file =
         fs::File::open(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;

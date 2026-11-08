@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Verify the integrity of an external binary before invoking it as part
 /// of a secret-handling path. This is a defense-in-depth trust boundary
-/// check (audit finding #3): the binary path is a trust root, and we
+/// check: the binary path is a trust root, and we
 /// verify it has not been tampered with before exec.
 ///
 /// On macOS: `codesign -v <path>` verifies the code signature. The binary
@@ -17,7 +17,7 @@ use std::path::Path;
 /// on Linux, so ownership and permission checks are the practical
 /// defense-in-depth boundary.
 ///
-/// Bootstrap limitation (audit 2026-08-02 O2): on macOS the verifier
+/// Bootstrap limitation: on macOS the verifier
 /// itself invokes `/usr/bin/codesign`. Self-verifying codesign with
 /// codesign is circular — a compromised codesign would vouch for
 /// itself — so codesign is trusted via SIP alone. Moving verification
@@ -33,7 +33,7 @@ pub fn verify_external_binary(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("{}: codesign verification failed: {e}", path.display()))?;
         if !out.status.success() {
             return Err(format!(
-                "{}: code signature verification failed (audit finding #3 trust boundary)",
+                "{}: code signature verification failed (binary trust boundary)",
                 path.display()
             ));
         }

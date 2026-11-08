@@ -19,8 +19,8 @@ use zeroize::Zeroizing;
 /// Resolved values keyed by name, each zeroized on drop.
 pub type Resolved = Vec<(String, Zeroizing<Vec<u8>>)>;
 
-/// Marker file postmaster creates in any secrets_dir it writes to
-/// (audit 2026-08-02 A19). `prune_stale` and `cleanup` refuse to
+/// Marker file postmaster creates in any secrets_dir it writes to.
+/// `prune_stale` and `cleanup` refuse to
 /// bulk-delete in a non-empty directory that lacks it — foreign files
 /// could be present. A permission-mode check cannot make that
 /// distinction: the Linux files-mode secrets dir is a namespace-private
@@ -45,7 +45,7 @@ pub fn env_pairs(resolved: &Resolved) -> Result<Vec<(OsString, OsString)>, Strin
 /// Open and pin a secrets directory by fd: `O_RDONLY|O_DIRECTORY|
 /// O_NOFOLLOW|O_CLOEXEC` rejects a symlink or non-directory at open and
 /// pins the inode, so subsequent `*at` operations are relative to it
-/// rather than to a re-resolved path (audit 2026-08-02 A12).
+/// rather than to a re-resolved path.
 pub(crate) fn open_secrets_dir(dir: &Path) -> rustix::io::Result<OwnedFd> {
     rustix::fs::open(
         dir,
@@ -83,14 +83,13 @@ pub(crate) fn read_dir_names(dir_fd: impl AsFd) -> rustix::io::Result<Vec<OsStri
 
 /// Writes `value` to `key` beneath the pinned secrets-dir fd `dir_fd`
 /// and returns `dir.join(key)` for the `{KEY}_FILE` pointer. Invariant
-/// this enforces: plaintext lands only on the mount `verify_ramdisk`
-/// already checked — a symlink planted at the target path (e.g. by
+/// this enforces: writes stay beneath the pinned directory. The caller performs
+/// any required RAM-backing validation. A symlink planted at the target path (e.g. by
 /// leftover/attacker-controlled state in a per-service ramdisk dir that
 /// persists across restarts) must never be followed onto persistent
 /// disk, so the open refuses symlinks (`O_NOFOLLOW`) and fails closed
-/// instead. The directory is pinned by the caller's fd (audit
-/// 2026-08-02 A12): a symlink swapped in at `dir` after the caller's
-/// checks is rejected, and the file open is relative to the pinned
+/// instead. The directory is pinned by the caller's fd: a symlink
+/// swapped in at `dir` after pinning is not followed: the file open uses the pinned
 /// directory inode, not a path re-resolution. On any post-open error
 /// the just-created/truncated target is unlinked fd-relative before the
 /// error is returned — the caller only learns the names of successful

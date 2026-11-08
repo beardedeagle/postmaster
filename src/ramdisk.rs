@@ -1,11 +1,10 @@
 //! macOS ramdisk verification — ensures plaintext secret files land only
 //! beneath a verified RAM-backed HFS mount: the mount proves RAM-backed
 //! via hdiutil, and `secrets_dir` must be contained in it, real (not a
-//! symlink), and owned by the service user (sweep 2026-08-07 X1).
+//! symlink), and owned by the service user.
 //!
-//! This module implements the `ramdiskGuard` invariant that was previously
-//! templated in `modules/darwin.nix`. On Linux the ramdisk check is not
-//! used (tmpfs is already RAM-backed by definition).
+//! The launcher uses this check when `verify_ramdisk` is configured on macOS.
+//! Linux integrations provide and secure their own RAM-backed storage.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -82,7 +81,7 @@ fn device_is_ram_backed(device: &str, hdiutil_out: &str) -> bool {
 /// True when `dir` names a path lexically beneath `mount_point`
 /// (component-wise, with no `..` escape). Lexical only — the caller has
 /// already proven `dir` a real, non-symlink directory and `mount_point`
-/// present in mount output (sweep 2026-08-07 X1).
+/// present in mount output.
 fn path_beneath(dir: &Path, mount_point: &Path) -> bool {
     match dir.strip_prefix(mount_point) {
         Ok(rest) => !rest
@@ -92,8 +91,7 @@ fn path_beneath(dir: &Path, mount_point: &Path) -> bool {
     }
 }
 
-/// darwin ramdisk guard (was ramdiskGuard in modules/darwin.nix): plaintext
-/// lands only beneath the postmaster ramdisk, in a directory this user owns.
+/// Verify a macOS RAM-backed mount and a contained directory owned by this user.
 pub fn verify_ramdisk(mount_point: &Path, secrets_dir: &Path) -> Result<(), String> {
     // Trust boundary (audit 2026-08-02 O2): a compromised /sbin/mount or
     // hdiutil could report persistent disk as the RAM-backed postmaster

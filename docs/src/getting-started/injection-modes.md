@@ -12,7 +12,7 @@ environment variables, as files, or as systemd credentials.
 | Mode | Best for | Secrets in environ? | Hygiene |
 | --- | --- | --- | --- |
 | `env` | 12-factor apps, simple services | Yes | Lowest — same-UID processes can read `/proc/PID/environ` |
-| `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | No — only `_FILE` pointers | Medium — secrets absent from environ, `ps`, crash dumps |
+| `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | Only when `passthrough` requests it | No environment copy by default; the app still reads plaintext files |
 | `credentials` | systemd services wanting strongest isolation | No — reads `$CREDENTIALS_DIRECTORY` | Highest — unit-private unswappable ramfs |
 
 ## Mode comparison
@@ -27,9 +27,9 @@ flowchart TB
         tmpfs -->|KEY_FILE=/run/.../KEY| child_files["your binary"]
     end
     subgraph cred["mode: credentials"]
-        systemd["systemd"] -->|LoadCredential=| ramfs["ramfs\n$CREDENTIALS_DIR"]
-        pm_cred["postmaster"] -->|decrypt + write| ramfs
-        ramfs -->|KEY_FILE=$CREDENTIALS_DIR/KEY| child_cred["your binary"]
+        daemon["postmaster credential daemon"] -->|decrypted bytes over local socket| systemd["systemd"]
+        systemd -->|LoadCredential=| ramfs["ramfs\n$CREDENTIALS_DIRECTORY"]
+        ramfs -->|KEY_FILE=$CREDENTIALS_DIRECTORY/KEY| child_cred["your binary"]
     end
 ```
 
@@ -46,14 +46,14 @@ and prone to appearing in crash dumps and debug output.
 means "this service only"), `ProtectProc` hardening (hides other
 processes' `/proc` entries), and ultimately switching to `files` mode.
 
-**No shell expansion:** postmaster performs no `${VAR}`/`$(…)` expansion
-anywhere in the decrypt-and-inject path, in any mode. A repo contributor
-who commits `KEY=$(cmd)` gets the literal string, never a command
-execution at service start.
+**No shell execution:** decrypted values are injected without shell
+evaluation. Plaintext dotenv entries follow `dotenvy` parsing rules, including
+variable substitution in unquoted and double-quoted values. Single quotes
+preserve `${VAR}` literally. `$(cmd)` does not execute a command.
 
 ## `mode = "files"`
 
-Values are written one-file-per-key onto a namespace-private tmpfs
+Deployments provide a namespace-private tmpfs for one-file-per-key output
 (`TemporaryFileSystem=/run/postmaster`; on macOS, a per-service directory
 on an HFS RAM disk) and only `<KEY>_FILE` pointer variables are exported
 — the Docker-secrets convention
@@ -66,6 +66,11 @@ mount namespace on Linux (root needs `nsenter`) and is destroyed with
 the unit. On macOS, the RAM disk is protected by ownership (`0700`), not
 invisibility — macOS has no mount namespaces.
 
+This describes file-only projection. `passthrough` adds environment copies,
+and ordinary inherited variables remain present. The application can also
+copy file contents into its own memory. A hand-written config must provide
+RAM-backed storage; setting `secrets_dir` alone does not verify it.
+
 Each secret file is written with `O_NOFOLLOW | O_CREAT | O_TRUNC` and
 `fchmod`'d to `0600` on the file descriptor (no TOCTOU window between
 open and chmod).
@@ -76,6 +81,7 @@ For a mostly-file-capable app with a straggler that needs an env var:
 {
   "mode": "files",
   "env_files": ["secrets/.env.production"],
+  "keys": [{"file": "/var/lib/postmaster/.env.keys"}],
   "secrets_dir": "/run/postmaster",
   "passthrough": ["RUST_LOG"]
 }
@@ -105,6 +111,9 @@ systemd credentials, so app code is unchanged.
 
 - **`strict` (default `true`):** if any value fails to decrypt, the
   entire exec aborts before the child runs. Nothing partial is injected.
+- **`strict: false`:** undecryptable dotenv values are logged and omitted.
+  `--verify-keys` makes those omissions fatal. Bundle entries must authenticate
+  under either setting.
 - **NUL in env values:** rejected in `env` mode and for `passthrough`
   values in `files` mode. In `files` mode's primary write path, NUL is
   not restricted — the exact bytes reach the file.

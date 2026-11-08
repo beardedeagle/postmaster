@@ -2,7 +2,7 @@
 name = "postmaster"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.96.1"
+rust-version = "1.99.1"
 description = "standalone, format-neutral local secret materialization engine"
 license = "MIT"
 repository = "https://github.com/beardedeagle/postmaster"
@@ -99,7 +99,9 @@ used_underscore_binding = "warn"
 # Wire-compatible with eciesjs (dotenvx's crypto): secp256k1 + HKDF-SHA256 +
 # AES-256-GCM with the ecies family's 16-byte nonce default. `pure` selects
 # the RustCrypto AES backend — no openssl in the closure.
-ecies = { version = "0.2.11", default-features = false, features = ["pure", "secp256k1", "std"] }
+ecies = { version = "0.2.13", default-features = false, features = ["pure", "secp256k1", "std"] }
+# The bundle adapter owns its AAD envelope; RustCrypto performs AES-GCM.
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "zeroize"] }
 dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -111,19 +113,13 @@ zeroize = "1"
 # single fd-ownership assertion at the systemd socket-activation boundary.
 rustix = { version = "1", features = ["net", "process", "mm", "fs"] }
 
-# AAD support for the bundle adapter (audit 2026-08-02 A7) lives on the
-# `aad-support` branch of the author's ecies fork pending the upstream PR
-# against ecies/rs. Pinned by rev for reproducibility; drop this section
-# once the PR merges and ships in a crates.io release.
-[patch.crates-io]
-ecies = { git = "https://github.com/beardedeagle/rs.git", rev = "81e1b84" }
-
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux-only additions for the sibling launch monitor
 # (docs/src/unsafe-code/monitor.md):
 # - rustix "runtime": the monitor's signal ops (mask for life, synchronous
 #   consumption) use kernel_sigprocmask/kernel_sigpending/kernel_sigwait —
-#   rustix's experimental, doc-hidden runtime API — so the Linux leg stays
+#   rustix's experimental runtime API (exported under a rotating module
+#   name) — so the Linux leg stays
 #   on linux_raw with NO libc signal FFI. Cargo.lock pins the exact rustix;
 #   an update that changes this unstable API fails the build loudly,
 #   never silently.
@@ -150,10 +146,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-# PT_DENY_ATTACH (macOS hardening) is gated on not(debug_assertions); pin
-# this so a profile override can't silently compile it out (audit
-# 2026-08-02 A23). This is already the release default — explicitness is
-# the guard.
+# PT_DENY_ATTACH (macOS hardening) is gated on not(debug_assertions).
+# Keep release builds covered by default; enabling debug assertions through
+# a profile or environment override disables that call.
 debug-assertions = false
 # Arithmetic bugs become panic → abort → Restart=on-failure: fail closed,
 # never a wrong answer. Cost is ~nil (crypto deps use wrapping intrinsics).

@@ -19,14 +19,13 @@ Postmaster works with Nix, AWS CDK, Ansible, SaltStack, Puppet,
 Terraform, and OpenTofu as deployment automation targets, all sharing
 the same `exec.json` contract.
 
-The trick that makes this compose: the ciphertext is *designed* to be
-public. Every value is ECIES/secp256k1-encrypted individually, and the
-embedded public key only permits encrypting *new* values. So the
-world-readable Nix store — normally the reason secrets and Nix don't
-mix — stops being an adversary. Encrypted env files ship inside the
-closure, deploy atomically, roll back with the generation, and the
-entire secret surface collapses to one 64-hex private key per
-environment.
+Encrypted values can be public: each value is ECIES/secp256k1-encrypted,
+and the embedded public key permits encryption but not decryption.
+Encrypted env files can ship in the Nix closure and roll back with the
+generation. Keep private keys separate and protect artifact write access:
+anyone with the public key can encrypt replacement values. Plaintext
+passthrough entries are public too, so they must not contain secrets in a
+public artifact.
 
 Runtime flow per service (systemd path):
 
@@ -47,9 +46,10 @@ Runtime flow per service (systemd path):
 macOS runs the same flow under launchd, with a RAM disk replacing the
 private tmpfs.
 
-Plaintext never touches persistent disk. Postmaster decrypts natively
-and `execvp`s your binary directly from the same process
-image — no Node, no separate CLI process, no shell in the startup path.
+Postmaster decrypts natively and replaces the launcher with your binary.
+Deployments must provide RAM-backed storage for secret files and configure
+swap and dump protections. A hand-written `files` config without
+`verify_ramdisk` does not establish that its directory is RAM-backed.
 
 ## CLI
 
@@ -80,7 +80,8 @@ process environment and the wrapper `exec`s your binary. Correct for
 **`mode = "files"`.** Values are written one-file-per-key onto a
 namespace-private tmpfs (`TemporaryFileSystem=/run/postmaster`; on macOS,
 a per-service directory on an HFS RAM disk) and only `<KEY>_FILE` pointer
-variables are exported — the Docker-secrets convention. Secrets are
+variables are exported by default, following the Docker-secrets convention.
+`passthrough` also exports selected values. File-only projected secrets are
 absent from environ, `ps e`, crash-dump environment sections, and
 ambient child inheritance.
 
@@ -118,8 +119,9 @@ stage-by-stage breakdown lives in
 
 The `exec.json` contract and `postmaster exec --check` conformance suite
 are the interface between postmaster and every integration. An
-integration is correct if and only if the `exec.json` it emits passes
-`--check` and the conformance suite.
+integration must emit configs accepted by `--check` and verify its launch
+behavior against the conformance suite. Host permissions, key availability,
+and service-manager wiring need separate validation.
 
 ## Documentation
 
@@ -127,7 +129,7 @@ Full documentation is in the [docs/](docs/) directory, buildable with
 [mdBook](https://rust-lang.github.io/mdBook/):
 
 ```console
-$ mdbook serve docs
+$ just docs-serve
 ```
 
 See [docs/src/SUMMARY.md](docs/src/SUMMARY.md) for the table of contents.
@@ -143,8 +145,13 @@ $ just ci-rust         # all of the above in one command
 $ just build-matrix max macos-arm  # optimized release
 ```
 
-See `just build-help` for the full build matrix (optimization levels
-and cross-compilation targets).
+Source builds require Rust 1.99.1 or newer. `just build-help` lists the
+optimization levels and cross-compilation targets.
+
+Cross builds use `cargo zigbuild` and require the Rust target, `cargo-zigbuild`,
+and Zig to be installed; Darwin cross builds also require a macOS SDK.
+The matrix preserves compiler flags and profile environment overrides. Its
+`max` level remaps checkout and Cargo registry source paths in build outputs.
 
 With Nix:
 
@@ -152,6 +159,10 @@ With Nix:
 $ nix build
 $ nix flake check
 ```
+
+The flake exports packages and an overlay. Service-manager bindings live in
+deployment integrations; they must render `exec.json` and configure storage,
+permissions, cleanup, and hardening.
 
 ## License
 

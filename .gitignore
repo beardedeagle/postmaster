@@ -31,3 +31,8 @@ docs/src/changelog.md
 target/
 docs/superpowers/
 .superpowers/
+.aider*
+.crush/
+
+# zvec-grep workspace index — local, per-machine, rebuilt with `zg index`
+.zvec-grep/

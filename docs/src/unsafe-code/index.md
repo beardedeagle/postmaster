@@ -43,7 +43,6 @@ Note what is NOT in the inventory: `mlockall`, `setrlimit(Core, 0)`, and
 6. **Write tests** — verify the mitigations work (or document why untestable)
 7. **Get review** — unsafe requires explicit approval
 
-The bar is intentionally high. Postmaster's design keeps plaintext
-custody to microseconds — decrypt at the last instant, zeroize
-immediately, never persist. A memory-safety bug is one of the few
-things that can silently break that invariant.
+Postmaster decrypts at launch and wipes its key ring and resolved buffers
+before `execvp`. A memory-safety bug can expose those buffers or invalidate
+cleanup, so each unsafe boundary needs a specific justification.

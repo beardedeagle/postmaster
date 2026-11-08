@@ -4,7 +4,7 @@
 contract between public deployment artifacts, local private key material,
 and the process that receives plaintext at runtime.
 
-## Audience Quickstart (Plain Language)
+## Audience Quickstart
 
 **What this is:** the contract that every integration (Nix, Terraform,
 CDK, Ansible, etc.) must follow when wiring postmaster. If you're writing
@@ -35,7 +35,7 @@ The ABI is deliberately local:
 - private key material arrives through local terminal sources
 - `postmaster` decrypts and projects plaintext on the host
 - plaintext is handed to the target process through one selected projection
-- failure happens before `exec`, not after a partially configured launch
+- required validation and decryption checks finish before `exec`
 
 This page describes the ABI and how `exec.json` fits inside it. It is a
 contract for bindings and documentation recipes, not an invitation to put
@@ -91,9 +91,9 @@ private keys are never config fields.
 `exec.json` is the first ABI instance. It is implicitly:
 
 - ABI version: `0`
-- input adapter: `.env` (wire-compatible with dotenvx-encrypted files)
-- artifact shape: `env_files`
-- key material shape: `.env.keys` / `DOTENV_PRIVATE_KEY*`
+- input adapters: `.env` and `postmaster_bundle`
+- artifact fields: `env_files` and `bundle_files`
+- key variables: `DOTENV_PRIVATE_KEY*` for dotenv, `POSTMASTER_KEY` for bundles
 - projection modes: `env`, `files`, and `credentials`
 
 The current parser does not accept explicit `version` or `adapter` fields.
@@ -167,6 +167,12 @@ store or repo adversary who cuts a ciphertext from one entry and pastes it
 under another key name gets an authentication failure at decryption, not a
 mislabeled secret.
 
+The decoded envelope is a 65-byte uncompressed secp256k1 ephemeral public key,
+a 16-byte nonce, a 16-byte authentication tag, then ciphertext. HKDF-SHA256
+uses the uncompressed ephemeral and shared points, matching `ecies` defaults.
+The entry name's exact UTF-8 bytes are the AAD; plaintext is returned only
+after AES-256-GCM authentication succeeds.
+
 The remaining metadata (profile, recipient ids, encodings) is not yet
 cryptographically bound. Binding it requires specifying canonical serialized
 bytes for the authenticated metadata first — generated artifacts need
@@ -178,19 +184,19 @@ The design constraints are:
   values.
 - `suite` is mandatory so cryptographic suites can be explicit rather
   than inferred from payload length.
-- `profile` is optional public selection metadata; it is not a secret.
-- `recipients[*].id` is public routing metadata used to select local private
-  key material.
+- `profile` and `recipients` are public metadata. They are parsed but do not
+  select local private keys or filter entries.
 - Private key material comes from the `POSTMASTER_KEY` variable:
   comma-separated rotation candidates are admitted, and
   `POSTMASTER_KEY_<suffix>` variants match by the same predicate as
   `DOTENV_PRIVATE_KEY_*`. There is no per-environment filename mapping —
-  `profile` handles selection.
+  bindings select bundle paths through `bundle_files`.
 - `entries` keys must use the same identifier rule as `.env`-derived keys:
   `[A-Za-z_][A-Za-z0-9_]*`.
-- `encoding` is either `utf8` or `bytes`. `env` projection rejects bytes that
-  cannot become a POSIX environment value; `files` and `credentials` preserve
-  byte-exact values.
+- `encoding` is either `utf8` or `bytes`. A `utf8` entry must decrypt to valid
+  UTF-8. Env projection rejects NUL bytes; files preserve byte-exact values.
+- Bundles are accepted in `env` and `files` modes. The credential daemon
+  resolves dotenv entries; `credentials` mode does not accept `bundle_files`.
 - A bundle can contain many entries for one projection, but it does not
   encode service-manager policy. Projection remains in the `postmaster`
   config, not inside the encrypted artifact.
@@ -218,8 +224,8 @@ Implemented launcher key sources are local and terminal:
 - `{"file": "/path/to/.env.keys"}` reads a local file and fails closed if the
   file is unavailable or under `/nix/store`.
 - `{"keychain": "<service>"}` reads from macOS Keychain and is terminal.
-- `"environment"` reads `DOTENV_PRIVATE_KEY*` from the process environment
-  and is terminal.
+- `"environment"` reads the required adapters' private-key variables from the
+  process environment and is terminal.
 
 Provider names such as `aws_ssm` and `vault` are reserved contract language,
 but they are not implemented key sources. A Vault Agent, cloud-init step,
@@ -232,7 +238,7 @@ local sources.
 Resolution must:
 
 - parse every configured encrypted artifact before launching the target
-- build the wanted private-key set from artifact metadata
+- build the wanted private-key set from configured artifact names and formats
 - load key material from the ordered local sources
 - decrypt with the selected adapter
 - reject malformed key names
@@ -243,6 +249,10 @@ Resolution must:
 
 For the `.env` adapter, this is implemented by `resolve_all` and the same
 native ECIES path used by the credential daemon.
+
+`strict: false` permits undecryptable dotenv values to be logged and omitted.
+`--verify-keys` rejects those omissions. Bundle authentication always fails
+closed, independent of `strict`.
 
 ## Diagnostics and redaction
 
@@ -271,6 +281,9 @@ because POSIX environment variables cannot carry them safely.
 
 Each resolved value is written as a `0600` file under `secrets_dir`.
 `postmaster` exports `<KEY>_FILE` pointers for each secret.
+
+The deployment must supply RAM-backed storage. The launcher does not establish
+RAM backing when `verify_ramdisk` is absent.
 
 The launcher refuses to follow symlinks when writing secret files. On macOS,
 when `verify_ramdisk` is set, it verifies the configured mount before writing

@@ -48,9 +48,9 @@ src/server.rs — fn harden_process (macOS cfg, release builds only)
 
 The ptrace-from-peers half of Linux's `PR_SET_DUMPABLE`: deny debugger
 attachment to the daemon. Compiled only under `not(debug_assertions)`;
-`[profile.release]` pins `debug-assertions = false` so a profile override
-cannot silently compile it out (audit 2026-08-02 A23). Best-effort by
-policy, but a failure is security-relevant and is logged (A10).
+`[profile.release]` sets `debug-assertions = false` by default. Enabling debug
+assertions, including through a profile environment override, disables this
+call. A failed attach-denial request is logged.
 
 ### UB Vectors and Mitigations
 

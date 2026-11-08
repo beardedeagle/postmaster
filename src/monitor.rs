@@ -1,15 +1,18 @@
 //! Sibling launch monitor — a per-service fork-child that owns stop
-//! semantics and plaintext cleanup on every service-death path
-//! (sibling-monitor launch supervision design, 2026-08-05).
+//! semantics and plaintext cleanup on every service-death path.
 //!
 //! The launcher forks the monitor after validation, plaintext writes, and
-//! zeroization, and immediately before `execvp`: the parent restores its
+//! zeroization of the key ring and resolved values, immediately before `execvp`.
+//! The parent restores its
 //! pre-guard signal mask and execs the service (MainPID unchanged), and
-//! the fork-child becomes the monitor. The monitor carries only the
+//! the fork-child becomes the monitor. Cleanup uses the
 //! pinned secrets-dir fd (inherited across fork; `CLOEXEC` does not fire
 //! because the monitor never execs) and the list of written entry names
 //! — in env mode both are empty and cleanup is a no-op, but the monitor
 //! still runs (uniform semantics: it forwards stops regardless).
+//! The monitor scrubs projected env pairs, but retains the original process
+//! environment. Environment-supplied private keys can remain there; filtering
+//! the application's environment before exec does not erase the monitor's copy.
 //!
 //! Signal discipline: the four termination signals ({TERM, INT, HUP,
 //! QUIT}) stay *blocked for the monitor's whole life* — the mask is
@@ -62,7 +65,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 #[cfg(target_os = "linux")]
 use rustix::process::{PidfdFlags, pidfd_open, pidfd_send_signal};
 #[cfg(target_os = "linux")]
-use rustix::runtime::{self, KernelSigSet};
+use rustix::runtime_448b8ad740e2a26f::{self as runtime, KernelSigSet};
 #[cfg(target_os = "macos")]
 use std::os::fd::{AsRawFd, FromRawFd};
 
@@ -92,9 +95,9 @@ pub(crate) fn wipe_pair(k: std::ffi::OsString, v: std::ffi::OsString) -> (Vec<u8
 pub(crate) const STOP_SIGNALS: [Signal; 4] = [Signal::TERM, Signal::INT, Signal::HUP, Signal::QUIT];
 
 /// Grace between forwarding a stop signal and `SIGKILL` escalation:
-/// 250 ms, a single global security policy (author ruling 2026-08-05 —
-/// per-service erosion is unacceptable; the per-unit knob is the service
-/// manager's own stop timeout). Injectable in tests via `run_inner`.
+/// 250 ms, a single global security policy (per-service erosion is
+/// unacceptable; the per-unit knob is the service manager's own stop
+/// timeout). Injectable in tests via `run_inner`.
 pub(crate) const GRACE: Duration = Duration::from_millis(250);
 
 /// Liveness/poll tick. Short is fine: this latency adds to cleanup

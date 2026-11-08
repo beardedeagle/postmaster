@@ -1,6 +1,6 @@
 # Threat model
 
-## Audience Quickstart (Plain Language)
+## Audience Quickstart
 
 **What this is:** what postmaster protects, what it cannot prevent,
 and why it's built this way. This is the security reference.
@@ -20,7 +20,7 @@ and why it's built this way. This is the security reference.
 | Term | Plain meaning |
 | ------ | --------------- |
 | **execvp** | Replaces the current process — no parent holds secrets after launch |
-| **Fail-closed** | If anything fails, the service does NOT start — no partial secrets |
+| **Fail-closed** | A failed required check prevents launch; dotenv decryption is strict by default |
 | **Zeroize** | Overwrite secret memory with zeros before it's freed |
 | **mlockall** | Pin memory in RAM so the kernel can't swap it to disk |
 | **TOCTOU** | Time-of-check to time-of-use — a race between verifying and using a file |
@@ -32,7 +32,7 @@ and why it's built this way. This is the security reference.
 | Category | Status |
 | -------- | ------ |
 | Secrets at rest (ciphertext in git/Nix store) | Safe — ciphertext is public |
-| Plaintext on persistent disk | Prevented — only RAM-backed filesystems |
+| Plaintext on persistent disk | Avoided when the deployment supplies RAM-backed secret storage |
 | Plaintext in swap | Mitigated — mlockall + MemorySwapMax=0 |
 | Core dumps | Mitigated — PR_SET_DUMPABLE=0, RLIMIT_CORE=0 |
 | Shell injection | Prevented — no shell anywhere in the path |
@@ -77,9 +77,24 @@ repository (which lets any repo writer add or replace encrypted
 values), this would be remote code execution at service start for
 anyone who can commit to the repo.
 
-Postmaster never shells out or evals. Decrypted values move directly
+Postmaster never evaluates secret values as shell code. Decrypted values move directly
 into the child's environment array or a file write. No shell sits
 between decryption and injection to reinterpret the values.
+
+### Private-key environment variables
+
+Postmaster removes private-key variables from the launched application's
+environment in every projection mode. Both adapter namespaces are reserved:
+`DOTENV_PRIVATE_KEY`, `POSTMASTER_KEY`, and their `_<nonempty suffix>` variants.
+The environment source can still use these variables to decrypt inputs;
+ordinary inherited variables remain available to the application.
+
+This filtering does not erase the launcher's original environment or the
+copy inherited by its sibling monitor. Prefer a non-environment key source
+to avoid that exposure. Filtering also does not prevent an application from
+reading key files or keychain items its OS identity can access. Keeping a
+master key inaccessible to the service requires a separate OS access
+boundary, such as a credential daemon that delivers only selected secrets.
 
 ### Offline decryption
 
@@ -135,18 +150,20 @@ Only someone with the private key can decrypt the values.
 A teammate who has repository access (and thus the public key) can add
 or replace encrypted secrets, but cannot read existing ones.
 
-### Plaintext never on persistent disk
+### Plaintext storage depends on the deployment
 
-Decrypted values exist only in:
+The deployment must keep decrypted values in:
 
 - **Process memory** (anonymous heap, zeroized after use)
 - **RAM-backed filesystems** (Linux tmpfs, macOS ramdisk — destroyed
   when the service unit stops)
 
-They are never written to a file on persistent disk. The tmpfs is
-namespace-private (invisible outside the unit's mount namespace on
-Linux) and unswappable (via `mlockall` on Linux and the service
-manager's cgroup-level `MemorySwapMax=0` setting).
+Postmaster writes to the configured `secrets_dir`. Without `verify_ramdisk`,
+it does not prove that this directory is RAM-backed. Linux integrations must
+provide a private RAM-backed mount and configure swap protection, for example
+with `MemorySwapMax=0`. On macOS, enable `verify_ramdisk` to check RAM backing
+before writing. Key files are separate: a `.env.keys` file can itself reside
+on persistent disk.
 
 ### Fail-closed by default
 
@@ -154,6 +171,10 @@ If any value fails to decrypt (wrong key, corrupted ciphertext, stale
 key file), the entire launch aborts before the child process starts.
 Nothing partial is injected. This is controlled by the `strict`
 setting, which defaults to `true`.
+
+With `strict: false`, undecryptable dotenv values are logged and omitted.
+`--verify-keys` makes those omissions fatal. Bundle authentication failures
+always abort, regardless of `strict`.
 
 ### Symlink attacks on key files and secret paths
 
@@ -176,9 +197,9 @@ read or written:
 - **Secrets directory** is checked with `symlink_metadata` even on
   Linux where `verify_ramdisk` is not used, rejecting a symlinked
   `secrets_dir` that could redirect plaintext to persistent disk.
-- **Socket permissions** are set via `fchmod` on the file descriptor,
-  not `set_permissions` on the path, eliminating the TOCTOU window
-  between `bind` and `chmod`.
+- **Socket permissions** use `fchmod` on the socket fd on Linux. macOS rejects
+  that operation, so Postmaster sets the umask before binding there and
+  restores it afterward.
 
 ### External binary verification
 
@@ -209,11 +230,10 @@ the secret path:
   `[A-Za-z_][A-Za-z0-9_]*` — this is enforced before any value from
   that file is used, since a key name becomes a shell-visible env-var
   name or a filename component.
-- **No shell expansion:** Postmaster performs no `${VAR}` or `$(…)`
-  expansion anywhere in the decrypt-and-inject path. Values are
-  opaque bytes end to end. A repo contributor who commits
-  `KEY=$(cmd)` gets the literal string, never a command execution at
-  service start.
+- **No shell evaluation:** decrypted values and bundle plaintext are injected
+  as bytes. Plaintext dotenv entries follow `dotenvy` parsing rules, including
+  variable substitution in unquoted and double-quoted values. Single quotes
+  preserve `${VAR}` literally. `$(cmd)` is not executed.
 
 ### Key freshness verification
 
@@ -260,18 +280,19 @@ When multiple private keys are configured for one variable (the
 comma-separated rotation convention), decryption tries each candidate in
 order and stops at the first that works. A local observer measuring
 launch or fetch latency can infer which candidate matched — i.e., the
-rotation position of the current key. Accepted (audit 2026-08-02 A14):
-the observer learns only the rotation index, not key material, and
-already needs same-host access; equalizing the timing would require
-attempting every candidate on every decryption for no meaningful gain.
+rotation position of the current key. Accepted: the observer learns
+only the rotation index, not key material, and already needs same-host
+access; equalizing the timing would require attempting every candidate
+on every decryption for no meaningful gain.
 
 ### Env-file content is trusted input (no variable-name denylist)
 
 Postmaster injects what the configured env files and bundles say,
-including plaintext passthrough entries. There is no denylist of
-environment variable names (audit 2026-08-02 A18): names like
-`LD_PRELOAD` or `PATH` are honored, because real deployments
-legitimately set variables of this family (`LD_LIBRARY_PATH` is common).
+including plaintext passthrough entries. Apart from reserved private-key names,
+there is no denylist of
+environment variable names: names like `LD_PRELOAD` or `PATH` are
+honored, because real deployments legitimately set variables of this
+family (`LD_LIBRARY_PATH` is common).
 The protection boundary is artifact authorship: anyone who can write the
 env file (or produce valid ciphertext for it) already controls what the
 child process receives. Treat plaintext passthrough entries in
@@ -286,7 +307,7 @@ persistent disk.
 
 **Core dumps** are disabled at both the process level
 (`PR_SET_DUMPABLE=0` on Linux, `RLIMIT_CORE=0` on macOS) and the unit
-level (`LimitCORE=0`, `CoredumpFilter=0` in the Nix module). For
+level when the integration sets `LimitCORE=0` and `CoredumpFilter=0`. For
 host-wide coverage, set
 `systemd.coredump.extraConfig = "Storage=none"`.
 
@@ -295,10 +316,10 @@ host-wide coverage, set
 - Per-unit: the service manager (systemd) can set `MemorySwapMax=0` on
   the unit, preventing the kernel from swapping the unit's pages.
   Postmaster also calls `mlockall(MCL_CURRENT | MCL_FUTURE)` on Linux
-  (best-effort, may fail under `RLIMIT_MEMLOCK`). On macOS,
-  `mlockall(2)` does not exist, but macOS encrypts swap by default, so
-  swapped pages are ciphertext at rest.
-- Host-wide: encrypted swap or zram keeps all swap off persistent disk.
+  (best-effort, may fail under `RLIMIT_MEMLOCK`). Postmaster does not lock all
+  memory on macOS; it relies on the platform's encrypted swap.
+- Host-wide: encrypted swap protects swapped pages at rest; zram keeps
+  compressed swap pages in RAM.
   On NixOS, this is a one-liner:
   [`swapDevices.*.randomEncryption`](https://search.nixos.org/options?show=swapDevices.*.randomEncryption.enable)
   for dm-crypt with an ephemeral key, or
@@ -313,17 +334,18 @@ hardening (`PR_SET_DUMPABLE=0`, `mlockall`, `RLIMIT_CORE=0`). After
 `execvp`, the child process gets a fresh address space. Some settings
 survive `execvp`, some do not:
 
-- **`RLIMIT_CORE`**: preserved across `execve` (kernel guarantee). The
-  child inherits `LimitCORE=0` from the systemd unit. Core dumps stay
-  disabled.
-- **`PR_SET_DUMPABLE`**: preserved across `execve` for non-setuid
-  binaries. The child inherits non-dumpable status unless it is a
-  setuid/setgid/capability-bearing binary (which would be unusual for
-  a service).
+- **`RLIMIT_CORE`**: preserved across `execve`. Postmaster sets it to zero
+  on macOS. Linux integrations must set `LimitCORE=0` for the application;
+  the launcher's dumpability setting alone does not survive exec.
+- **`PR_SET_DUMPABLE`**: an ordinary Linux `execve` resets dumpability to 1.
+  Postmaster's setting protects the launcher and credential daemon, not the
+  executed application. The application needs its own non-dumpable setting
+  or OS isolation to restrict same-UID tracing. See the
+  [Linux exec setup](https://github.com/torvalds/linux/blob/d48723711bae9b8cdc56719c448ba42fef28cbee/fs/exec.c#L1125-L1351).
 - **`MemorySwapMax=0`**: cgroup-level, not process-level. The child
   stays in the same cgroup, so the swap limit applies to the child's
   pages too. This is the primary swap protection for the child. The
-  Nix module sets this via `preventSwap = true` by default.
+  integration must configure this limit; the package does not supply a unit.
 - **`mlockall`**: does NOT survive `execvp` — the child's fresh address
   space is not pinned in RAM. This gap is covered by the cgroup-level
   `MemorySwapMax=0`.
@@ -337,24 +359,23 @@ explicitly a non-goal.
 
 ### Anonymous memory (heap, stack) — Mitigated
 
-Postmaster's decrypted values, key material, and resolved environment
-pairs all live in anonymous memory — heap allocations wrapped in
-`Zeroizing<Vec<u8>>` that zero the buffer on drop. The child process
+Postmaster wraps its key ring and resolved values in `Zeroizing` buffers.
+Projected environment pairs use ordinary `OsString` buffers that must remain
+intact until `execvp`. The child process
 receives plaintext via its environment array (env mode) or reads it
 from files on a tmpfs/ramdisk (files/credentials mode).
 
 **Paging/swap:** Anonymous pages can be swapped out by the kernel.
 Postmaster mitigates this on Linux with `mlockall(MCL_CURRENT |
 MCL_FUTURE)` (best-effort, may fail under `RLIMIT_MEMLOCK`) and the
-service manager's cgroup knob `MemorySwapMax=0` (wired by `preventSwap`
-in the Nix module). On macOS, `mlockall(2)` does not exist, but macOS
-encrypts swap by default, so swapped pages are ciphertext at rest.
-Host-wide encrypted swap or zram on Linux provides the same guarantee
-without per-unit configuration.
+service manager's cgroup setting `MemorySwapMax=0`, configured by the
+deployment. Postmaster does not lock all memory on macOS; it relies on
+encrypted swap. Linux deployments can use encrypted swap for protection at
+rest or zram to keep swap pages in RAM.
 
 **Core dumps:** Disabled at the process level (`PR_SET_DUMPABLE=0` on
 Linux, `RLIMIT_CORE=0` on macOS) and at the unit level
-(`LimitCORE=0`, `CoredumpFilter=0` in the Nix module). Host-wide
+when configured by the integration (`LimitCORE=0`, `CoredumpFilter=0`). Host-wide
 `systemd.coredump.extraConfig = "Storage=none"` is a belt for all
 units.
 
@@ -366,9 +387,10 @@ explicitly `drop`ped immediately after they are consumed, before
 `execvp` is called. In env mode, `resolved` is dropped after
 `env_pairs` extracts the `OsString` pairs the kernel needs. In
 files mode, `resolved` is dropped after the secret files are written.
-Only the `extra` vector (env array for env mode, file paths for files
-mode) survives to `execvp` — and in files mode, `extra` contains only
-paths, not plaintext.
+The `extra` vector survives until `execvp`: it contains plaintext in env mode
+and in files-mode `passthrough`, plus file pointers where applicable. The
+original process environment is separate and is not zeroized. The credential
+daemon retains its key ring while serving requests.
 
 ### Post-execvp heap lifetime — Residual (mitigated as far as possible)
 
@@ -391,38 +413,36 @@ secrets in a long-lived parent heap (strictly worse) and was rejected.
 
 The sibling monitor is forked after zeroization, so the key ring and
 the `Zeroizing` resolved values are already wiped in the copy it
-inherits. One plaintext-bearing structure does cross the fork: the
+inherits. The projected
 `extra` env array (plaintext values in env mode and in files-mode
 passthrough). The monitor scrubs its copy **first**, before the
 supervision loop starts: each `OsString` is consumed into its existing
 buffer (no copy) and wiped in place with `zeroize` — free() alone
 would leave the bytes in the monitor's mapped pages for its whole life,
 and the monitor never allocates again, so they would never even be
-reused. The parent's copy dies with `execvp` (image replacement). What
-the monitor keeps beyond the scrub is non-secret metadata only: the
-pinned secrets-dir fd and entry names (already visible in the
-directory listing).
+reused. The parent's copy dies with `execvp` (image replacement). Cleanup
+uses the pinned secrets-dir fd and entry names. The monitor also retains
+the original process environment, which can contain private keys and other
+secrets. Scrubbing `extra` does not erase that environment.
 
-### File-backed memory (page cache) — Mitigated by design
+### File-backed memory and page cache — Residual
 
-Postmaster does not `mmap` secret files. Secret files on Linux tmpfs
-and macOS ramdisk are kernel-resident RAM — they are never on
-persistent disk and never enter the page cache for a backing file.
-The `.env` and `.env.keys` source files are read via `dotenvy`'s
-`from_read_iter` which uses `read(2)`, not `mmap(2)` — their contents
-enter anonymous memory, not file-backed pages.
+Postmaster reads source files into userspace buffers rather than mapping
+them. That does not bypass the kernel page cache: ordinary file reads can
+populate it. Zeroizing a userspace buffer does not clear the backing file
+or its cached pages. See the
+[Linux page-cache overview](https://docs.kernel.org/admin-guide/mm/concepts.html#page-cache).
 
-The distinction matters: file-backed pages (e.g., a secret stored in a
-regular file on an ext4 volume) persist in the kernel page cache after
-the file is closed and the process exits. Postmaster avoids this by
-writing secrets only to tmpfs/ramdisk (RAM-backed, no page cache for a
-backing file) and by using `read(2)` for source files (anonymous
-memory, not mapped).
+Keep decrypted output on RAM-backed storage. A persistent `.env.keys` file
+retains its key material on disk and can leave copies in the kernel cache
+after Postmaster closes it. Use credentials, RAM-backed files, or keychain
+storage when persistent plaintext key files do not fit the deployment's
+requirements. Swap and crash-dump protections remain separate requirements.
 
 ### Container swap enforcement — Mitigated
 
 `MemorySwapMax=0` can be wired by the service manager (systemd) or the
-Nix module via `preventSwap`. This enforces the cgroup's swap limit —
+deployment integration. This enforces the cgroup's swap limit —
 the kernel will not swap the unit's pages even under host memory
 pressure. The residual is only if the host kernel itself is
 compromised, which falls under "root on the host is always game over."
@@ -462,23 +482,23 @@ privileged memory inspection within the same kernel.
 ### Plaintext file persistence window (files mode) — Mitigated
 
 Secret files written to the tmpfs/ramdisk are removed by the **sibling
-launch monitor** (design 2026-08-05), by `postmaster cleanup --config
-<exec.json>` wired to `ExecStopPost` in the systemd Nix module, and by
-ramdisk destruction when the `postmaster-ramdisk` launchd job stops. The
-`prune_stale` function also removes stale files from prior launches
-before writing new ones.
+launch monitor**, by `postmaster cleanup --config <exec.json>` wired to
+`ExecStopPost` in the service integration, and by ramdisk destruction
+when the `postmaster-ramdisk` launchd job stops. The `prune_stale`
+function also removes stale files from prior launches before writing
+new ones.
 
 A `TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT across the
 write window on both platforms, so a signal landing mid-write cannot
-strand partial plaintext (audit 2026-08-02 A11). At the end of the
-window — after zeroization, before `execvp` — the launcher forks. The
-parent restores its pre-guard mask and execs the service (MainPID
-unchanged); the fork-child is the **sibling monitor**: it keeps the
-four termination signals blocked for life and owns stop semantics.
+strand partial plaintext. At the end of the window — after zeroization,
+before `execvp` — the launcher forks. The parent restores its pre-guard
+mask and execs the service (MainPID unchanged); the fork-child is the
+**sibling monitor**: it keeps the four termination signals blocked for
+life and owns stop semantics.
 
-*Monitor model (2026-08-05):* the monitor consumes stop signals
-synchronously (no handlers anywhere — the sigaction flag-handler and
-second pre-exec gate were retired with this design), forwards them to
+*Monitor model:* the monitor consumes stop signals synchronously (no
+handlers anywhere — the sigaction flag-handler and second pre-exec gate
+were retired with this design), forwards them to
 the service, and escalates to SIGKILL after a **250 ms grace** — a
 single global constant, deliberately not configurable (per-service
 erosion of a security policy is unacceptable; the per-unit knob is the
@@ -502,13 +522,10 @@ service leaves the pre-existing backstops (`ExecStopPost`, teardown,
 monitor's cleanup delete files based on one service's key set, so two
 services sharing one directory lets one service's lifecycle delete the
 other's live files. The impact is availability, not confidentiality —
-no plaintext crosses services. The generated Nix modules comply by
-construction (Linux: each unit mounts a namespace-private tmpfs at the
-path; darwin: per-service subdirectory under the shared ramdisk), so
-this binds hand-written configs only: one `secrets_dir` per service.
-Runtime enforcement via a service-identity sentinel is a
-considered-and-deferred hardening for the broker era, when multi-tenant
-topologies become real by design.
+no plaintext crosses services through Postmaster's resolution. Bindings must
+give each service its own directory or private mount. Postmaster does not
+enforce a service identity in the sentinel; directory separation is an
+integration requirement.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 

@@ -1,7 +1,6 @@
 # Quick start
 
-This page shows how to get postmaster running with an encrypted `.env`
-file in under 10 minutes.
+This page launches a command with values from an encrypted `.env` file.
 
 ## Audience Quickstart
 
@@ -11,7 +10,7 @@ postmaster.
 
 ## Prerequisites
 
-- A Rust toolchain (`rustup`, stable)
+- Rust 1.99.1 or newer (`rustup`, stable)
 - [dotenvx CLI](https://github.com/dotenvx/dotenvx) (or any tool producing
   the same ECIES format) for encrypting secrets
 - postmaster built from source (or from the Nix flake)
@@ -21,6 +20,7 @@ postmaster.
 Create a `.env` file and encrypt it:
 
 ```console
+$ mkdir -p secrets
 $ dotenvx set DATABASE_URL 'postgres://user:pass@localhost:5432/myapp' \
     -f secrets/.env.production
 $ dotenvx set API_TOKEN 'secret-token-here' \

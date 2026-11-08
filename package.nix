@@ -3,8 +3,8 @@
 let
   cargoToml = lib.importTOML ./Cargo.toml;
   # Build a rustPlatform from the latest stable rust-overlay toolchain.
-  # nixos-25.05's rustPlatform ships rustc 1.86.0, too old for edition 2024
-  # + let-chains (requires >= 1.96.1). rust-overlay provides newer toolchains
+  # nixos-25.05's rustPlatform ships rustc 1.86.0, below Cargo.toml's
+  # Rust 1.99.1 minimum. rust-overlay provides newer toolchains
   # independent of the nixpkgs channel.
   rustPlatform = makeRustPlatform {
     rustc = rust-bin.stable.latest.rust;
@@ -21,15 +21,11 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ./Cargo.toml
       ./Cargo.lock
+      ./licenses
       ./src
     ];
   };
   cargoLock.lockFile = ./Cargo.lock;
-  # Cargo.lock currently pins ecies to a git rev (see [patch.crates-io] in
-  # Cargo.toml, audit 2026-08-02 A7), so importCargoLock needs the git dep's
-  # fetch hash. Drop this again when the upstream ecies PR (ecies/rs#159)
-  # ships on crates.io and the patch section is removed.
-  cargoLock.outputHashes."ecies-0.2.11" = "sha256-FOKSWQNJ9dZbQZdLI49o1OzeFoS3isQKchylQT/FaFk=";
 
   meta = {
     description = cargoToml.package.description;

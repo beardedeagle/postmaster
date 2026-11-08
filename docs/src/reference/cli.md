@@ -123,7 +123,7 @@ when it writes there) — a misconfigured `secrets_dir` can never wipe a
 directory postmaster doesn't manage. Empty or missing directories are
 fine.
 
-Wired to `ExecStopPost` in systemd by the Nix module. On macOS, the
+Integrations can wire this to `ExecStopPost` in systemd. On macOS, the
 ramdisk destruction handles cleanup automatically when the launchd job
 stops.
 

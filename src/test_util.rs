@@ -1,5 +1,7 @@
 //! Test-only shared utilities (compiled under `#[cfg(test)]` only).
 
+pub(crate) mod aad_fixture;
+
 /// Process-wide lock serializing every unit test that mutates — or
 /// wholesale snapshots — the process-global environment. The test
 /// harness runs tests in parallel threads of one process, so
@@ -10,6 +12,5 @@
 /// ALL env-touching tests in every module hold this ONE lock for the
 /// mutation's full scope. Module-local locks do not exclude each other:
 /// separate per-module statics raced, and the loser's panic poisoned a
-/// mutex, failing unrelated tests (~1 in 5 baseline runs, observed
-/// 2026-08-04).
+/// mutex, failing unrelated tests (~1 in 5 baseline runs).
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

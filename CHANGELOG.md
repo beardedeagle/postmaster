@@ -9,15 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Remediated all 33 findings of the 2026-08-02 security audit (5 HIGH,
-  11 MEDIUM, 17 LOW/INFO — all fixed or resolved except four documented
-  as accepted: A14, A18, A24-stale, A25).
+- Launched applications no longer inherit private-key variables from either
+  adapter namespace, regardless of key source or projection mode. Bundle
+  entries using reserved private-key names are rejected before launch.
 - Bundle entries are now name-bound: a ciphertext decrypts only under its
   own entry name (AES-GCM AAD); relocating it fails authentication.
   Suite bumped to `ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad`;
-  pre-AAD bundles are rejected. AAD support comes from the additive
-  `encrypt_with_aad`/`decrypt_with_aad` on the ecies fork (upstream PR
-  ecies/rs#159), consumed via a git+rev `[patch.crates-io]` pin.
+  pre-AAD bundles are rejected. Postmaster owns the compatible AAD envelope
+  decoder, using released `ecies` curve/HKDF helpers and RustCrypto AES-GCM.
 - Hardening: a sibling launch monitor now owns stop semantics on the
   exec path — the launcher forks after zeroization, the parent execs the
   service (MainPID unchanged), and the fork-child supervises it:
@@ -36,26 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fields (root and nested); Linux `id` resolved from verified absolute
   paths only; setup verification reuses the runtime key-variable
   predicate; bundle `encoding: "utf8"` is validated at resolution.
-- Remediated all 60 findings of the 2026-08-07 full-repo clean sweep
-  (code, tests, docs, repo files): redacted `Debug` on `KeyRing` and
-  `Resolution` (latent key-material/plaintext leak channels); env key
-  loading skips non-UTF-8 entries instead of panicking under
-  panic=abort; credential-source stat errors are terminal rather than
-  fall-through; `setup --force` is real (keychain re-seed, keys-file
-  re-prompt; force+unattended fails closed); daemon refuses a symlinked
-  socket parent and non-absolute config paths, and rejects empty
-  credentials at preflight; `--allow-nonroot` no longer overrides a
-  configured `peer_user` ACL; ramdisk verification enforces lexical
-  path containment; NUL in an env-bound bundle value is a hard error
-  under any strictness (one rule for every env-bound value).
+- Hardening: redacted `Debug` on `KeyRing` and `Resolution` (latent
+  key-material/plaintext leak channels); env key loading skips non-UTF-8
+  entries instead of panicking under panic=abort; credential-source
+  stat errors are terminal rather than fall-through; `setup --force` is
+  real (keychain re-seed, keys-file re-prompt; force+unattended fails
+  closed); daemon refuses a symlinked socket parent and non-absolute
+  config paths, and rejects empty credentials at preflight;
+  `--allow-nonroot` no longer overrides a configured `peer_user` ACL;
+  ramdisk verification enforces lexical path containment; NUL in an
+  env-bound bundle value is a hard error under any strictness (one rule
+  for every env-bound value).
 
 ### Changed
 
+- Build matrix preserves compiler flags and profile environment overrides,
+  uses `cargo zigbuild` for cross builds, and remaps source paths at `max`.
+  Help describes the configured release profile without performance estimates.
+- Bundle files follow the same first-file-wins precedence as dotenv inputs;
+  `overload` selects the last definition. Dotenv files precede bundle files.
 - Module restructure per file-size limits (500/750/1000 LOC bands):
   `keys/`, `cli/`, `adapter/` domains; conformance suite split under
   `tests/exec_conformance/`.
-- Dependencies: base64 0.23 plus the minor/patch set (libc 0.2.189,
-  serde family 1.0.229, serde_json 1.0.151, syn 3.0.3).
+- Dependencies: base64 0.23.1, ecies 0.2.13, serde 1.0.229,
+  serde_json 1.0.154, zeroize 1.9.1, rustix 1.1.6, and libc 0.2.191.
+  The ECIES git patch is replaced by registry releases; AES-GCM 0.11.1
+  provides bundle authentication with key-schedule zeroization enabled.
 - CI automation conforms to the repo doctrine: in-repo composites only
   (setup-rust, setup-nix — the latter verifies the pinned installer's
   sha256 before executing), actions pinned by sha, workflows consume
@@ -84,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the real binary under `--bind --allow-nonroot`, a real `fetch`
   roundtrip with a socket-mode assertion, and preflight refusal before
   any bind.
-- Regression coverage across the sweep's audit seams: the `read_capped`
+- Regression coverage across secret-handling edges: the `read_capped`
   cap boundary, symlink refusal end-to-end (env file, bundle file,
   secrets dir), execvp-failure cleanup leaving only the sentinel,
   passthrough-NUL cleanup, bundle precedence and NUL semantics,
@@ -96,27 +101,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documentation matches strict-mode exceptions, dotenv interpolation, bundle
+  metadata, monitor inheritance, and deployment hardening requirements.
+  Rustdoc placeholders render as code, and the overview states protections
+  without timing claims or unconditional cleanup guarantees.
 - Bundle configs resolve keys end-to-end again: `load_ring` admitted
   only `DOTENV_PRIVATE_KEY*` (Env naming) at every source leg, so
   `POSTMASTER_KEY` never entered the ring and every bundle exec failed
   ("key ring has no POSTMASTER_KEY entry"). The ring now admits exactly
   the namings the config's artifacts require — no more (least
-  privilege), no less. (e1f1c21; sweep O27)
+  privilege), no less.
 - Darwin serve mode starts: `acquire_listeners` fchmod()ed the bound
-  socket fd (audit 2026-08-02 finding #7), but Darwin `fchmod(2)`
-  rejects socket fds (EINVAL) — every `--bind` startup failed. Socket
-  permissions are now umask-borne at bind time on darwin (no TOCTOU
-  window; Linux keeps the fd-based fchmod). Caught by the new daemon
-  end-to-end conformance test.
+  socket fd, but Darwin `fchmod(2)` rejects socket fds (EINVAL) — every
+  `--bind` startup failed. Socket permissions are now umask-borne at
+  bind time on darwin (no TOCTOU window; Linux keeps the fd-based
+  fchmod). Caught by the new daemon end-to-end conformance test.
 - `docs/schema/exec.schema.json` realigned with the parser:
   `bundle_files` added, env/files modes accept `env_files` and/or
   `bundle_files`, credentials mode rejects `bundle_files`, and the `$id`
   points at postmaster — guarded by a fields-vs-schema tripwire test
   and a new bundle example.
-- Docs factual sweep (30+ corrections): a phantom exit code 2, `env`
-  mislabeled as the default mode, argv-exposing keychain seeding
-  examples, a store-path key-source example the parser rejects, "does
-  not supervise" contradicting the sibling monitor, stale unsafe-code
+- Documentation corrections: a phantom exit code 2, `env` mislabeled as
+  the default mode, argv-exposing keychain seeding examples, a
+  store-path key-source example the parser rejects, "does not
+  supervise" contradicting the sibling monitor, stale unsafe-code
   counts, undocumented `POSTMASTER_KEY` and 16 MiB read cap, and
   envelope/dotenvx naming in the examples.
 
@@ -170,7 +178,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Child reads secrets via `$KEY_FILE` pointers (Docker secrets /
   systemd credentials / 12-factor `_FILE` convention).
 - `verify_key_freshness` uses `KeyNaming::Env.metadata_prefix()`.
-- Two security audits conducted (provider handoff + destination
-  handoff), all findings fixed.
-- Memory hardening audit conducted, all findings fixed.
-- 12 verified-safe security properties documented in the threat model.

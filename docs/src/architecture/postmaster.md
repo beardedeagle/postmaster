@@ -1,15 +1,14 @@
 # postmaster: the secret materialization engine
 
-Postmaster is a standalone Rust binary that does exactly one thing:
-decrypt encrypted secret inputs at process launch time and inject
-them into a child process, then replace its own process image with
-the target binary via `execvp`.
+Postmaster is a standalone Rust binary that decrypts secret inputs
+at process launch, injects them into the child process, and replaces
+its own process image with the target binary via `execvp`.
 
 It is not a library. It is not a plugin host. It is not a daemon
 framework. It is a single binary with a fixed, local, offline
 contract.
 
-## Audience Quickstart (Plain Language)
+## Audience Quickstart
 
 **What this is:** the architecture of postmaster — what it does,
 what it owns, and where it fits in the secret delivery pipeline.
@@ -69,8 +68,7 @@ plaintext in its environment or files":
 
 ## What postmaster does NOT own
 
-Postmaster does NOT own anything that happens before the encrypted
-artifact exists or after the child process starts:
+Deployment tooling owns authoring, custody, and service-manager policy:
 
 - **Secret authoring.** Encrypting secrets is done by workstation
   tooling (dotenvx CLI, or any tool producing the same ECIES
@@ -91,7 +89,7 @@ artifact exists or after the child process starts:
 - **Service supervision policy.** Postmaster owns no lifecycle policy
   — no restarts, no health checks. The service manager (systemd on
   Linux, launchd on macOS) starts, monitors, and stops the service.
-  What postmaster does run is a secretless sibling monitor alongside
+  Postmaster runs a sibling monitor alongside
   the exec'd service: it forwards stop signals, escalates to SIGKILL
   after a bounded grace, and removes plaintext secret files on every
   death path (see "The secret pipeline" below) — supervision of
@@ -197,10 +195,11 @@ Postmaster decrypts encrypted inputs and injects them into the child
 context. This is the only stage postmaster owns.
 
 - Decrypts `.env` files via the `ecies` crate (native Rust, offline)
-- Decrypts `postmaster_bundle` files via the same crypto path
+- Decrypts `postmaster_bundle` entries with name-bound AES-GCM AAD
 - Injects via `env`, `files`, or `credentials` mode
-- Zeroizes decrypted values and private keys before `execvp`
-- Fails closed if any value cannot decrypt
+- Zeroizes its key ring and resolved buffers before `execvp`
+- Rejects decryption failures by default; `strict: false` permits skipped
+  dotenv values, while bundle authentication remains mandatory
 
 ### Stage 5: Launch (execvp)
 
@@ -208,13 +207,18 @@ Postmaster forks a **sibling monitor** and then calls `execvp` in the
 parent. The parent's process image is replaced. The child binary IS
 `MainPID`. Postmaster is gone from the service's process.
 
-The fork-child is the monitor: secretless by construction (forked after
-zeroization), it keeps the termination signals blocked for life and
+The fork-child becomes the monitor. It scrubs its projected environment
+pairs, keeps the termination signals blocked for life, and
 supervises its parent — forwards stop signals with a 250 ms grace
 before SIGKILL escalation, and removes the plaintext secret files on
 every service-death path (natural exit, `kill -9`, crash), then exits.
 One tiny extra process per service for the service's lifetime; liveness
 is pidfd+`poll` on Linux and kqueue `NOTE_EXIT` on macOS.
+
+The monitor retains the original process environment, which can contain
+private keys supplied through environment variables. Use a non-environment
+key source to avoid this exposure. The credential daemon is a separate,
+long-lived process that retains its key ring for requests.
 
 The service manager (systemd/launchd) supervises the child from this
 point. `ExecStopPost` runs `postmaster cleanup` to remove plaintext
@@ -223,18 +227,17 @@ monitor. The ramdisk is destroyed when the launchd job stops (macOS).
 
 ## Implementation
 
-`postmaster/` contains a dependency-lean Rust binary (edition
-2024; pure-Rust crypto, no openssl; no async runtime; syscalls via
-rustix's `linux_raw` backend rather than libc FFI on Linux; on macOS,
-`libc` is used for `getpeereid` and `PT_DENY_ATTACH` hardening — each
-`unsafe` site carries a SAFETY comment and is catalogued in the
-[unsafe-code registry](../unsafe-code/index.md)) that materializes
-decrypted secret values as systemd
-`LoadCredential=` AF_UNIX sources or directly injects them via
-`execvp`. systemd's documented contract for socket credential sources
+Postmaster uses Rust edition 2024, RustCrypto, and no async runtime or OpenSSL.
+Linux uses rustix's `linux_raw` backend, with a libc call for `fork`.
+macOS uses libc for peer checks, signal handling, kqueue, and anti-debug
+hardening. Each unsafe site has a SAFETY comment and an entry in the
+[unsafe-code registry](../unsafe-code/index.md).
+
+The binary serves decrypted values as systemd `LoadCredential=` AF_UNIX
+sources or projects them before `execvp`. systemd's contract for socket sources
 is minimal — the manager connects once at process invocation and reads
 until EOF, with no request metadata in-band — so the request is encoded
-in the *path*: one socket per (service, key). The module generates a
+in the *path*: one socket per (service, key). A binding can generate a
 single `postmaster-credd.socket` unit carrying N `ListenStream=`
 entries; postmaster maps each inherited fd back to its path via
 `getsockname(2)`.
@@ -256,9 +259,14 @@ and per-mode injection rules are the cross-binding contract at
 
 ## Dependency policy
 
-Postmaster has 10 direct dependencies (8 portable, 2 platform-gated):
+Source builds require Rust 1.99.1 or newer. The flake exports packages and
+an overlay, not NixOS or nix-darwin service modules. Deployment integrations
+own the service units, RAM-backed storage, and hardening described above.
+
+Postmaster has 11 direct dependencies (9 portable, 2 platform-gated):
 
 - `ecies` — crypto (secp256k1 + AES-256-GCM)
+- `aes-gcm` — bundle-envelope authentication with entry-name AAD
 - `dotenvy` — `.env` file parser
 - `serde` + `serde_json` — JSON config deserialization
 - `base64` — ciphertext decoding
@@ -272,8 +280,9 @@ Postmaster has 10 direct dependencies (8 portable, 2 platform-gated):
 - `security-framework` — macOS only (Security.framework keychain reads)
 - `zeroize` — secret memory wiping
 
-(`ecies` is currently a git+rev pin of the author's fork via
-`[patch.crates-io]`, pending upstream PR ecies/rs#159.)
+Bundle envelopes use Postmaster's AAD decoder with the released `ecies`
+curve/HKDF helpers and RustCrypto AES-GCM. This preserves existing ciphertext
+compatibility without a git patch or an upstream AAD API dependency.
 
 No CLI parsing library (clap, etc.). No async runtime. No OpenSSL.
 No network client. No plugin system. The dependency set is

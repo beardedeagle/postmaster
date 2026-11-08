@@ -1,9 +1,9 @@
 # Signal Deferral (TerminationGuard)
 
 > **At a glance:** while postmaster decrypts and injects, termination
-> signals are blocked so a well-timed `Ctrl-C` or `systemctl stop`
-> cannot strand half-written plaintext. The original mask is captured
-> and restored before launch — the service never inherits it.
+> signals are blocked to protect the plaintext-write window. The launcher
+> restores the captured mask before exec. Masking failures are logged and
+> leave the write window unguarded.
 
 ## Location
 
@@ -14,13 +14,13 @@ Blocks: block() (sigmask), restore_mask() (sigmask), Drop (restore)
 
 ## Purpose
 
-Audit 2026-08-02 A11: on macOS, plaintext secret files persist on the
-ramdisk until explicitly removed, so a SIGTERM landing *during* the
-plaintext-write window would leave material on disk with no cleanup.
-`TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT
-(`monitor::STOP_SIGNALS`) from just after config validation until the
-fork/exec at the end of the window — a deterministic write window: no
-termination signal can kill the launcher mid-write.
+On macOS, plaintext secret files persist on the ramdisk until
+explicitly removed, so a SIGTERM landing *during* the plaintext-write
+window would leave material on disk with no cleanup. `TerminationGuard`
+blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT (`monitor::STOP_SIGNALS`) from
+just after config validation until the fork/exec at the end of the
+window — a deterministic write window: no termination signal can kill
+the launcher mid-write.
 
 At the end of the window the launcher forks the sibling monitor (see
 [Sibling Launch Monitor](./monitor.md)), which **inherits the blocked
@@ -31,9 +31,9 @@ running no destructors). The parent calls `restore_mask()` before
 
 The guard previously also carried a sigaction flag-recording handler
 (`disarm`/`recorded`) and a second pre-exec gate to close the
-check/exec race. Both were **retired with the sibling-monitor design
-(2026-08-05)**: the monitor owns stop semantics on every death path, so
-no async handler is needed anywhere and the handler's forever-purity
+check/exec race. Both were **retired with the sibling-monitor
+design**: the monitor owns stop semantics on every death path, so no
+async handler is needed anywhere and the handler's forever-purity
 constraint is gone with it. What remains — `block()` and
 `restore_mask()` — is what this page covers.
 
@@ -68,8 +68,8 @@ holds only standard signals no libc reserves.
 
 | Risk | Likelihood | Impact |
 |------|------------|--------|
-| Kernel/libc signal quirks on future OS versions | Very low | Missed deferral (fail-open to pre-A11 behavior) |
-| Operator sends SIGKILL mid-write | n/a | Unblockable by design; ramdisk contents persist until next boot (macOS) — accepted residual; the monitor covers everything *after* the fork |
+| Kernel/libc signal quirks on future OS versions | Very low | Missed deferral (fail-open to an unguarded write window) |
+| Operator sends SIGKILL mid-write | n/a | The monitor has not been forked yet. Files can remain until cleanup, RAM-disk destruction, or reboot |
 
 For the design-level stop semantics the guard feeds into (monitor
 forwarding, grace, escalation, cleanup on every death path), see the

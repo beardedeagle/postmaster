@@ -91,9 +91,9 @@ ci: ci-rust flake-check
 #
 # Optimization Levels:
 #   debug     - Fast compile, no optimizations, debug symbols (for development)
-#   release   - Cargo defaults (opt-level=3, no LTO)
-#   optimized - Thin LTO + single codegen unit (good balance of size/speed)
-#   max       - Fat LTO + strip + CPU targeting (smallest, fastest binary)
+#   release   - Cargo.toml release profile (opt-level=3, fat LTO, stripped)
+#   optimized - Release profile with thin LTO and one codegen unit
+#   max       - Release profile with CPU targeting and source path remapping
 #
 # Targets:
 #   native    - Current platform
@@ -110,7 +110,7 @@ ci: ci-rust flake-check
 #   just build-all optimized               # Build all platforms at optimization level
 # =============================================================================
 
-# Build with specific optimization level, optional target
+# Build with a specific optimization level and optional target; preserve env overrides.
 build-matrix level target="native":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -143,55 +143,75 @@ build-matrix level target="native":
             ;;
     esac
 
-    # Set optimization flags based on level
+    CARGO_ARGS=(--locked)
+    # Set optimization defaults without replacing caller overrides.
     case "$LEVEL" in
         debug)
-            CARGO_ARGS=""
-            export CARGO_PROFILE_DEV_OPT_LEVEL=0
+            export CARGO_PROFILE_DEV_OPT_LEVEL="${CARGO_PROFILE_DEV_OPT_LEVEL:-0}"
             echo "Building: debug (fast compile, no optimizations)"
             ;;
         release)
-            CARGO_ARGS="--release"
-            echo "Building: release (Cargo defaults)"
+            CARGO_ARGS+=(--release)
+            echo "Building: release (Cargo.toml release profile)"
             ;;
         optimized)
-            CARGO_ARGS="--release"
-            export CARGO_PROFILE_RELEASE_LTO=thin
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-            echo "Building: optimized (LTO=thin, codegen-units=1)"
+            CARGO_ARGS+=(--release)
+            export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-thin}"
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
+            echo "Building: optimized (thin LTO by default)"
             ;;
         max)
-            CARGO_ARGS="--release"
-            export CARGO_PROFILE_RELEASE_LTO=fat
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
-            export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
-            export CARGO_PROFILE_RELEASE_STRIP=symbols
-            # CPU targeting: `native` describes the build HOST, so only apply
-            # it when the target IS the host. Explicit ARM targets get no
-            # target-cpu override (toolchain baseline); x86 targets use
-            # x86-64-v3.
-            if [[ "$TARGET" == "native" ]]; then
-                case "$(uname -m)" in
-                    arm64|aarch64) export RUSTFLAGS="-C target-cpu=native" ;;
-                    *)             export RUSTFLAGS="-C target-cpu=x86-64-v3" ;;
-                esac
-            elif [[ "$TARGET" == "linux-arm" || "$TARGET" == "macos-arm" ]]; then
-                : # cross-building: no target-cpu override, use toolchain baseline
+            CARGO_ARGS+=(--release)
+            export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-fat}"
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
+            export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
+            export CARGO_PROFILE_RELEASE_STRIP="${CARGO_PROFILE_RELEASE_STRIP:-symbols}"
+            # Cargo prefers encoded flags; use that format for paths containing spaces.
+            if [[ -n "${CARGO_ENCODED_RUSTFLAGS+x}" ]]; then
+                configured_flags="$CARGO_ENCODED_RUSTFLAGS"
+                build_flags=()
             else
-                export RUSTFLAGS="-C target-cpu=x86-64-v3"
+                configured_flags="${RUSTFLAGS:-}"
+                IFS=$' \t\n' read -r -d '' -a build_flags < <(printf '%s\0' "$configured_flags")
             fi
-            echo "Building: max (LTO=fat, strip, target-cpu optimized)"
+            build_flags+=(
+                "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/registry/src=/cargo/registry"
+                "--remap-path-prefix=$PWD=/workspace"
+            )
+            if [[ "$configured_flags" != *target-cpu* ]]; then
+                case "$TARGET" in
+                    native) build_flags+=(-C target-cpu=native) ;;
+                    linux|linux-musl|macos) build_flags+=(-C target-cpu=x86-64-v3) ;;
+                esac
+            fi
+            build_flags_encoded="$(IFS=$'\x1f'; printf '%s' "${build_flags[*]}")"
+            if [[ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]]; then
+                build_flags_encoded="$CARGO_ENCODED_RUSTFLAGS"$'\x1f'"$build_flags_encoded"
+            fi
+            export CARGO_ENCODED_RUSTFLAGS="$build_flags_encoded"
+            echo "Building: max (CPU targeting and source path remapping)"
             ;;
     esac
 
-    # Build command
+    HOST_TRIPLE="$(rustc +{{stable_toolchain}} -vV | awk '/^host:/ { print $2 }')"
+    CARGO_SUBCOMMAND=build
     if [[ -n "$RUST_TARGET" ]]; then
         echo "Target: $RUST_TARGET"
-        cargo +{{stable_toolchain}} build --locked $CARGO_ARGS --target "$RUST_TARGET"
+        CARGO_ARGS+=(--target "$RUST_TARGET")
+        if [[ "$RUST_TARGET" != "$HOST_TRIPLE" ]]; then
+            if ! command -v cargo-zigbuild >/dev/null 2>&1 || ! command -v zig >/dev/null 2>&1; then
+                echo "Error: cross-compilation requires cargo-zigbuild and Zig on PATH." >&2
+                exit 1
+            fi
+            CARGO_SUBCOMMAND=zigbuild
+        fi
+    else
+        echo "Target: native ($HOST_TRIPLE)"
+    fi
+    cargo +{{stable_toolchain}} "$CARGO_SUBCOMMAND" "${CARGO_ARGS[@]}"
+    if [[ -n "$RUST_TARGET" ]]; then
         echo "Output: target/$RUST_TARGET/$([ "$LEVEL" = "debug" ] && echo "debug" || echo "release")/postmaster"
     else
-        echo "Target: native ($(rustc +{{stable_toolchain}} -vV | grep host | cut -d' ' -f2))"
-        cargo +{{stable_toolchain}} build --locked $CARGO_ARGS
         echo "Output: target/$([ "$LEVEL" = "debug" ] && echo "debug" || echo "release")/postmaster"
     fi
 
@@ -202,6 +222,7 @@ build-all level="release":
     echo "Building all platforms at '{{level}}' optimization level..."
     echo "Note: cross targets need their toolchains installed first"
     echo "      (e.g. 'rustup target add <triple>'); a missing toolchain fails loudly."
+    echo "Cross-compilation also requires cargo-zigbuild, Zig, and a macOS SDK for Darwin targets."
     for target in native linux linux-musl linux-arm macos macos-arm; do
         echo ""
         echo "=== Building target: $target ==="
@@ -223,14 +244,11 @@ build-help:
     @echo "  debug      Fast compile, no optimizations, includes debug symbols"
     @echo "             Best for: development, debugging, quick iteration"
     @echo ""
-    @echo "  release    Cargo defaults (opt-level=3, no LTO)"
-    @echo "             Best for: testing release behavior, CI builds"
+    @echo "  release    Cargo.toml release profile (opt-level=3, fat LTO, stripped)"
     @echo ""
     @echo "  optimized  LTO (thin) + single codegen unit"
-    @echo "             Best for: staging deployments, performance testing"
     @echo ""
-    @echo "  max        LTO (fat) + strip + CPU targeting (x86-64-v3 or native ARM)"
-    @echo "             Best for: production deployments, final releases"
+    @echo "  max        Release with CPU targeting and source path remapping"
     @echo ""
     @echo "TARGETS:"
     @echo "  native      Current platform (default)"
@@ -247,10 +265,9 @@ build-help:
     @echo "  just build-matrix max macos-arm                  # Max for Apple Silicon"
     @echo "  just build-matrix max linux-arm                  # Max for ARM Linux"
     @echo ""
-    @echo "TRADE-OFFS (times/sizes vary with codebase growth):"
-    @echo "  Level      Compile Time    Binary Size    Runtime Perf"
-    @echo "  ---------  -------------   -----------    ------------"
-    @echo "  debug      fastest         largest        1x (baseline)"
-    @echo "  release    ~1.3x debug     ~3-4x smaller  3-5x faster"
-    @echo "  optimized  ~2x debug       ~4-5x smaller  5-7x faster"
-    @echo "  max        ~3x debug       smallest       7-10x faster"
+    @echo "OVERRIDES AND PREREQUISITES:"
+    @echo "  Existing RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS and profile overrides are preserved."
+    @echo "  max defaults: native CPU for native, x86-64-v3 for x86 targets, baseline for ARM."
+    @echo "  Matching host/target triples use cargo build; cross builds use cargo zigbuild."
+    @echo "  Install the Rust target, cargo-zigbuild, and Zig before cross-compiling."
+    @echo "  Darwin cross builds also require a macOS SDK."

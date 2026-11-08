@@ -28,13 +28,10 @@ mod verify;
 /// Re-exported so `crate::keys::verify_external_binary` keeps resolving.
 pub use verify::verify_external_binary;
 
-/// The exact predicate `KeyRing::from_env` and `KeyRing::from_pairs`
-/// admit, re-exported so setup verification accepts precisely the
-/// variables resolution would load (audit 2026-08-02 A16; from_pairs
-/// shares the predicate since sweep 2026-08-07 K6).
-pub(crate) use env::is_key_var_name;
+/// Key-variable predicates shared by loading, setup and launch validation.
+pub(crate) use env::{is_key_var_name, is_private_key_var_name};
 
-/// Full variable name (adapter-specific, e.g. DOTENV_PRIVATE_KEY[_<ENV>])
+/// Full variable name (adapter-specific, e.g. `DOTENV_PRIVATE_KEY[_<ENV>]`)
 /// → candidate secret keys. Multiple candidates per name come from
 /// comma-separated rotation convention; decryption tries each in order.
 pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
@@ -64,7 +61,7 @@ impl KeyRing {
     /// Security invariants enforced on the opened file (all checked on the
     /// file descriptor, never the path, to eliminate TOCTOU windows):
     ///   - `O_NOFOLLOW`: reject a symlink at `path` (defense-in-depth; also
-    ///     closes the credential-source symlink leg of audit finding #2).
+    ///     closes the credential-source symlink attack leg).
     ///   - `mode & 0o077 == 0`: no group or world read/write/exec. A keys
     ///     file accidentally `chmod 0644` would expose private keys to every
     ///     process on the host; fail closed instead.
@@ -78,9 +75,9 @@ impl KeyRing {
 
     /// Core parser shared by every key source: keep keys exactly matching
     /// the required adapters' key prefixes (`PREFIX` or `PREFIX_<suffix>` —
-    /// the A16 predicate; a bare starts_with admitted unreachable
+    /// the key-variable predicate; a bare starts_with admitted unreachable
     /// prefix-collision material like `DOTENV_PRIVATE_KEYFOO` from keys
-    /// files, sweep 2026-08-07 K6), split comma-separated rotation
+    /// files), split comma-separated rotation
     /// candidates, hex-decode to 32-byte zeroized keys. Empty result is an
     /// error (fail closed). Takes `Zeroizing<String>` values so callers
     /// never hand key material as a plain heap String that drops without
@@ -273,8 +270,8 @@ pub struct Resolution {
     pub resolved: ResolvedVars,
     /// `(name, error)` for each encrypted value that could not be
     /// decrypted and was skipped under `strict: false`. Recorded so
-    /// `--verify-keys` can fail closed on a partial key rotation
-    /// (audit 2026-08-02 A3). Always empty under `strict: true`, where
+    /// `--verify-keys` can fail closed on a partial key rotation.
+    /// Always empty under `strict: true`, where
     /// the first failure aborts the whole pass instead.
     pub failed: Vec<(String, String)>,
 }

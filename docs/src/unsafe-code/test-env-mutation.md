@@ -39,9 +39,9 @@ The discipline was previously **per-module**: `keys/source.rs` and
 `keys/env.rs`'s `from_env_loads_and_fails_closed` mutated env holding no
 lock at all. Module-local locks do not exclude each other, so two such
 tests still raced — the loser's panic poisoned a mutex and failed
-unrelated tests (~1 in 5 baseline runs, observed 2026-08-04). Since
-2026-08-06 every env-mutating test in every module acquires the single
-`crate::test_util::ENV_LOCK`; any new env-touching test must do the same.
+unrelated tests (~1 in 5 baseline runs). Every env-mutating test in
+every module now acquires the single `crate::test_util::ENV_LOCK`; any
+new env-touching test must do the same.
 
 ## Tests
 
