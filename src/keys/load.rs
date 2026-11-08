@@ -56,7 +56,9 @@ pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String
     let iter = dotenvy::from_read_iter(file);
     let mut pairs = Vec::new();
     for item in iter {
-        let (k, v) = item.map_err(|e| format!("keys file {}: {e}", path.display()))?;
+        // Parser diagnostics include input that may contain a private key.
+        let (k, v) =
+            item.map_err(|_| format!("keys file {}: cannot read or parse dotenv", path.display()))?;
         pairs.push((k, Zeroizing::new(v)));
     }
     KeyRing::from_pairs(pairs, namings).map_err(|e| format!("keys file {}: {e}", path.display()))
@@ -76,6 +78,22 @@ mod tests {
             Err(e) if e.contains("not valid hex") => {}
             other => panic!("expected bad hex error, got {other:?}"),
         });
+    }
+
+    #[test]
+    fn load_redacts_malformed_private_key_assignments() {
+        let key = "11".repeat(32);
+        for value in [format!("\"{key}"), format!("\"{key}\" trailing")] {
+            with_temp_keys(&format!("DOTENV_PRIVATE_KEY={value}\n"), |p| {
+                let error = KeyRing::load(p, &[KeyNaming::Env]).unwrap_err();
+                assert!(
+                    !error.contains(&key),
+                    "parser error must not expose the key"
+                );
+                assert!(error.contains(p.to_str().unwrap()));
+                assert!(error.contains("cannot read or parse dotenv"));
+            });
+        }
     }
 
     #[test]

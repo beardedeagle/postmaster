@@ -110,6 +110,10 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn verify_external_binary_rejects_non_root_owned() {
+        // Root creates a root-owned fixture, which the verifier must accept.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
         // On Linux, a non-root-owned binary in /tmp must be rejected.
         let dir = std::env::temp_dir();
         let path = dir.join(format!(

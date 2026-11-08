@@ -5,6 +5,8 @@
 
 use super::*;
 use std::fs;
+use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -104,24 +106,40 @@ impl Drop for ReapOnDrop {
 /// fork-child that sets TERM to SIG_IGN and pause()s forever. This
 /// exercises the grace → SIGKILL escalation deterministically, unlike
 /// a shell `trap` — macOS /bin/sh resets TERM for exec'd commands,
-/// so the disposition doesn't survive into `sleep` there.
+/// so the disposition doesn't survive into `sleep` there. The child
+/// acknowledges readiness after installing SIG_IGN, before its pid returns.
 fn fork_term_ignoring_service() -> Pid {
+    let (mut ready_read, ready_write) = std::io::pipe().unwrap();
     // SAFETY: fork(2) in the test process; the child executes only
-    // async-signal-safe calls (signal(2), pause(2)) and never returns
-    // into the test harness — no allocation, no stdio, no locks.
+    // async-signal-safe calls (close, signal, write, pause, _exit) and
+    // never returns into the test harness — no allocation, stdio, or locks.
     match unsafe { libc::fork() } {
         -1 => panic!("fork: {}", std::io::Error::last_os_error()),
         0 => unsafe {
+            libc::close(ready_read.as_raw_fd());
             // SAFETY: plain single-threaded signal op on this
             // process; SIG_IGN is the documented ignore-disposition
             // constant. pause(2) suspends until a caught signal
             // arrives; TERM is ignored, so only SIGKILL ends the loop.
-            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            if libc::signal(libc::SIGTERM, libc::SIG_IGN) == libc::SIG_ERR
+                || libc::write(ready_write.as_raw_fd(), b"R".as_ptr().cast(), 1) != 1
+            {
+                libc::_exit(1);
+            }
+            libc::close(ready_write.as_raw_fd());
             loop {
                 libc::pause();
             }
         },
-        child => Pid::from_raw(child).unwrap(),
+        child => {
+            let pid = Pid::from_raw(child).unwrap();
+            drop(ready_write);
+            if let Err(error) = ready_read.read_exact(&mut [0]) {
+                drop(ReapOnDrop(pid));
+                panic!("service readiness: {error}");
+            }
+            pid
+        }
     }
 }
 

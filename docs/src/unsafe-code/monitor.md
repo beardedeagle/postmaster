@@ -142,6 +142,9 @@ mutation): natural `kill -9` death → cleanup + exit; TERM to the monitor
 → forwarded (service dies by TERM, proving no escalation) → cleanup +
 exit; a TERM-ignoring forked service (`SIG_IGN` + `pause`) → SIGKILL only
 after the grace → cleanup + exit; env-mode (no fd, empty names) → exit on
-service death. The exec integration suites
+service death. The TERM-ignoring child acknowledges readiness through a
+pipe after installing `SIG_IGN`; it uses only async-signal-safe calls after
+fork. The parent waits for that acknowledgement before starting the monitor.
+The exec integration suites
 (`tests/exec_check.rs`, `tests/exec_conformance/`) exercise the full
 fork+exec path and assert the post-exit cleanup contract.
