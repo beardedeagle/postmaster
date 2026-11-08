@@ -29,7 +29,7 @@ runs:
           echo "nix already available: $(command -v nix) -> $(nix --version)"
         else
           url="https://releases.nixos.org/nix/nix-${NIX_VERSION}/install"
-          tmp="$(mktemp -t nix-install)"
+          tmp="$(mktemp "${TMPDIR:-/tmp}/nix-install.XXXXXX")"
           # Verify the pinned digest BEFORE executing: a substituted or
           # corrupted installer fails closed here, never runs.
           curl -sSfL "$url" -o "$tmp"

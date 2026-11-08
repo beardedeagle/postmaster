@@ -178,8 +178,8 @@ always abort, regardless of `strict`.
 
 ### Symlink attacks on key files and secret paths
 
-Postmaster rejects symlinks at every point where secret material is
-read or written:
+Postmaster rejects final-component symlinks and checks pinned descriptors
+where secret material is read or written:
 
 - **Key files** are opened with `O_NOFOLLOW` — a symlinked `.env.keys`
   file is rejected at the kernel level. The file descriptor is then
@@ -194,9 +194,11 @@ read or written:
   the fd level.
 - **Secret files** are written with `O_NOFOLLOW | O_CREAT | O_TRUNC`
   — a symlink planted at the target path is rejected, not followed.
-- **Secrets directory** is checked with `symlink_metadata` even on
-  Linux where `verify_ramdisk` is not used, rejecting a symlinked
-  `secrets_dir` that could redirect plaintext to persistent disk.
+- **Secrets directory** is opened with `O_DIRECTORY | O_NOFOLLOW`,
+  rejecting a final-component symlink. With `verify_ramdisk`, the opened
+  inode must also belong to the verified RAM device and service user.
+  This checks intermediate-symlink targets as well. The launcher retains
+  that handle for pruning, writes, cleanup, and monitoring.
 - **Socket permissions** use `fchmod` on the socket fd on Linux. macOS rejects
   that operation, so Postmaster sets the umask before binding there and
   restores it afterward.
@@ -534,6 +536,11 @@ integration requirement.
 Fails closed if the device isn't found or isn't RAM-backed, preventing
 plaintext from being written to a file-backed HFS image masquerading
 as the ramdisk.
+
+The opened secrets directory's device ID must match that RAM device,
+not just a lexical path prefix. Verification, pruning, writes, and cleanup
+use the same pinned directory handle, so replacing a path after verification
+cannot redirect those operations onto persistent storage.
 
 ### fd closure before execvp — Mitigated
 

@@ -145,7 +145,7 @@ Every field except `mode` has a default, so a minimal config is just
 | `passthrough` | array of strings | `[]` | `files` mode only: these keys are *also* exported as real env vars, in addition to their `_FILE` pointer. |
 | `credential_keys` | array of strings | `[]` | `credentials` mode: keys to expose as `$CREDENTIALS_DIRECTORY/<KEY>`. Required (non-empty) for that mode. |
 | `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects the darwin/launchd fetch path; empty means systemd already materialized the credentials via `LoadCredential=`. |
-| `verify_ramdisk` | path or `null` | `null` | darwin only: refuse to write plaintext unless this mount point is the HFS ramdisk and `secrets_dir` is a directory owned by the current euid. |
+| `verify_ramdisk` | path or `null` | `null` | darwin only: require a RAM-backed HFS mount and a service-owned `secrets_dir` on that device. The verified directory handle is retained for plaintext I/O. |
 
 Note the field name is `verify_ramdisk`, not `ramdisk` or `ramdisk_mount` —
 match it exactly.
@@ -391,11 +391,12 @@ this mode — it dispatches on whether `sockets` is empty:
   `/sbin/mount` and requires the configured mount point to appear as an
   `hfs` filesystem, then runs `hdiutil info` and requires the device's
   `image-path` to start with `ram://` (confirming RAM backing, not a
-  file-backed image). It then `stat`s `secrets_dir` and requires it to
-  exist, be a directory, and be owned by the launcher's own effective
-  uid. Either check failing refuses to write plaintext to what might be
-  persistent disk, with an error pointing at `postmaster-ramdisk`
-  health.
+  file-backed image). It opens `secrets_dir` without following a
+  final-component symlink and checks the pinned inode's ownership and
+  backing device. The directory must be lexically beneath the mount point
+  and use the verified RAM device, so an intermediate symlink cannot
+  redirect plaintext onto persistent storage. Pruning, writes, cleanup,
+  and the monitor retain that same directory handle.
 
 ## Extensibility boundary
 

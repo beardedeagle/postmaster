@@ -43,12 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed); daemon refuses a symlinked socket parent and non-absolute
   config paths, and rejects empty credentials at preflight;
   `--allow-nonroot` no longer overrides a configured `peer_user` ACL;
-  ramdisk verification enforces lexical path containment; NUL in an
+  ramdisk verification checks lexical containment and the pinned directory's
+  backing device, retaining that handle for pruning and plaintext I/O; NUL in an
   env-bound bundle value is a hard error under any strictness (one rule
   for every env-bound value).
 
 ### Changed
 
+- Nix installer temporary-file creation works with GNU and macOS `mktemp`.
+- RAM-disk verification recognizes mounted and partitioned device rows in
+  `hdiutil info` while keeping each device tied to its own image.
 - Build matrix preserves compiler flags and profile environment overrides,
   uses `cargo zigbuild` for cross builds, and remaps source paths at `max`.
   Help describes the configured release profile without performance estimates.

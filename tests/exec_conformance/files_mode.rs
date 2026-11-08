@@ -281,10 +281,7 @@ fn files_mode_refuses_symlinked_secrets_dir() {
     let out = run_exec(&cfg, "true", &[]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("secrets_dir is a symlink"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("symlink"), "stderr: {stderr}");
     assert!(
         std::fs::read_dir(&real).unwrap().next().is_none(),
         "the symlink target must stay untouched"

@@ -43,7 +43,7 @@ pub fn env_pairs(resolved: &Resolved) -> Result<Vec<(OsString, OsString)>, Strin
 }
 
 /// Open and pin a secrets directory by fd: `O_RDONLY|O_DIRECTORY|
-/// O_NOFOLLOW|O_CLOEXEC` rejects a symlink or non-directory at open and
+/// O_NOFOLLOW|O_CLOEXEC` rejects a final-component symlink or non-directory and
 /// pins the inode, so subsequent `*at` operations are relative to it
 /// rather than to a re-resolved path.
 pub(crate) fn open_secrets_dir(dir: &Path) -> rustix::io::Result<OwnedFd> {
@@ -171,7 +171,6 @@ pub fn cleanup_written(dir_fd: impl AsFd, names: &[String]) {
 /// plaintext is transient — is best served by cleaning what we can rather
 /// than aborting the launch over an unrelated stale file.
 pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
-    let keep: std::collections::HashSet<&str> = keep_keys.iter().map(String::as_str).collect();
     // Pin the directory by fd: O_DIRECTORY|O_NOFOLLOW rejects a symlinked
     // or non-directory secrets dir at open, and the sentinel check, the
     // per-entry stat, and every unlink below are all relative to the
@@ -188,7 +187,18 @@ pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
         }
         Err(e) => return Err(format!("{}: prune: {e}", dir.display())),
     };
-    let names = read_dir_names(&dir_fd).map_err(|e| format!("{}: prune: {e}", dir.display()))?;
+    prune_stale_at(&dir_fd, dir, keep_keys)
+}
+
+/// Prune through the same pinned directory used for verification and writes.
+pub(crate) fn prune_stale_at(
+    dir_fd: impl AsFd,
+    dir: &Path,
+    keep_keys: &[String],
+) -> Result<(), String> {
+    let dir_fd = dir_fd.as_fd();
+    let keep: std::collections::HashSet<&str> = keep_keys.iter().map(String::as_str).collect();
+    let names = read_dir_names(dir_fd).map_err(|e| format!("{}: prune: {e}", dir.display()))?;
     // An empty directory is trivially safe (first launch).
     if names.is_empty() {
         return Ok(());
@@ -197,7 +207,7 @@ pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
     // sentinel means postmaster never wrote here — bulk deletes could
     // hit foreign files. Refuse.
     match rustix::fs::statat(
-        &dir_fd,
+        dir_fd,
         MANAGED_SENTINEL,
         rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
     ) {
@@ -228,9 +238,9 @@ pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
         // the stat (SYMLINK_NOFOLLOW) and the unlink are relative to the
         // pinned dir fd, so a swapped entry cannot redirect either one.
         let path = dir.join(name);
-        match rustix::fs::statat(&dir_fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        match rustix::fs::statat(dir_fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) if rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() => {
-                if let Err(e) = rustix::fs::unlinkat(&dir_fd, name, rustix::fs::AtFlags::empty()) {
+                if let Err(e) = rustix::fs::unlinkat(dir_fd, name, rustix::fs::AtFlags::empty()) {
                     crate::server::log(&format!("{}: prune: {e}", path.display()));
                 }
             }

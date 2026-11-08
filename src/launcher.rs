@@ -19,9 +19,9 @@ use crate::exec_config::{ExecConfig, ExecMode};
 use crate::key_source::load_ring;
 use crate::keys::{is_private_key_var_name, resolve_all};
 use crate::monitor::{self, STOP_SIGNALS};
-use crate::ramdisk::verify_ramdisk;
+use crate::ramdisk::open_verified_ramdisk_dir;
 use crate::secret_files::{
-    Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale, write_secret_file,
+    Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale_at, write_secret_file,
 };
 use crate::server::{fetch_bytes, log, read_capped};
 
@@ -335,37 +335,19 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 .secrets_dir
                 .as_deref()
                 .ok_or("files mode requires secrets_dir")?;
-            match &cfg.verify_ramdisk {
-                Some(mp) => verify_ramdisk(mp, dir)?,
-                None => {
-                    // Defense-in-depth: use symlink_metadata to reject a
-                    // symlinked secrets_dir even on Linux where
-                    // verify_ramdisk is not used.
-                    let md =
-                        fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                    if md.file_type().is_symlink() {
-                        return Err(format!(
-                            "{}: secrets_dir is a symlink; refusing to write plaintext through a symlink",
-                            dir.display()
-                        ));
-                    }
-                    if !md.is_dir() {
-                        return Err(format!("{}: not a directory", dir.display()));
-                    }
-                }
-            }
+            let dir_fd = match &cfg.verify_ramdisk {
+                Some(mp) => open_verified_ramdisk_dir(mp, dir)?,
+                None => open_secrets_dir(dir).map_err(|e| {
+                    format!("{}: {e} (refusing to follow a symlink)", dir.display())
+                })?,
+            };
             let (resolved, failed) = decrypt(&cfg)?;
             if verify_keys {
                 verify_key_freshness(&failed)?;
             }
             // Prune stale secret files from a prior launch before writing new ones.
             let keep_keys: Vec<String> = resolved.iter().map(|(k, _)| k.clone()).collect();
-            prune_stale(dir, &keep_keys)?;
-            // Pin the secrets dir for the whole write window: the writes,
-            // the mid-loop cleanups, and the post-match cleanups all act
-            // relative to this one pinned fd.
-            let dir_fd = open_secrets_dir(dir)
-                .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", dir.display()))?;
+            prune_stale_at(&dir_fd, dir, &keep_keys)?;
             written.reserve(resolved.len());
             for (k, v) in &resolved {
                 let path = match write_secret_file(&dir_fd, dir, k, v) {
@@ -414,17 +396,15 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                     .secrets_dir
                     .as_deref()
                     .ok_or("credentials(fetch) mode requires secrets_dir")?;
-                if let Some(mp) = &cfg.verify_ramdisk {
-                    verify_ramdisk(mp, dir)?;
-                }
+                let dir_fd = match &cfg.verify_ramdisk {
+                    Some(mp) => open_verified_ramdisk_dir(mp, dir)?,
+                    None => open_secrets_dir(dir).map_err(|e| {
+                        format!("{}: {e} (refusing to follow a symlink)", dir.display())
+                    })?,
+                };
                 let sockets: &HashMap<String, PathBuf> = &cfg.sockets;
                 // Prune stale credential files from a prior launch.
-                prune_stale(dir, &cfg.credential_keys)?;
-                // Pin the secrets dir for the whole fetch/write window
-                // (same single-fd discipline as files mode).
-                let dir_fd = open_secrets_dir(dir).map_err(|e| {
-                    format!("{}: {e} (refusing to follow a symlink)", dir.display())
-                })?;
+                prune_stale_at(&dir_fd, dir, &cfg.credential_keys)?;
                 written.reserve(cfg.credential_keys.len());
                 for k in &cfg.credential_keys {
                     let sock = sockets
