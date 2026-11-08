@@ -71,9 +71,10 @@ and ordinary inherited variables remain present. The application can also
 copy file contents into its own memory. A hand-written config must provide
 RAM-backed storage; setting `secrets_dir` alone does not verify it.
 
-Each secret file is written with `O_NOFOLLOW | O_CREAT | O_TRUNC` and
-`fchmod`'d to `0600` on the file descriptor (no TOCTOU window between
-open and chmod).
+Each secret refresh publishes a fresh 0600 inode beneath the pinned directory.
+Old read handles keep the old contents. Foreign, linked, and special entries
+fail closed, and exported paths require protected ancestry. Trusted symlink
+aliases and sticky shared parents remain supported.
 
 For a mostly-file-capable app with a straggler that needs an env var:
 

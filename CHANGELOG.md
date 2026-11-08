@@ -27,6 +27,12 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Keychain, or environment variables. Dotenv inputs use
   `DOTENV_PRIVATE_KEY*`; bundles use `POSTMASTER_KEY`.
 - Reads macOS Keychain items through the Security.framework API.
+- Hides private-key terminal input and restores settings before pending
+  termination or suspend signals. Forced key-file replacement verifies inode
+  identity and ownership before publishing a fresh owner-only file.
+- Authorizes daemon dotenv files against trusted `env_file_sha256` hashes
+  before parsing or decryption, at startup and on every fetch. Multiple hashes
+  support staged rotation without changing the dotenvx ciphertext format.
 - Selects key sources in order. Missing systemd credentials allow the next
   source; file, Keychain, and environment sources are terminal and fail
   closed when unavailable or invalid.
@@ -65,8 +71,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and macOS. The monitor consumes signals synchronously; the launcher
   restores its signal mask before exec.
 - Pins the secrets directory for pruning, writes, cleanup, and monitoring.
-  File creation rejects final-component symlinks, sets mode `0600` through
-  the descriptor, and attempts to unlink partial output on write failure.
+  File refreshes publish fresh 0600 inodes without writing new plaintext to
+  old open handles. Foreign, linked, and special existing entries fail closed.
+  Exported paths require trusted, protected ancestry; sticky shared parents
+  and trusted symlink aliases remain supported.
 - Guards bulk cleanup with a `.postmaster-managed` sentinel. Bulk cleanup
   retains the marker on failure so the operation can be retried.
   Launch-failure cleanup uses the same pinned directory.
@@ -77,7 +85,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   symlinks fail the check.
 - Opens ciphertext files with `O_NOFOLLOW` and sets `CLOEXEC` on the file
   descriptors it opens. Config, bundle, and credential-response reads
-  enforce their documented size limits.
+  enforce their documented size limits. Dotenv sources must be regular files;
+  parsing bounds source bytes, assignments, and expanded values before growth,
+  while syntax errors omit input contents.
 - Verifies external tools before use with macOS code-signature checks or
   Linux ownership and permission checks. Linux `id` lookup uses verified
   absolute paths.

@@ -1,6 +1,8 @@
 //! Test-only shared utilities (compiled under `#[cfg(test)]` only).
 
 pub(crate) mod aad_fixture;
+pub(crate) mod pty;
+pub(crate) mod temp_dir;
 
 /// Process-wide lock serializing every unit test that mutates — or
 /// wholesale snapshots — the process-global environment. The test

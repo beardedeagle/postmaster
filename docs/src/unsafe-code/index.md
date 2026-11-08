@@ -4,7 +4,8 @@ Postmaster deliberately allows `unsafe` at the lint level (documented in
 `[lints.rust]` in `Cargo.toml`) because it is a syscall-boundary daemon:
 peer-credential checks, anti-debug hardening, signal-mask deferral, the
 sibling launch monitor (fork + pidfd/kqueue liveness), and the systemd
-socket-activation contract cannot be expressed in safe Rust.
+socket-activation contract cannot be expressed in safe Rust. Darwin extended
+ACL access uses narrow libc bindings as well.
 This section documents every approved site.
 
 ## Policy
@@ -22,11 +23,13 @@ Every `unsafe` block requires:
 
 | Location | Platform | Purpose | Page |
 |----------|----------|---------|------|
-| `launcher.rs` (TerminationGuard: block/restore_mask/Drop) | macOS, Linux | Defer termination signals across the plaintext-write window; the fork-child monitor inherits the mask for life | [signal-deferral](./signal-deferral.md) |
+| `launcher.rs` (TerminationGuard: block/block_input/input_pending/restore_mask/Drop) | macOS, Linux | Defer termination across plaintext writes and no-echo input; restore terminal settings before pending signal delivery | [signal-deferral](./signal-deferral.md) |
 | `launcher.rs` (fork(2)) | macOS, Linux | Fork the sibling monitor before exec — the single libc FFI call on Linux (doctrine exception) | [monitor](./monitor.md) |
 | `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`, raw stderr write) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
+| `secret_files/acl.rs` | macOS | Inspect directory ACL grants and clear new private-file ACLs | [macos-libc-boundary](./macos-libc-boundary.md#extended-acls) |
+| `test_util/pty.rs` | all, test-only | Create and own pseudo-terminal descriptors for input restoration tests | [signal-deferral](./signal-deferral.md#tests) |
 | `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |
 | `keys/source.rs`, `keys/env.rs`, `keys/provisioning/mod.rs` (test modules) | all, test-only | `set_var`/`remove_var` (unsafe on edition 2024) | [test-env-mutation](./test-env-mutation.md) |
 

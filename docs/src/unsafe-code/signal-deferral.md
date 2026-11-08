@@ -9,7 +9,7 @@
 
 ```text
 src/launcher.rs — struct TerminationGuard (macOS and Linux legs)
-Blocks: block() (sigmask), restore_mask() (sigmask), Drop (restore)
+Blocks: block()/block_input() (sigmask), input_pending(), restore_mask(), Drop
 ```
 
 ## Purpose
@@ -29,19 +29,14 @@ mask and keeps it for life** — the fork-child's guard is never dropped
 running no destructors). The parent calls `restore_mask()` before
 `execvp` so the service starts with a clean signal state.
 
-The guard previously also carried a sigaction flag-recording handler
-(`disarm`/`recorded`) and a second pre-exec gate to close the
-check/exec race. Both were **retired with the sibling-monitor
-design**: the monitor owns stop semantics on every death path, so no
-async handler is needed anywhere and the handler's forever-purity
-constraint is gone with it. What remains — `block()` and
-`restore_mask()` — is what this page covers.
-
-The guard became real on Linux with the same change: the fork+monitor
-model runs there too, and the blocked mask is the monitor's inheritance.
-The Linux leg uses rustix's raw `rt_sigprocmask` (`runtime` module — the
-experimental API; see the monitor page for the doctrinal discussion), so
-the Linux exec path adds no libc signal FFI.
+Setup reuses the guard while reading secrets from a terminal. `block_input()`
+also blocks SIGTSTP, so suspension cannot hand back a terminal with echo disabled.
+Terminal reads use nonblocking stdin, including buffered and noncanonical
+input. The loop checks pending signals while polling, restores terminal
+settings and stdin flags, then restores the saved signal mask. Setup refuses
+terminal input if
+masking fails. Redirected input keeps stdin's existing buffer and normal signal
+behavior. Linux uses rustix's raw signal APIs; Darwin uses libc.
 
 ## Why Unsafe
 
@@ -60,7 +55,7 @@ holds only standard signals no libc reserves.
 | Invalid `sigset_t` | Uninitialized set passed to the mask call | `zeroed()` (valid empty representation) then `sigemptyset` on Darwin; `KernelSigSet::empty()` on Linux |
 | Dangling pointers | set/old must outlive each call | Locals live for the full block; no pointers escape |
 | Thread-model mismatch | `sigprocmask` is unspecified in multithreaded processes | `pthread_sigmask` form on Darwin; on Linux the launcher is single-threaded at this point (worker threads exist only in serve mode) |
-| libc-reserved signals | Masking a signal a libc reserves is UB (rustix `runtime` safety note) | The set holds only TERM/INT/HUP/QUIT — none reserved (glibc reserves 32/33) |
+| libc-reserved signals | Masking a signal a libc reserves is UB (rustix `runtime` safety note) | The set holds only TERM/INT/HUP/QUIT, plus TSTP for input — none reserved (glibc reserves 32/33) |
 | Mask clobber | Restoring a mask never captured | Both legs are Option-shaped and store `None` on block failure (logged); restore then no-ops |
 | Mask leak to the service | Service inheriting blocked termination signals | Mask restored before `execvp` on every path (explicit + `Drop` on early-Err) — the monitor *wants* the mask and is the only inheritor |
 
@@ -85,3 +80,10 @@ The guard's contract is exercised end-to-end by the monitor tests
 mirroring production) and by the exec integration suites
 (`tests/exec_check.rs`, `tests/exec_conformance/`). The retired
 flag-handler test was removed with the handler.
+
+Input tests use pseudo-terminals to check hidden single-line and multiline
+input, read failures, and terminal restoration. Real setup subprocesses cover
+initial files, forced rotation, redirected input, and SIGTERM during input.
+The test-only `openpty` call receives valid output pointers and null optional
+settings; each returned descriptor transfers exactly once into an owning
+`File`. The harness kills and waits for its child on teardown.

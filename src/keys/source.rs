@@ -147,9 +147,7 @@ mod tests {
         // Audit finding #2: a symlink planted at
         // $CREDENTIALS_DIRECTORY/<name> must be rejected, not followed.
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("pm-keysource-symlink-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("source");
         let real = d.join("real-keys");
         fs::write(&real, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
         fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
@@ -187,8 +185,7 @@ mod tests {
             // unobservable in a root test run.
             return;
         }
-        let d = std::env::temp_dir().join(format!("pm-keysource-eacces-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+        let d = crate::test_util::temp_dir::TestDir::new("source");
         let cred_dir = d.join("locked");
         fs::create_dir_all(&cred_dir).unwrap();
         fs::set_permissions(&cred_dir, fs::Permissions::from_mode(0o000)).unwrap();
@@ -220,9 +217,7 @@ mod tests {
     fn load_ring_credential_rejects_non_file() {
         // A directory as a credential source name should be rejected,
         // not silently skipped or treated as a file.
-        let d = std::env::temp_dir().join(format!("pm-keysource-dir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("source");
         let cred_dir = d.join("creds");
         fs::create_dir_all(&cred_dir).unwrap();
         let sub = cred_dir.join("subdir");
@@ -253,9 +248,8 @@ mod tests {
         // by putting a valid "environment" source after the bad file source:
         // if file were skippable, load_ring would try environment and fail
         // with "environment:" — instead it must fail with the file path.
-        let ghost_path = std::env::temp_dir()
-            .join(format!("pm-keysource-terminal-{}", std::process::id()))
-            .join("ghost.keys");
+        let fixture = crate::test_util::temp_dir::TestDir::new("missing-source");
+        let ghost_path = fixture.join("ghost.keys");
         let specs = vec![
             KeySourceSpec::File(ghost_path.clone()),
             KeySourceSpec::Environment,
@@ -376,8 +370,7 @@ mod tests {
         // well-formed credential file loads through the same selection
         // path the negative legs reject.
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("pm-keysource-load-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+        let d = crate::test_util::temp_dir::TestDir::new("source");
         let cred_dir = d.join("creds");
         fs::create_dir_all(&cred_dir).unwrap();
         let cred = cred_dir.join("dotenv-keys");

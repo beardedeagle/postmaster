@@ -5,13 +5,13 @@
 //! commands, plus the key-provisioning helpers they depend on.
 
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::exec_config::{ExecConfig, KeySourceSpec};
 use crate::server::log;
 
 mod cleanup;
+mod input;
 mod setup;
 
 /// The `postmaster cleanup` command, re-exported at the crate root for
@@ -64,6 +64,12 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
         })?;
         let stat = rustix::fs::fstat(&dir_fd)
             .map_err(|e| format!("{}: fstat: {e}", keys_dir.display()))?;
+        if stat.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(format!(
+                "{}: keys directory is owned by another user",
+                keys_dir.display()
+            ));
+        }
         let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
         if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
             // Fix permissions if we can
@@ -107,6 +113,14 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
         rustix::fs::Mode::empty(),
     )
     .map_err(|e| format!("{}: cannot open keys directory: {e}", keys_dir.display()))?;
+    let stat =
+        rustix::fs::fstat(&dir_fd).map_err(|e| format!("{}: stat: {e}", keys_dir.display()))?;
+    if stat.st_uid != rustix::process::geteuid().as_raw() {
+        return Err(format!(
+            "{}: keys directory is owned by another user",
+            keys_dir.display()
+        ));
+    }
     rustix::fs::fchmod(&dir_fd, rustix::fs::Mode::RWXU)
         .map_err(|e| format!("{}: cannot set permissions: {e}", keys_dir.display()))?;
     log(&format!(
@@ -126,142 +140,136 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
 /// interactive mode: unattended has no operator to paste contents.
 #[allow(clippy::print_stderr)]
 fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), String> {
-    if path.exists() {
-        // Verify permissions and ownership (same checks as setup_recheck)
-        let oflags =
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
-        let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty())
-            .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", path.display()))?;
-        let stat = rustix::fs::fstat(&fd).map_err(|e| format!("{}: fstat: {e}", path.display()))?;
-        let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
-        if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
-            // Fix permissions
-            rustix::fs::fchmod(&fd, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
-                .map_err(|e| format!("{}: cannot fix permissions: {e}", path.display()))?;
-            log(&format!(
-                "{}: permissions corrected to 0600",
+    use crate::secret_files::{
+        open_secrets_dir, replace_file, validate_directory_path, validate_projection,
+    };
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, fstat, openat, statat};
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = validate_directory_path(parent)?;
+    let dir_fd =
+        open_secrets_dir(&parent).map_err(|e| format!("{}: parent: {e}", path.display()))?;
+    validate_projection(&dir_fd, &parent)?;
+    let name = path.file_name().ok_or("keys path requires a filename")?;
+    let original = match openat(
+        &dir_fd,
+        name,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => {
+            let st = fstat(&fd).map_err(|e| format!("{}: stat: {e}", path.display()))?;
+            if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile
+                || st.st_uid != rustix::process::geteuid().as_raw()
+                || st.st_nlink != 1
+            {
+                return Err(format!(
+                    "{}: refusing foreign, linked or non-regular keys file",
+                    path.display()
+                ));
+            }
+            if st.st_mode & 0o077 != 0 {
+                rustix::fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
+                    .map_err(|e| format!("{}: chmod: {e}", path.display()))?;
+                log(&format!(
+                    "{}: permissions corrected to 0600",
+                    path.display()
+                ));
+            }
+            crate::secret_files::clear_file_acl(&fd)?;
+            if !force {
+                log(&format!("{}: keys file verified", path.display()));
+                return Ok(());
+            }
+            Some((fd, st))
+        }
+        Err(rustix::io::Errno::NOENT) => None,
+        Err(e) => {
+            return Err(format!(
+                "{}: {e} (refusing to follow a symlink)",
                 path.display()
             ));
         }
-        let euid = rustix::process::geteuid().as_raw();
-        if stat.st_uid != euid {
-            return Err(format!(
-                "{}: owned by uid {} but postmaster euid is {euid} (cannot fix ownership automatically)",
-                path.display(),
-                stat.st_uid
-            ));
-        }
-        drop(fd);
-        if !force {
-            log(&format!("{}: keys file verified", path.display()));
-            return Ok(());
-        }
-        // --force: re-prompt for the contents even though the file is
-        // already correct (sweep 2026-08-07 K7).
-        if unattended {
-            return Err(format!(
-                "{}: --force re-prompts for key contents, which unattended mode cannot do (fail closed)",
-                path.display()
-            ));
-        }
+    };
+    if unattended {
+        return Err(format!(
+            "{}: {} (unattended mode cannot prompt)",
+            path.display(),
+            if original.is_some() {
+                "--force re-prompts for key contents"
+            } else {
+                "keys file not found"
+            }
+        ));
+    }
+    if original.is_some() {
         eprintln!("{}: keys file exists and is valid.", path.display());
         eprintln!("--force given: replace its contents now? [y/N] ");
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_err() {
-            return Err(format!("{}: cannot read input", path.display()));
-        }
-        if !input.trim().eq_ignore_ascii_case("y") {
+    } else {
+        eprintln!("{}: keys file not found.", path.display());
+        eprintln!(
+            "Create it now? You will need to paste the key contents (DOTENV_PRIVATE_KEY=<64-hex>...). [y/N] "
+        );
+    }
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|_| format!("{}: cannot read input", path.display()))?;
+    if !input.trim().eq_ignore_ascii_case("y") {
+        if original.is_some() {
             log(&format!(
                 "{}: --force declined; existing keys file kept",
                 path.display()
             ));
             return Ok(());
         }
-        eprintln!("Paste the keys file contents (Ctrl+D to finish):");
-        // Zeroizing: operator-pasted key material must not linger in freed
-        // heap pages (audit 2026-08-02 O4).
-        let mut contents = zeroize::Zeroizing::new(String::new());
-        if std::io::stdin().read_to_string(&mut contents).is_err() {
-            return Err(format!("{}: cannot read key contents", path.display()));
-        }
-        // Overwrite in place: WRONLY|TRUNC|NOFOLLOW on the just-verified
-        // path, perms forced back to 0600 on the fd before the write.
-        let oflags = rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::TRUNC
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC;
-        let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
-            format!(
-                "{}: cannot open for replacement: {e} (refusing to follow a symlink)",
-                path.display()
-            )
-        })?;
-        rustix::fs::fchmod(&fd, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
-            .map_err(|e| format!("{}: cannot fix permissions: {e}", path.display()))?;
-        let mut file = fs::File::from(fd);
-        use std::io::Write;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
-        log(&format!(
-            "{}: keys file contents replaced (--force)",
-            path.display()
-        ));
-        return Ok(());
-    }
-
-    // File doesn't exist
-    if unattended {
-        return Err(format!(
-            "{}: keys file not found (unattended mode — cannot prompt; create the file manually before running setup)",
-            path.display()
-        ));
-    }
-
-    // Interactive: prompt the operator
-    eprintln!("{}: keys file not found.", path.display());
-    eprintln!(
-        "Create it now? You will need to paste the key contents (DOTENV_PRIVATE_KEY=<64-hex>...). [y/N] "
-    );
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return Err(format!("{}: cannot read input", path.display()));
-    }
-    if !input.trim().eq_ignore_ascii_case("y") {
         return Err(format!(
             "{}: operator declined to create keys file",
             path.display()
         ));
     }
-
-    eprintln!("Paste the keys file contents (Ctrl+D to finish):");
-    // Zeroizing: operator-pasted key material must not linger in freed
-    // heap pages (audit 2026-08-02 O4).
-    let mut contents = zeroize::Zeroizing::new(String::new());
-    if std::io::stdin().read_to_string(&mut contents).is_err() {
-        return Err(format!("{}: cannot read key contents", path.display()));
-    }
-
-    // Write the file with 0600. O_EXCL | O_NOFOLLOW makes creation
-    // fail-closed: it refuses to overwrite anything already at the path
-    // and refuses to follow a planted symlink.
-    let oflags = rustix::fs::OFlags::WRONLY
-        | rustix::fs::OFlags::CREATE
-        | rustix::fs::OFlags::EXCL
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
-    let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::from_bits_truncate(0o600)).map_err(
-        |e| {
+    let contents = input::read_secret("Paste the keys file contents (Ctrl+D to finish):", false)?;
+    if let Some((_fd, original)) = original {
+        let current = statat(&dir_fd, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("{}: stat: {e}", path.display()))?;
+        if current.st_dev != original.st_dev || current.st_ino != original.st_ino {
+            return Err(format!(
+                "{}: keys file changed while awaiting input",
+                path.display()
+            ));
+        }
+        replace_file(&dir_fd, name, contents.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        log(&format!(
+            "{}: keys file contents replaced (--force)",
+            path.display()
+        ));
+    } else {
+        let fd = openat(
+            &dir_fd,
+            name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|e| {
             format!(
                 "{}: cannot create: {e} (refusing to overwrite or follow a symlink)",
                 path.display()
             )
-        },
-    )?;
-    let mut file = fs::File::from(fd);
-    use std::io::Write;
-    file.write_all(contents.as_bytes())
-        .map_err(|e| format!("{}: cannot write: {e}", path.display()))?;
-    log(&format!("{}: keys file created with 0600", path.display()));
+        })?;
+        crate::secret_files::clear_file_acl(&fd)?;
+        rustix::fs::fchmod(&fd, Mode::RUSR | Mode::WUSR)
+            .map_err(|e| format!("{}: chmod: {e}", path.display()))?;
+        let mut file = fs::File::from(fd);
+        use std::io::Write as _;
+        if let Err(e) = file.write_all(contents.as_bytes()) {
+            let _ = rustix::fs::unlinkat(&dir_fd, name, AtFlags::empty());
+            return Err(format!("{}: cannot write: {e}", path.display()));
+        }
+        log(&format!("{}: keys file created with 0600", path.display()));
+    }
     Ok(())
 }
 
@@ -325,13 +333,7 @@ fn ensure_keychain_items(
     }
 
     for var in &to_seed {
-        eprint!("Paste value for {var}: ");
-        // Zeroizing: pasted key material must not linger in freed
-        // heap pages (audit 2026-08-02 O4). `trim()` borrows, no copy.
-        let mut value = zeroize::Zeroizing::new(String::new());
-        if std::io::stdin().read_line(&mut value).is_err() {
-            return Err(format!("cannot read value for {var}"));
-        }
+        let value = input::read_secret(&format!("Paste value for {var}:"), true)?;
         let value = value.trim();
         if value.is_empty() {
             return Err(format!("{var}: empty value, refusing to seed"));
@@ -571,8 +573,7 @@ mod tests {
         // sweep 2026-08-07 K4: verification must not pass what resolution
         // rejects — exists() followed symlinks; the loader refuses them.
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("pm-verify-cred-symlink-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+        let d = crate::test_util::temp_dir::TestDir::new("mod");
         let cred_dir = d.join("creds");
         fs::create_dir_all(&cred_dir).unwrap();
         let real = d.join("real-keys");
@@ -607,9 +608,7 @@ mod tests {
         // unattended mode cannot do — fail closed rather than silently
         // skipping the re-create the operator asked for.
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("pm-force-unattended-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");
         fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
@@ -716,11 +715,7 @@ mod tests {
         // Canonicalize the temp base: on macOS it sits under /var →
         // /private/var, and the O5 prefix walk would (correctly) refuse
         // the symlinked /var component for reasons unrelated to this test.
-        let d = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!("pm-ensure-dir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("mod");
 
         let created = d.join("new-keys");
         ensure_keys_dir(&created, false).expect("create should succeed");
@@ -745,11 +740,7 @@ mod tests {
         // Canonicalize the temp base (macOS /var → /private/var) so the
         // walk reaches OUR planted symlink instead of refusing the
         // OS-provided /var component first.
-        let d = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!("pm-ensure-dir-link-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("mod");
         let real = d.join("real");
         fs::create_dir_all(&real).unwrap();
         std::os::unix::fs::symlink(&real, d.join("link")).unwrap();
@@ -770,9 +761,7 @@ mod tests {
         // sweep 2026-08-07 T7: a 0644 keys file is corrected to 0600; a
         // missing file in unattended mode fails closed (no prompt).
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("pm-ensure-file-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");
         fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
@@ -787,5 +776,49 @@ mod tests {
         assert!(err.contains("unattended mode"), "{err}");
 
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn keys_files_reject_linked_special_and_foreign_inodes_before_mutation() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::test_util::temp_dir::TestDir::new("key-custody");
+        let path = dir.join("keys");
+        fs::write(&path, b"unchanged").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::hard_link(&path, dir.join("link")).unwrap();
+        assert!(ensure_keys_file(&path, false, true).is_err());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(ensure_keys_file(&path, false, true).is_err());
+        if rustix::process::geteuid().is_root() {
+            fs::remove_file(&path).unwrap();
+            fs::write(&path, b"foreign").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            rustix::fs::chown(&path, Some(rustix::fs::Uid::from_raw(65534)), None).unwrap();
+            assert!(ensure_keys_file(&path, false, true).is_err());
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+            let foreign = dir.join("directory");
+            fs::create_dir(&foreign).unwrap();
+            fs::set_permissions(&foreign, fs::Permissions::from_mode(0o755)).unwrap();
+            rustix::fs::chown(&foreign, Some(rustix::fs::Uid::from_raw(65534)), None).unwrap();
+            assert!(ensure_keys_dir(&foreign, false).is_err());
+            assert_eq!(
+                fs::metadata(&foreign).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
     }
 }

@@ -45,11 +45,31 @@ pub struct Entry {
     pub env_file: PathBuf,
     /// Which key inside it to serve.
     pub key: String,
+    /// Trusted SHA-256 hashes of the exact dotenv file bytes, as 64-digit hex strings.
+    /// A hash must match before parsing, interpolation or decryption.
+    #[serde(deserialize_with = "deserialize_env_file_hashes")]
+    pub env_file_sha256: Vec<[u8; 32]>,
     /// Additionally allow this (non-root) user to fetch the credential.
     /// Used by the darwin module, where consumers are launchd daemons
     /// connecting as their own service user rather than uid 0 (root).
     #[serde(default)]
     pub peer_user: Option<String>,
+}
+
+fn deserialize_env_file_hashes<'de, D>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer)?
+        .into_iter()
+        .map(|value| {
+            let mut hash = [0; 32];
+            hex::decode_to_slice(value, &mut hash).map_err(|_| {
+                serde::de::Error::custom("env_file_sha256 requires 64-digit hex hashes")
+            })?;
+            Ok(hash)
+        })
+        .collect()
 }
 
 /// Parsed command-line arguments for the `serve` invocation.
@@ -468,7 +488,7 @@ mod tests {
         let raw = serde_json::json!({
             "keys": {"credential": "postmaster-keys"},
             "credentials": {
-                "/run/cred.sock": {"env_file": "/nix/store/x/.env", "key": "DB_URL", "peer_user": "_www"}
+                "/run/cred.sock": {"env_file": "/nix/store/x/.env", "key": "DB_URL", "env_file_sha256": ["0000000000000000000000000000000000000000000000000000000000000000"], "peer_user": "_www"}
             }
         });
         serde_json::from_value::<Config>(raw).unwrap();

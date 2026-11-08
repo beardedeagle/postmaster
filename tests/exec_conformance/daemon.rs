@@ -3,6 +3,7 @@
 //! serve/fetch roundtrip and the startup preflight refusal, which the
 //! unit tests only exercise in-process.
 
+use sha2::Digest as _;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -71,14 +72,16 @@ fn daemon_serves_configured_peer_under_any_umask() {
 
 fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
     let d = common::tmpdir("daemon");
+    let encrypted = common::enc("postgres://real-roundtrip");
     let env = common::write_env_file(
         &d,
         ".env.production",
         &[
             format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
-            format!("DB_URL=\"{}\"", common::enc("postgres://real-roundtrip")),
+            format!("DB_URL=\"{}\"", encrypted),
         ],
     );
+    let hash = hex::encode(sha2::Sha256::digest(std::fs::read(&env).unwrap()));
     let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
     // Bound directly under the tmpdir: unix socket paths are length-capped
     // (104 bytes on darwin), and the tmpdir path is already long.
@@ -92,6 +95,7 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
                 "env_file": env,
                 "key": "DB_URL",
                 "peer_user": peer_user,
+                "env_file_sha256": [hash],
             }},
         })
         .to_string(),
@@ -136,6 +140,29 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(out.stdout, b"postgres://real-roundtrip");
+
+    let original = std::fs::read(&env).unwrap();
+    for replacement in [
+        format!("DB_URL='{}'\n", common::enc("foreign-secret")),
+        "DB_URL=${PATH}\n".into(),
+    ] {
+        std::fs::write(&env, replacement).unwrap();
+        let refused = Command::new(env!("CARGO_BIN_EXE_postmaster"))
+            .arg("fetch")
+            .arg(&sock)
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+    }
+    std::fs::write(&env, original).unwrap();
+    let restored = Command::new(env!("CARGO_BIN_EXE_postmaster"))
+        .arg("fetch")
+        .arg(&sock)
+        .output()
+        .unwrap();
+    assert!(restored.status.success());
+    assert_eq!(restored.stdout, b"postgres://real-roundtrip");
 }
 
 #[test]
@@ -152,7 +179,7 @@ fn daemon_preflight_refuses_an_empty_credential_at_startup() {
     std::fs::write(
         &cfg,
         format!(
-            r#"{{"keys":{{"file":"{}"}},"credentials":{{"{}":{{"env_file":"{}","key":"EMPTY"}}}}}}"#,
+            r#"{{"keys":{{"file":"{}"}},"credentials":{{"{}":{{"env_file":"{}","key":"EMPTY","env_file_sha256":["7819c04858487b8325a083235e0697f271991cb446086084807fec586dc27427"]}}}}}}"#,
             keys.display(),
             sock.display(),
             env.display()

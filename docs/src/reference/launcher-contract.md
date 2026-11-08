@@ -254,6 +254,20 @@ Both adapters follow this contract:
   is `true`, process environment
   is not consulted at all — file values always win.
 
+## Dotenv input limits
+
+Dotenv sources must be regular files; final symlinks and special files fail
+before parsing. Each file is limited to 16 MiB. A resolution pass allows at
+most 64 MiB of source bytes, 65,536 assignments, and 64 MiB of parsed names and
+values across all dotenv files. Each expanded value is limited to 16 MiB.
+Duplicate assignments and metadata count toward these limits before filtering.
+
+Expansion checks run before appending or retaining substituted values, so a
+small substitution chain cannot allocate an unbounded result. Quoting,
+multiline values, environment-first substitution, and precedence stay the
+same. Syntax errors name the file and error category without including its
+contents. Resource-limit failures abort even with `strict: false`.
+
 ## `DOTENV_` filtering and identifier validation
 
 - Any raw key beginning with `DOTENV_` (not just the private/public key
@@ -275,7 +289,7 @@ Both adapters follow this contract:
 
 ## Encrypted-value format
 
-Values are first parsed by `dotenvy`, including its quoting and variable
+Values are first parsed with dotenvy-compatible quoting and variable
 substitution rules. A parsed value without `encrypted:` needs no decryption
 and is passed through as bytes. A value that starts with `encrypted:` has the
 following payload base64-decoded and decrypted with `ecies` against each
@@ -315,12 +329,14 @@ containing a NUL byte is a hard error
 closed rather than silently truncating.
 
 **`mode: "files"`.** Requires `secrets_dir`. If `verify_ramdisk` is set,
-the ramdisk guard (below) runs first; otherwise `secrets_dir` merely has
-to exist and be a directory. Each resolved value is written to
-`<secrets_dir>/<KEY>` with permissions forced to `0600` (via `fchmod` on
-the file descriptor after `O_NOFOLLOW | O_CREAT | O_TRUNC` open, so the
-permission is set atomically without a TOCTOU window) — unlike `env` mode,
-values here may contain NUL; the file is written byte-exact. For each key
+the ramdisk guard (below) runs first. The directory must exist and its complete
+pathname must be protected from less-trusted replacement. Root and the
+effective user are trusted owners; sticky shared parents and trusted symlink
+aliases remain supported. The launcher exports the verified canonical path.
+Each value is written byte-exact to a fresh exclusive 0600 inode and published
+atomically as `<secrets_dir>/<KEY>`. Existing handles keep the old contents;
+foreign, hardlinked, symlinked, and special existing entries fail closed.
+Values may contain NUL. For each key
 the launcher exports `<KEY>_FILE` pointing at that path; if the key is
 also listed in `passthrough`, it is *additionally* exported as a real
 `<KEY>=value` env var (and *that* copy is subject to the same NUL-rejection

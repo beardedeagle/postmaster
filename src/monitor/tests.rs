@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use rustix::process::{WaitOptions, waitpid};
@@ -16,11 +16,8 @@ use rustix::process::{WaitOptions, waitpid};
 use crate::launcher::TerminationGuard;
 use crate::secret_files::open_secrets_dir;
 
-fn tdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pm-monitor-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
-    d
+fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
+    crate::test_util::temp_dir::TestDir::new(tag)
 }
 
 /// Fork a monitor watching `service_pid`, mirroring the production

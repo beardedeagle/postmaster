@@ -114,6 +114,13 @@ No file on disk — keys live as generic-password items in the default
 keychain search list. Postmaster reads them natively via the
 Security.framework API (`security-framework` crate).
 
+`postmaster setup` hides terminal input for both key files and Keychain values.
+It restores terminal settings when input finishes, fails, or receives a
+catchable termination or suspend signal. Redirected key-file input still
+accepts multiple lines through EOF. `--force` publishes a fresh 0600 key-file
+inode after confirmation and refuses a substituted, foreign, linked, or
+special file. Existing open handles keep the old contents.
+
 ## Rotation
 
 No `rotate` subcommand exists. The flow is manual, but
@@ -148,3 +155,10 @@ failure:
 ```console
 $ postmaster exec --config exec.json --verify-keys -- /usr/bin/true
 ```
+
+For daemon mode, authorize the new dotenv file's SHA-256 in each entry's
+`env_file_sha256` list before deploying it. Keep both old and new hashes during
+the rotation window, then remove the old hash. Hashes cover the complete file,
+including plaintext, comments, and line endings. Compute them from the trusted
+artifact; do not derive authorization from a runtime copy that can be changed.
+Exec configurations continue to select application inputs through `env_files`.

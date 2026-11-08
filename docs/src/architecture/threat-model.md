@@ -192,17 +192,33 @@ where secret material is read or written:
   before loading, rejecting symlinks at the path level. The
   `O_NOFOLLOW` open in `KeyRing::load` provides defense-in-depth at
   the fd level.
-- **Secret files** are written with `O_NOFOLLOW | O_CREAT | O_TRUNC`
-  — a symlink planted at the target path is rejected, not followed.
+- **Secret files** use fresh, exclusively created 0600 inodes and atomic
+  publication beneath the pinned directory. Refreshes never write new
+  plaintext into old inodes or read handles. Foreign, hardlinked, symlinked,
+  and special existing files fail before mutation. On macOS, inherited ACL
+  grants that could expose fresh files are rejected; new file ACLs are cleared.
 - **Secrets directory** is opened with `O_DIRECTORY | O_NOFOLLOW`,
   rejecting a final-component symlink. With `verify_ramdisk`, the opened
   inode must also belong to the verified RAM device and service user.
   This checks intermediate-symlink targets as well. The launcher retains
-  that handle for pruning, writes, cleanup, and monitoring.
+  that handle for pruning, writes, cleanup, and monitoring. Before exporting
+  consumer paths, Postmaster checks every lexical and resolved ancestor for
+  trusted ownership and protection against replacement. Trusted symlinks and
+  sticky shared directories remain usable; unsafe writable ancestors and
+  macOS ACL grants fail closed.
 - **Socket permissions** use a bind-time umask on Linux and macOS, so the
   pathname has its final mode from creation. Postmaster restores the prior
   mask immediately afterward, including on bind failure. Binding runs
-  before serving threads start.
+  before serving threads start. Distinct consumer ownership domains cannot
+  share a parent or sit beneath a parent controlled by another consumer.
+  Alias and dot-segment checks run before any directory or socket mutation.
+
+Daemon entries authorize the exact dotenv source bytes with trusted
+`env_file_sha256` hashes before parsing, interpolation, or decryption. The
+check runs at startup and on every fetch. A file from another entry cannot
+be substituted merely because it uses the same private key. Expected hashes
+belong in trusted configuration, separate from mutable artifacts. Exec mode
+uses its configured application inputs as the trust boundary instead.
 
 ### External binary verification
 
@@ -236,7 +252,9 @@ the secret path:
 - **No shell evaluation:** decrypted values and bundle plaintext are injected
   as bytes. Plaintext dotenv entries follow `dotenvy` parsing rules, including
   variable substitution in unquoted and double-quoted values. Single quotes
-  preserve `${VAR}` literally. `$(cmd)` is not executed.
+  preserve `${VAR}` literally. `$(cmd)` is not executed. Source bytes, expanded
+  values, assignments, and aggregate parsed output have fixed limits checked
+  before growth; parser errors omit input values.
 
 ### Key freshness verification
 
@@ -548,10 +566,10 @@ cannot redirect those operations onto persistent storage.
 `OFlags::CLOEXEC` is set on every file descriptor postmaster opens (all
 `rustix::fs::open`/`openat` sites) — the kernel automatically closes
 these on execvp, preventing the child from inheriting postmaster's open
-file descriptors. Third-party parsers never open their own fds in
-postmaster's paths: dotenvy is only invoked as `dotenvy::from_read_iter`
-on fds postmaster itself opened (`O_NOFOLLOW | CLOEXEC`). Postmaster's
-own fds are fully covered.
+file descriptors. Parsers receive bytes or descriptors Postmaster opens; they do
+not open
+paths themselves. Dotenv artifact reads also use nonblocking opens and reject
+special files before reading. Postmaster's own fds are fully covered.
 
 ### Secrets directory path exposure — Mitigated
 

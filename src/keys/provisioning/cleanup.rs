@@ -147,9 +147,7 @@ mod tests {
 
     #[test]
     fn cleanup_removes_all_files_from_secrets_dir() {
-        let dir = std::env::temp_dir().join(format!("pm-keyprov-cleanup-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         // cleanup requires a postmaster-managed (owner-only) dir
         // (audit 2026-08-02 A19); match real deployments.
         use std::os::unix::fs::PermissionsExt;
@@ -185,9 +183,7 @@ mod tests {
         // audit 2026-08-02 A19: a non-empty dir without the sentinel was
         // never written by postmaster; cleanup must refuse to bulk-delete
         // there (foreign files could be present).
-        let dir = std::env::temp_dir().join(format!("pm-keyprov-unmanaged-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         fs::write(dir.join("FOREIGN"), b"not-ours").unwrap();
         let cfg_path = dir.join("exec.json");
         fs::write(
@@ -207,9 +203,7 @@ mod tests {
 
     #[test]
     fn cleanup_nonexistent_dir_is_ok() {
-        let dir = std::env::temp_dir().join(format!("pm-keyprov-missing-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         let cfg_path = dir.join("exec.json");
         fs::write(
             &cfg_path,
@@ -231,9 +225,7 @@ mod tests {
             return;
         }
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("pm-keyprov-partial-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(dir.join("KEY_A"), b"secret-a").unwrap();
         fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
@@ -269,9 +261,7 @@ mod tests {
     #[test]
     fn finish_cleanup_removes_sentinel_only_without_failures() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("pm-keyprov-finish-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
         let dir_fd = open_secrets_dir(&dir).unwrap();

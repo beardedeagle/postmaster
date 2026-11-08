@@ -16,6 +16,18 @@ use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+mod acl;
+
+/// Remove extended grants before writing private file contents.
+pub(crate) fn clear_file_acl(fd: impl AsFd) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    acl::clear(fd)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = fd;
+    Ok(())
+}
+
 /// Resolved values keyed by name, each zeroized on drop.
 pub type Resolved = Vec<(String, Zeroizing<Vec<u8>>)>;
 
@@ -57,6 +69,77 @@ pub(crate) fn open_secrets_dir(dir: &Path) -> rustix::io::Result<OwnedFd> {
     )
 }
 
+/// Verify every lexical and resolved ancestor before exporting a pathname.
+/// Root and the effective user are trusted; sticky shared parents protect their entries.
+pub(crate) fn validate_directory_path(dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let absolute = if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("current directory: {e}"))?
+            .join(dir)
+    };
+    let euid = rustix::process::geteuid().as_raw();
+    let check = |path: &Path, symlink: bool| -> Result<(), String> {
+        let md = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if md.uid() != 0 && md.uid() != euid {
+            return Err(format!(
+                "{}: directory path is owned by an untrusted user",
+                path.display()
+            ));
+        }
+        if symlink && md.file_type().is_symlink() {
+            return Ok(());
+        }
+        if !md.is_dir() || md.mode() & 0o022 != 0 && md.mode() & 0o1000 == 0 {
+            return Err(format!(
+                "{}: directory path permits untrusted replacement",
+                path.display()
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let fd = open_secrets_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            acl::validate(&fd).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        Ok(())
+    };
+    let mut lexical = PathBuf::new();
+    for component in absolute.components() {
+        lexical.push(component);
+        check(&lexical, true)?;
+        // Check symlink targets too: trusting the link alone does not protect its target.
+        let resolved =
+            fs::canonicalize(&lexical).map_err(|e| format!("{}: {e}", lexical.display()))?;
+        let mut prefix = PathBuf::new();
+        for component in resolved.components() {
+            prefix.push(component);
+            check(&prefix, false)?;
+        }
+    }
+    fs::canonicalize(&absolute).map_err(|e| format!("{}: {e}", absolute.display()))
+}
+
+/// Check that an exported directory still names the inode used for writes.
+pub(crate) fn validate_projection(dir_fd: impl AsFd, dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let canonical = validate_directory_path(dir)?;
+    let pinned = rustix::fs::fstat(dir_fd).map_err(|e| format!("{}: stat: {e}", dir.display()))?;
+    let named = fs::metadata(&canonical).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(target_os = "macos")]
+    let device = pinned.st_dev as u64;
+    #[cfg(target_os = "linux")]
+    let device = pinned.st_dev;
+    if device != named.dev() || pinned.st_ino != named.ino() {
+        return Err(format!(
+            "{}: directory changed during validation",
+            dir.display()
+        ));
+    }
+    Ok(canonical)
+}
+
 /// Enumerate entry names beneath an already-pinned directory fd,
 /// excluding `.` and `..`. `Dir::read_from` re-opens `.` beneath the
 /// fd, so enumeration is relative to the pinned inode and the caller's
@@ -81,71 +164,98 @@ pub(crate) fn read_dir_names(dir_fd: impl AsFd) -> rustix::io::Result<Vec<OsStri
     Ok(names)
 }
 
-/// Writes `value` to `key` beneath the pinned secrets-dir fd `dir_fd`
-/// and returns `dir.join(key)` for the `{KEY}_FILE` pointer. Invariant
-/// this enforces: writes stay beneath the pinned directory. The caller performs
-/// any required RAM-backing validation. A symlink planted at the target path (e.g. by
-/// leftover/attacker-controlled state in a per-service ramdisk dir that
-/// persists across restarts) must never be followed onto persistent
-/// disk, so the open refuses symlinks (`O_NOFOLLOW`) and fails closed
-/// instead. The directory is pinned by the caller's fd: a symlink
-/// swapped in at `dir` after pinning is not followed: the file open uses the pinned
-/// directory inode, not a path re-resolution. On any post-open error
-/// the just-created/truncated target is unlinked fd-relative before the
-/// error is returned — the caller only learns the names of successful
-/// writes, so it could never clean up a partial file itself.
+/// Reject foreign, linked or special existing files before publication.
+pub(crate) fn check_file(dir_fd: impl AsFd, name: &std::ffi::OsStr) -> Result<(), String> {
+    use rustix::fs::{AtFlags, FileType, statat};
+    match statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(st)
+            if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile
+                && st.st_uid == rustix::process::geteuid().as_raw()
+                && st.st_nlink == 1 =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err("refusing foreign, linked or non-regular file".into()),
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(e) => Err(format!("stat: {e}")),
+    }
+}
+
+/// Publish a fresh owner-only inode beneath a pinned directory.
+/// Existing read handles retain the old contents. Failed writes remove only the new inode.
+pub(crate) fn replace_file(
+    dir_fd: impl AsFd,
+    name: &std::ffi::OsStr,
+    value: &[u8],
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
+    let dir_fd = dir_fd.as_fd();
+    check_file(dir_fd, name)?;
+    #[cfg(target_os = "macos")]
+    acl::validate(dir_fd)?;
+    let mut random = [0; 16];
+    getrandom::fill(&mut random).map_err(|e| format!("random temporary name: {e}"))?;
+    let temporary = format!(".postmaster-{}", hex::encode(random));
+    let fd = openat(
+        dir_fd,
+        temporary.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map_err(|e| format!("create temporary file: {e}"))?;
+    let result = (|| {
+        rustix::fs::fchmod(&fd, Mode::RUSR | Mode::WUSR).map_err(|e| format!("fchmod: {e}"))?;
+        clear_file_acl(&fd)?;
+        let mut file = fs::File::from(fd);
+        file.write_all(value)
+            .and_then(|()| file.flush())
+            .map_err(|e| format!("write: {e}"))?;
+        check_file(dir_fd, name)?;
+        renameat(dir_fd, temporary.as_str(), dir_fd, name).map_err(|e| format!("publish: {e}"))
+    })();
+    if result.is_err() {
+        let _ = unlinkat(dir_fd, temporary.as_str(), AtFlags::empty());
+    }
+    result
+}
+
+/// Write a fresh 0600 file beneath the pinned directory and return its consumer path.
+/// Refuse foreign, linked and special existing entries; refresh regular owner-held files atomically.
 pub fn write_secret_file(
     dir_fd: impl AsFd,
     dir: &Path,
     key: &str,
     value: &[u8],
 ) -> Result<PathBuf, String> {
+    if !crate::keys::is_ident(key) {
+        return Err("secret filename must be an identifier".into());
+    }
     let dir_fd = dir_fd.as_fd();
     let path = dir.join(key);
-    // Drop the managed-dir sentinel (audit 2026-08-02 A19): prune_stale
-    // and cleanup refuse to bulk-delete in a non-empty dir lacking it.
-    let _sentinel_fd = rustix::fs::openat(
+    let sentinel = std::ffi::OsStr::new(MANAGED_SENTINEL);
+    check_file(dir_fd, sentinel).map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
+    let sentinel_fd = rustix::fs::openat(
         dir_fd,
-        MANAGED_SENTINEL,
+        sentinel,
         rustix::fs::OFlags::WRONLY
             | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
             | rustix::fs::OFlags::NOFOLLOW
             | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::from_bits_truncate(0o600),
-    )
-    .map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
-    let oflags = rustix::fs::OFlags::WRONLY
-        | rustix::fs::OFlags::CREATE
-        | rustix::fs::OFlags::TRUNC
-        | rustix::fs::OFlags::NOFOLLOW
-        | rustix::fs::OFlags::CLOEXEC;
-    // `key` is a validated identifier (no separators), so this opens
-    // exactly `dir/key` beneath the pinned directory fd.
-    let fd = rustix::fs::openat(
-        dir_fd,
-        key,
-        oflags,
-        rustix::fs::Mode::from_bits_truncate(0o600),
-    )
-    .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", path.display()))?;
-    // Use fchmod on the fd (not set_permissions on the path) to eliminate a
-    // TOCTOU: between open(O_NOFOLLOW) and a path-based chmod, an attacker
-    // with directory write access could unlink the file and create a symlink
-    // at the same path. fchmod operates on the already-opened fd, which is
-    // the file we just created — no path re-resolution occurs.
-    if let Err(e) = rustix::fs::fchmod(&fd, rustix::fs::Mode::from_bits_truncate(0o600)) {
-        // Post-open failure: unlink the just-created target fd-relative
-        // so partial plaintext never survives a failed write.
-        let _ = rustix::fs::unlinkat(dir_fd, key, rustix::fs::AtFlags::empty());
-        return Err(format!("{}: fchmod: {e}", path.display()));
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    );
+    match sentinel_fd {
+        Ok(fd) => {
+            clear_file_acl(&fd)?;
+        }
+        Err(rustix::io::Errno::EXIST) => {
+            check_file(dir_fd, sentinel)
+                .map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
+        }
+        Err(e) => return Err(format!("{}: sentinel: {e}", path.display())),
     }
-    let mut f = fs::File::from(fd);
-    if let Err(e) = f.write_all(value).and_then(|()| f.flush()) {
-        // Same invariant: the truncated/partially-written target must
-        // not persist as stale plaintext on the ramdisk.
-        let _ = rustix::fs::unlinkat(dir_fd, key, rustix::fs::AtFlags::empty());
-        return Err(format!("{}: write: {e}", path.display()));
-    }
+    replace_file(dir_fd, std::ffi::OsStr::new(key), value)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -264,10 +374,8 @@ pub(crate) fn prune_stale_at(
 mod tests {
     use super::*;
 
-    fn tdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pm-secretfiles-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+    fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
+        let d = crate::test_util::temp_dir::TestDir::new(tag);
         // prune_stale requires a postmaster-managed (owner-only) dir
         // (audit 2026-08-02 A19); match real deployments.
         use std::os::unix::fs::PermissionsExt;
@@ -324,6 +432,125 @@ mod tests {
             fs::read(&real_target).unwrap(),
             b"untouched",
             "the symlink's target file must not be written to"
+        );
+    }
+
+    #[test]
+    fn refresh_does_not_write_to_old_handles_or_linked_inodes() {
+        use std::io::Read as _;
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tdir("refresh");
+        let fd = open_secrets_dir(&dir).unwrap();
+        let path = write_secret_file(&fd, &dir, "KEY", b"old").unwrap();
+        let old_inode = fs::metadata(&path).unwrap().ino();
+        let mut old_handle = fs::File::open(&path).unwrap();
+        write_secret_file(&fd, &dir, "KEY", b"new").unwrap();
+        assert_ne!(old_inode, fs::metadata(&path).unwrap().ino());
+        let mut old = Vec::new();
+        old_handle.read_to_end(&mut old).unwrap();
+        assert_eq!(old, b"old");
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        fs::hard_link(&path, dir.join("LINK")).unwrap();
+        assert!(write_secret_file(&fd, &dir, "KEY", b"never").is_err());
+        assert_eq!(fs::read(dir.join("LINK")).unwrap(), b"new");
+        assert!(
+            !read_dir_names(&fd)
+                .unwrap()
+                .iter()
+                .any(|n| n.to_string_lossy().starts_with(".postmaster-") && n != MANAGED_SENTINEL)
+        );
+    }
+
+    #[test]
+    fn special_secret_and_sentinel_files_fail_without_opening() {
+        let dir = tdir("special");
+        let fd = open_secrets_dir(&dir).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(dir.join("KEY"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(write_secret_file(&fd, &dir, "KEY", b"never").is_err());
+        fs::remove_file(dir.join(MANAGED_SENTINEL)).unwrap();
+        std::os::unix::fs::symlink(dir.join("target"), dir.join(MANAGED_SENTINEL)).unwrap();
+        assert!(write_secret_file(&fd, &dir, "OTHER", b"never").is_err());
+        assert!(!dir.join("target").exists());
+    }
+
+    #[test]
+    fn projection_checks_ancestors_and_preserves_sticky_and_trusted_aliases() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tdir("ancestry");
+        let shared = dir.join("shared");
+        let secret = shared.join("service");
+        fs::create_dir_all(&secret).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        let fd = open_secrets_dir(&secret).unwrap();
+        let error = validate_projection(&fd, &secret).unwrap_err();
+        assert!(error.contains("untrusted replacement"), "{error}");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        assert_eq!(validate_projection(&fd, &secret).unwrap(), secret);
+        std::os::unix::fs::symlink(&shared, dir.join("alias")).unwrap();
+        assert_eq!(
+            validate_projection(&fd, &dir.join("alias/service")).unwrap(),
+            secret
+        );
+        write_secret_file(&fd, &secret, "KEY", b"secret").unwrap();
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat \"$KEY_FILE\""])
+            .env("KEY_FILE", secret.join("KEY"))
+            .output()
+            .unwrap();
+        assert!(child.status.success());
+        assert_eq!(child.stdout, b"secret");
+    }
+
+    #[test]
+    fn untrusted_user_cannot_replace_exported_sticky_paths_or_receive_refreshes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::CommandExt as _;
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tdir("projection-user");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let shared = dir.join("shared");
+        let service = shared.join("service");
+        fs::create_dir_all(&service).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let fd = open_secrets_dir(&service).unwrap();
+        let projected = validate_projection(&fd, &service).unwrap();
+        write_secret_file(&fd, &projected, "KEY", b"protected").unwrap();
+        let attempt = std::process::Command::new("/bin/mv")
+            .arg(&service)
+            .arg(shared.join("replaced"))
+            .uid(65534)
+            .gid(65534)
+            .output()
+            .unwrap();
+        assert!(!attempt.status.success());
+        let child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "test \"$(cat \"$KEY_FILE\")\" = protected && cat \"$CREDENTIALS_DIRECTORY/KEY\"",
+            ])
+            .env("KEY_FILE", projected.join("KEY"))
+            .env("CREDENTIALS_DIRECTORY", &projected)
+            .output()
+            .unwrap();
+        assert!(child.status.success());
+        assert_eq!(child.stdout, b"protected");
+        let foreign = service.join("FOREIGN");
+        fs::write(&foreign, b"old").unwrap();
+        fs::set_permissions(&foreign, fs::Permissions::from_mode(0o644)).unwrap();
+        rustix::fs::chown(&foreign, Some(rustix::fs::Uid::from_raw(65534)), None).unwrap();
+        assert!(write_secret_file(&fd, &service, "FOREIGN", b"never").is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"old");
+        assert_eq!(
+            fs::metadata(&foreign).unwrap().permissions().mode() & 0o777,
+            0o644
         );
     }
 

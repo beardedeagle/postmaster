@@ -17,6 +17,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::adapter::KeyNaming;
 use crate::config::Entry;
 
+mod dotenv;
 mod env;
 #[cfg(target_os = "macos")]
 mod keychain;
@@ -232,25 +233,12 @@ pub fn resolve(
     ring: &KeyRing,
     naming: KeyNaming,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
-    // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13): refuse
-    // to read through a planted symlink.
-    let fd = rustix::fs::open(
-        &entry.env_file,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|e| {
-        format!(
-            "{}: {e} (refusing to follow a symlink)",
-            entry.env_file.display()
-        )
-    })?;
-    let iter = dotenvy::from_read_iter(std::fs::File::from(fd));
+    let mut budget = dotenv::Budget::default();
+    let iter = dotenv::read(&entry.env_file, &mut budget, Some(&entry.env_file_sha256))?;
     // Last assignment wins, matching dotenv semantics within one file.
     let mut found: Option<Zeroizing<String>> = None;
     for item in iter {
-        let (k, v) = item.map_err(|e| format!("{}: {e}", entry.env_file.display()))?;
-        let v = Zeroizing::new(v);
+        let (k, v) = item;
         if k == entry.key {
             found = Some(v);
         }
@@ -312,21 +300,13 @@ pub fn resolve_all(
     let metadata_prefix = naming.metadata_prefix();
     let mut order: Vec<String> = Vec::new();
     let mut merged: HashMap<String, (PathBuf, Zeroizing<String>)> = HashMap::new();
+    let mut budget = dotenv::Budget::default();
     for f in files {
-        // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13):
-        // refuse to read through a planted symlink.
-        let fd = rustix::fs::open(
-            f,
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| format!("{}: {e} (refusing to follow a symlink)", f.display()))?;
-        let iter = dotenvy::from_read_iter(std::fs::File::from(fd));
+        let iter = dotenv::read(f, &mut budget, None)?;
         let mut file_vals: HashMap<String, Zeroizing<String>> = HashMap::new();
         let mut file_order: Vec<String> = Vec::new();
         for item in iter {
-            let (k, v) = item.map_err(|e| format!("{}: {e}", f.display()))?;
-            let v = Zeroizing::new(v);
+            let (k, v) = item;
             if let Some(prefix) = metadata_prefix
                 && k.starts_with(prefix)
             {
@@ -412,12 +392,8 @@ pub mod tests {
     /// Shared with the `load` submodule's tests.
     pub fn with_temp_keys(content: &str, f: impl FnOnce(&Path)) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("mod");
+        let path = dir.join("fixture");
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "{}", content).unwrap();
@@ -430,22 +406,121 @@ pub mod tests {
     }
 
     /// Shared with the `load` submodule's tests.
-    pub fn tdir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("pm-keys-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    pub fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
+        crate::test_util::temp_dir::TestDir::new(tag)
+    }
+
+    #[test]
+    fn malformed_dotenv_diagnostics_do_not_contain_values() {
+        use sha2::Digest as _;
+        let dir = tdir("redaction");
+        let path = dir.join(".env");
+        let ring = KeyRing(HashMap::new());
+        for value in [
+            "\"PRIVATE_SENTINEL",
+            "\"PRIVATE_SENTINEL\" trailing",
+            "\"PRIVATE_SENTINEL\\q\"",
+            "\"PRIVATE_SENTINEL\nsecond",
+        ] {
+            std::fs::write(&path, format!("SECRET={value}\n")).unwrap();
+            let entry = Entry {
+                env_file: path.clone(),
+                key: "SECRET".into(),
+                env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
+                peer_user: None,
+            };
+            let error = resolve(&entry, &ring, KeyNaming::Env).unwrap_err();
+            assert!(!error.contains("PRIVATE_SENTINEL"));
+            assert!(error.contains(path.to_str().unwrap()));
+            for strict in [false, true] {
+                let error = resolve_all(
+                    std::slice::from_ref(&path),
+                    &ring,
+                    false,
+                    strict,
+                    &|_| false,
+                    KeyNaming::Env,
+                )
+                .unwrap_err();
+                assert!(!error.contains("PRIVATE_SENTINEL"));
+                assert!(error.contains(path.to_str().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_authorizes_source_before_interpolation_or_decryption() {
+        use sha2::Digest as _;
+        let dir = tdir("authorized");
+        let path = dir.join(".env");
+        let (sk, pk) = ecies::utils::generate_keypair();
+        let ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".into(),
+                Zeroizing::new(format!(
+                    "{},{}",
+                    "11".repeat(32),
+                    hex::encode(sk.serialize())
+                )),
+            )],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        let allowed = ecies::encrypt(&pk.serialize(), b"allowed").unwrap();
+        let foreign = ecies::encrypt(&pk.serialize(), b"foreign").unwrap();
+        let encoded = BASE64.encode(&allowed);
+        let wrapped = encoded
+            .as_bytes()
+            .chunks(7)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(" \n");
+        std::fs::write(
+            &path,
+            format!("SECRET=discarded\nSOURCE='encrypted:{wrapped}'\nSECRET=${{SOURCE}}\n"),
+        )
+        .unwrap();
+        let mut entry = Entry {
+            env_file: path.clone(),
+            key: "SECRET".into(),
+            env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
+            peer_user: None,
+        };
+        assert_eq!(
+            &*resolve(&entry, &ring, KeyNaming::Env).unwrap(),
+            b"allowed"
+        );
+        // Both authentic foreign ciphertext and plaintext substitutions are unauthorized.
+        for raw in [
+            format!("SECRET='encrypted:{}'\n", BASE64.encode(&foreign)),
+            "SECRET=${PATH}\n".into(),
+            "SECRET=chosen\n".into(),
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(
+                resolve(&entry, &ring, KeyNaming::Env)
+                    .unwrap_err()
+                    .contains("not authorized")
+            );
+        }
+        entry
+            .env_file_sha256
+            .push(sha2::Sha256::digest(std::fs::read(&path).unwrap()).into());
+        assert_eq!(&*resolve(&entry, &ring, KeyNaming::Env).unwrap(), b"chosen");
+        entry.env_file_sha256.clear();
+        assert!(
+            resolve(&entry, &ring, KeyNaming::Env)
+                .unwrap_err()
+                .contains("not authorized")
+        );
     }
 
     #[test]
     fn resolve_plaintext_passthrough_with_empty_ring() {
+        use sha2::Digest as _;
         // Create a real .env file with a plaintext value (simulating --plain)
-        let env_dir = std::env::temp_dir();
-        let env_path = env_dir.join(format!(
-            "postmaster-test-env-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let env_dir = crate::test_util::temp_dir::TestDir::new("mod");
+        let env_path = env_dir.join("fixture");
         {
             let mut f = std::fs::File::create(&env_path).unwrap();
             writeln!(f, "PLAIN=hello-world").unwrap();
@@ -454,6 +529,7 @@ pub mod tests {
         let entry = Entry {
             env_file: env_path.clone(),
             key: "PLAIN".to_string(),
+            env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&env_path).unwrap()).into()],
             peer_user: None,
         };
         // Ring can be empty for plaintext path

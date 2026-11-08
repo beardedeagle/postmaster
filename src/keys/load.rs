@@ -110,12 +110,8 @@ mod tests {
     #[test]
     fn load_rejects_world_readable_keys_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-worldread-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
@@ -132,12 +128,8 @@ mod tests {
     #[test]
     fn load_rejects_group_readable_keys_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-groupread-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
@@ -180,12 +172,8 @@ mod tests {
     #[test]
     fn load_accepts_0400_keys_file() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-keys-0400-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();

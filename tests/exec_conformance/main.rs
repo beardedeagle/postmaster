@@ -7,11 +7,26 @@ mod daemon;
 mod env_mode;
 mod files_mode;
 mod keys_verify;
+mod setup;
 
 use postmaster::adapter::KeyNaming;
 
 use std::path::Path;
 use std::process::Command;
+
+#[test]
+fn fixture_directories_are_private_and_unique() {
+    use std::os::unix::fs::PermissionsExt;
+    let first = common::tmpdir("private");
+    std::fs::write(first.join("sentinel"), b"retained").unwrap();
+    let second = common::tmpdir("private");
+    assert_ne!(first.as_path(), second.as_path());
+    assert_eq!(
+        std::fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(std::fs::read(first.join("sentinel")).unwrap(), b"retained");
+}
 
 #[test]
 fn helper_ciphertext_decrypts_with_test_key() {

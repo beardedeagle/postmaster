@@ -51,12 +51,30 @@ pub(crate) struct TerminationGuard {
 #[cfg(target_os = "macos")]
 impl TerminationGuard {
     pub(crate) fn block() -> Self {
+        Self::block_signals(&STOP_SIGNALS)
+    }
+
+    pub(crate) fn block_input() -> Self {
+        Self::block_signals(&[
+            STOP_SIGNALS[0],
+            STOP_SIGNALS[1],
+            STOP_SIGNALS[2],
+            STOP_SIGNALS[3],
+            rustix::process::Signal::TSTP,
+        ])
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        self.old.is_some()
+    }
+
+    fn block_signals(signals: &[rustix::process::Signal]) -> Self {
         unsafe {
             // SAFETY: zeroed sigset_t is a valid empty set representation;
             // all pointers are valid and outlive the calls.
             let mut set: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut set);
-            for sig in STOP_SIGNALS {
+            for sig in signals {
                 libc::sigaddset(&mut set, sig.as_raw());
             }
             let mut old: libc::sigset_t = std::mem::zeroed();
@@ -69,6 +87,20 @@ impl TerminationGuard {
                 return Self { old: None };
             }
             Self { old: Some(old) }
+        }
+    }
+
+    pub(crate) fn input_pending(&self) -> Result<bool, String> {
+        // SAFETY: sigpending initializes valid storage; sigismember receives that set.
+        unsafe {
+            let mut pending: libc::sigset_t = std::mem::zeroed();
+            if libc::sigpending(&mut pending) != 0 {
+                return Err("cannot check pending input signals".into());
+            }
+            Ok(STOP_SIGNALS
+                .iter()
+                .any(|s| libc::sigismember(&pending, s.as_raw()) == 1)
+                || libc::sigismember(&pending, libc::SIGTSTP) == 1)
         }
     }
 
@@ -103,9 +135,27 @@ pub(crate) struct TerminationGuard {
 #[cfg(target_os = "linux")]
 impl TerminationGuard {
     pub(crate) fn block() -> Self {
+        Self::block_signals(&STOP_SIGNALS)
+    }
+
+    pub(crate) fn block_input() -> Self {
+        Self::block_signals(&[
+            STOP_SIGNALS[0],
+            STOP_SIGNALS[1],
+            STOP_SIGNALS[2],
+            STOP_SIGNALS[3],
+            rustix::process::Signal::TSTP,
+        ])
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        self.old.is_some()
+    }
+
+    fn block_signals(signals: &[rustix::process::Signal]) -> Self {
         let mut set = runtime::KernelSigSet::empty();
-        for sig in STOP_SIGNALS {
-            set.insert(sig);
+        for sig in signals {
+            set.insert(*sig);
         }
         // SAFETY: the set holds only the four standard termination
         // signals — none reserved by any libc in the process (glibc
@@ -123,6 +173,12 @@ impl TerminationGuard {
                 Self { old: None }
             }
         }
+    }
+
+    pub(crate) fn input_pending(&self) -> Result<bool, String> {
+        let pending = runtime::kernel_sigpending();
+        Ok(STOP_SIGNALS.iter().any(|s| pending.contains(*s))
+            || pending.contains(rustix::process::Signal::TSTP))
     }
 
     /// Restore the saved signal mask (see the macOS docs).
@@ -341,6 +397,8 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                     format!("{}: {e} (refusing to follow a symlink)", dir.display())
                 })?,
             };
+            let projected_dir = crate::secret_files::validate_projection(&dir_fd, dir)?;
+            let dir = projected_dir.as_path();
             let (resolved, failed) = decrypt(&cfg)?;
             if verify_keys {
                 verify_key_freshness(&failed)?;
@@ -383,7 +441,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 // systemd path: pid 1 already materialized the credentials.
                 let dir = std::env::var_os("CREDENTIALS_DIRECTORY")
                     .ok_or("postmaster credentials expected but CREDENTIALS_DIRECTORY is unset")?;
-                let dir = PathBuf::from(dir);
+                let dir = crate::secret_files::validate_directory_path(&PathBuf::from(dir))?;
                 for k in &cfg.credential_keys {
                     extra.push((
                         OsString::from(format!("{k}_FILE")),
@@ -402,6 +460,8 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                         format!("{}: {e} (refusing to follow a symlink)", dir.display())
                     })?,
                 };
+                let projected_dir = crate::secret_files::validate_projection(&dir_fd, dir)?;
+                let dir = projected_dir.as_path();
                 let sockets: &HashMap<String, PathBuf> = &cfg.sockets;
                 // Prune stale credential files from a prior launch.
                 prune_stale_at(&dir_fd, dir, &cfg.credential_keys)?;
@@ -548,9 +608,7 @@ mod tests {
         // A config that resolves cleanly in "env" mode (no ramdisk/creds
         // machinery involved) so the empty-argv guard is what's exercised,
         // not an earlier, unrelated failure.
-        let d = std::env::temp_dir().join(format!("pm-launcher-emptyargv-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let d = crate::test_util::temp_dir::TestDir::new("launcher");
         let keys_path = d.join(".env.keys");
         fs::write(
             &keys_path,

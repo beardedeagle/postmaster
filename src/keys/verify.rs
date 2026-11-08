@@ -92,12 +92,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn verify_external_binary_rejects_unsigned_file() {
         // A temp file with no code signature must be rejected by codesign -v.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-unsigned-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("verify");
+        let path = dir.join("fixture");
         std::fs::write(&path, b"not a signed binary").unwrap();
         let result = verify_external_binary(&path);
         let _ = std::fs::remove_file(&path);
@@ -115,12 +111,8 @@ mod tests {
             return;
         }
         // On Linux, a non-root-owned binary in /tmp must be rejected.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "postmaster-test-binary-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = crate::test_util::temp_dir::TestDir::new("verify");
+        let path = dir.join("fixture");
         std::fs::write(&path, b"fake binary").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();

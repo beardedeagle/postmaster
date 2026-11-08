@@ -114,7 +114,7 @@ const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 /// truncated secret must never be served as if complete.
 pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, String> {
     let mut limited = reader.take(MAX_READ_BYTES + 1);
-    let mut buf = Vec::new();
+    let mut buf = Zeroizing::new(Vec::new());
     limited
         .read_to_end(&mut buf)
         .map_err(|e| format!("{}: read: {e}", path.display()))?;
@@ -125,7 +125,7 @@ pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, St
             MAX_READ_BYTES
         ));
     }
-    Ok(buf)
+    Ok(std::mem::take(&mut *buf))
 }
 
 /// Connect, read one credential to EOF (hard-capped by `read_capped`).
@@ -388,6 +388,71 @@ impl Drop for UmaskGuard {
     }
 }
 
+struct SocketDomain {
+    parent: PathBuf,
+    traversed: std::collections::HashSet<PathBuf>,
+    uid: u32,
+}
+
+/// Resolve aliases while retaining each directory traversed by the consumer's pathname.
+fn socket_domain(path: &Path, uid: u32) -> Result<SocketDomain, String> {
+    let mut resolved = PathBuf::new();
+    let mut traversed = std::collections::HashSet::new();
+    for part in path
+        .parent()
+        .ok_or("socket requires a parent directory")?
+        .components()
+    {
+        if part == std::path::Component::ParentDir {
+            resolved.pop();
+            continue;
+        }
+        resolved.push(part);
+        match fs::canonicalize(&resolved) {
+            Ok(path) => resolved = path,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: socket parent: {e}", path.display())),
+        }
+        traversed.extend(resolved.ancestors().map(Path::to_path_buf));
+    }
+    Ok(SocketDomain {
+        parent: resolved,
+        traversed,
+        uid,
+    })
+}
+
+/// Reject ownership domains where one consumer could replace another's sockets.
+fn validate_socket_domains(
+    cfg: &Config,
+    peer_uids: &std::collections::HashMap<PathBuf, Option<u32>>,
+    euid: u32,
+) -> Result<(), String> {
+    let mut domains: Vec<SocketDomain> = Vec::new();
+    for path in cfg.credentials.keys() {
+        let uid = if euid == 0 {
+            peer_uids.get(path).copied().flatten().unwrap_or(0)
+        } else {
+            euid
+        };
+        let domain = socket_domain(path, uid)?;
+        for other in &domains {
+            let same = domain.parent == other.parent;
+            let controlled = other.uid != 0 && domain.traversed.contains(&other.parent)
+                || uid != 0 && other.traversed.contains(&domain.parent);
+            if uid != other.uid && (same || controlled) {
+                return Err(format!(
+                    "{} and {}: socket parents have conflicting ownership domains",
+                    domain.parent.display(),
+                    other.parent.display()
+                ));
+            }
+        }
+        domains.push(domain);
+    }
+    Ok(())
+}
+
 /// Bind and listen on all configured credential sockets. Returns
 /// a vector of `(UnixListener, path)` pairs ready for serving (the entry
 /// is re-looked-up by the caller).
@@ -398,6 +463,7 @@ pub fn acquire_listeners(
     peer_uids: &std::collections::HashMap<PathBuf, Option<u32>>,
 ) -> Result<Vec<(UnixListener, PathBuf)>, String> {
     if bind {
+        validate_socket_domains(cfg, peer_uids, rustix::process::geteuid().as_raw())?;
         let am_root = rustix::process::geteuid().is_root();
         let mut out = Vec::new();
         for path in cfg.credentials.keys() {
@@ -654,9 +720,7 @@ mod tests {
 
     #[test]
     fn fetch_bytes_roundtrip_and_empty_fails_closed() {
-        let dir = std::env::temp_dir().join(format!("pm-fetch-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("server");
         let sock = dir.join("t.sock");
         let listener = UnixListener::bind(&sock).unwrap();
         let t = thread::spawn(move || {
@@ -680,7 +744,8 @@ mod tests {
         // runs trip the root-ownership check, root runs trip the
         // write-bits check — either way the file is refused.
         use std::os::unix::fs::PermissionsExt;
-        let path = std::env::temp_dir().join(format!("pm-idfake-{}", std::process::id()));
+        let fixture = crate::test_util::temp_dir::TestDir::new("server");
+        let path = fixture.join("fixture");
         fs::write(&path, b"fake id").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
         let p = path.to_str().unwrap().to_string();
@@ -708,9 +773,7 @@ mod tests {
     fn preflight_rejects_empty_resolved_value() {
         // sweep 2026-08-07 D4: zero bytes means refusal on the wire, so
         // an empty value must fail at startup, not at first fetch.
-        let dir = std::env::temp_dir().join(format!("pm-preflight-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::temp_dir::TestDir::new("server");
         let env_file = dir.join(".env");
         fs::write(&env_file, "KEY=\n").unwrap();
         let mut credentials = std::collections::HashMap::new();
@@ -719,6 +782,10 @@ mod tests {
             Entry {
                 env_file,
                 key: "KEY".to_string(),
+                env_file_sha256: vec![{
+                    use sha2::Digest as _;
+                    sha2::Sha256::digest(b"KEY=\n").into()
+                }],
                 peer_user: None,
             },
         );
@@ -748,6 +815,7 @@ mod tests {
             Entry {
                 env_file: PathBuf::from("/x/.env"),
                 key: "K".to_string(),
+                env_file_sha256: Vec::new(),
                 peer_user: None,
             },
         );
@@ -780,5 +848,55 @@ mod tests {
         let over_cap = std::io::repeat(0x41).take(MAX_READ_BYTES + 1);
         let err = read_capped(over_cap, Path::new("/test")).unwrap_err();
         assert!(err.contains("size cap"), "{err}");
+    }
+
+    #[test]
+    fn socket_domains_are_checked_before_mutation_including_aliases() {
+        let dir = crate::test_util::temp_dir::TestDir::new("socket-domains");
+        let parent = dir.join("sockets");
+        fs::create_dir(&parent).unwrap();
+        std::os::unix::fs::symlink(&parent, dir.join("alias")).unwrap();
+        fs::create_dir_all(dir.join("outside/sub")).unwrap();
+        std::os::unix::fs::symlink(dir.join("outside"), parent.join("escape")).unwrap();
+        for second in [
+            parent.join("B.sock"),
+            parent.join("nested/B.sock"),
+            dir.join("alias/B.sock"),
+            parent.join("unused/../B.sock"),
+            parent.join("escape/sub/B.sock"),
+        ] {
+            let first = parent.join("A.sock");
+            let cfg = Config {
+                keys: KeysSource::File(dir.join(".env.keys")),
+                credentials: [first.clone(), second.clone()]
+                    .into_iter()
+                    .map(|p| {
+                        (
+                            p,
+                            Entry {
+                                env_file: dir.join(".env"),
+                                key: "KEY".into(),
+                                env_file_sha256: Vec::new(),
+                                peer_user: None,
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            let mut peers = [(first.clone(), Some(1001)), (second.clone(), Some(1002))]
+                .into_iter()
+                .collect();
+            assert!(
+                validate_socket_domains(&cfg, &peers, 0)
+                    .unwrap_err()
+                    .contains("conflicting ownership")
+            );
+            assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+            peers.insert(second.clone(), Some(1001));
+            validate_socket_domains(&cfg, &peers, 0).unwrap();
+            peers.insert(first.clone(), None);
+            peers.insert(second, Some(0));
+            validate_socket_domains(&cfg, &peers, 0).unwrap();
+        }
     }
 }

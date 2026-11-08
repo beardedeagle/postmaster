@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, missing_docs)]
 
+#[path = "../src/test_util/temp_dir.rs"]
+mod temp_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,11 +16,8 @@ fn fixture(path: &str) -> PathBuf {
     repo_root().join(path)
 }
 
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pm-exec-check-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmpdir(tag: &str) -> temp_dir::TestDir {
+    temp_dir::TestDir::new(tag)
 }
 
 fn run_check(config: &Path) -> std::process::Output {

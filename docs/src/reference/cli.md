@@ -46,6 +46,29 @@ unit owns the sockets and the daemon inherits them via
 `sd_listen_fds`. On macOS, `--bind` causes postmaster to create its own
 listener sockets.
 
+### Daemon configuration
+
+Each socket maps to an entry with `env_file`, `key`, `env_file_sha256`, and
+optional `peer_user`. `env_file_sha256` is a list of SHA-256 hashes, encoded
+as 64 hex digits, for the exact dotenv file bytes authorized for that entry.
+Postmaster checks the hash before parsing, interpolation, or decryption, both
+at startup and on every fetch. An empty list authorizes nothing. This applies
+to plaintext assignments too.
+
+Keep this configuration under trusted ownership. Compute hashes from the
+trusted artifact before deployment, rather than from the writable runtime
+copy. On Linux, use `sha256sum <file>`; on macOS, use `shasum -a 256 <file>`.
+Line endings, whitespace, and metadata count toward the hash. Multiple hashes
+allow old and new files during staged rotation; remove the old hash when that
+window ends. The dotenvx ciphertext format and private-key rotation candidates
+stay the same.
+
+When binding as root, sockets for different unprivileged peers need separate
+parent directories. One peer's parent cannot contain another peer's socket
+parent. Postmaster resolves aliases and checks these ownership domains before
+changing directories or binding sockets. Sockets for the same user can share
+a parent; root-only entries and `peer_user` resolving to uid 0 share a domain.
+
 ## exec
 
 Decrypt and inject secrets, then `execvp` the target binary.
@@ -103,6 +126,17 @@ Default keys directory:
 - Linux: `/var/lib/postmaster`
 - macOS: `~/Library/Application Support/postmaster` (falls back to
   `/var/lib/postmaster` when `HOME` is unset)
+
+Secret terminal input has echo disabled until the read finishes. Postmaster
+restores terminal settings before delivering a pending termination or suspend
+signal. Key files accept multiline input through EOF; Keychain values use one
+trimmed line. Redirected input keeps the same format and buffering.
+
+Forced key-file replacement verifies ownership, regular-file type, and single
+link count before changing permissions. It pins the parent, checks that the
+original inode still occupies the name after input, and publishes a fresh
+0600 inode. Existing read handles keep the old contents. A declined replacement
+keeps the existing contents; unattended replacement fails without prompting.
 
 ## cleanup
 

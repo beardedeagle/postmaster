@@ -6,6 +6,8 @@
 
 #[path = "../../src/test_util/aad_fixture.rs"]
 pub mod aad_fixture;
+#[path = "../../src/test_util/temp_dir.rs"]
+pub mod temp_dir;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,15 +33,8 @@ pub fn enc(value: &str) -> String {
     format!("encrypted:{}", BASE64.encode(ct))
 }
 
-pub fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "postmaster-exec-{tag}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
-    d
+pub fn tmpdir(tag: &str) -> temp_dir::TestDir {
+    temp_dir::TestDir::new(tag)
 }
 
 pub fn write_env_file(dir: &Path, name: &str, lines: &[String]) -> PathBuf {

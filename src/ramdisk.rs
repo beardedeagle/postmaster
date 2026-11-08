@@ -309,15 +309,8 @@ image-type      : read/write
         ));
     }
 
-    fn test_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pm-ramdisk-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn test_dir(tag: &str) -> crate::test_util::temp_dir::TestDir {
+        crate::test_util::temp_dir::TestDir::new(tag)
     }
 
     #[test]
