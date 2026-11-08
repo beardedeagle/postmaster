@@ -54,6 +54,22 @@ fn wait_for_socket(
 
 #[test]
 fn daemon_serves_a_real_fetch_roundtrip() {
+    for mask in ["000", "022", "077"] {
+        daemon_roundtrip(mask, None);
+    }
+}
+
+#[test]
+fn daemon_serves_configured_peer_under_any_umask() {
+    let out = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    assert!(out.status.success());
+    let user = String::from_utf8(out.stdout).unwrap();
+    for mask in ["000", "022", "077"] {
+        daemon_roundtrip(mask, Some(user.trim()));
+    }
+}
+
+fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
     let d = common::tmpdir("daemon");
     let env = common::write_env_file(
         &d,
@@ -70,19 +86,30 @@ fn daemon_serves_a_real_fetch_roundtrip() {
     let cfg = d.join("daemon.json");
     std::fs::write(
         &cfg,
-        format!(
-            r#"{{"keys":{{"file":"{}"}},"credentials":{{"{}":{{"env_file":"{}","key":"DB_URL"}}}}}}"#,
-            keys.display(),
-            sock.display(),
-            env.display()
-        ),
+        serde_json::json!({
+            "keys": {"file": keys},
+            "credentials": {sock.to_str().unwrap(): {
+                "env_file": env,
+                "key": "DB_URL",
+                "peer_user": peer_user,
+            }},
+        })
+        .to_string(),
     )
     .unwrap();
 
     // The suite runs as the test user: --bind (no systemd activation
     // here) and --allow-nonroot (the peer ACL's root-only default would
-    // refuse our own fetch otherwise; no peer_user is configured).
-    let daemon = Command::new(env!("CARGO_BIN_EXE_postmaster"))
+    // refuse our own fetch when no peer_user is configured).
+    // The shell sets the child's mask without changing the test process.
+    let daemon = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask \"$1\"; shift; exec \"$@\"",
+            "postmaster-test",
+            mask,
+            env!("CARGO_BIN_EXE_postmaster"),
+        ])
         .args(["--config"])
         .arg(&cfg)
         .args(["--bind", "--allow-nonroot"])
@@ -92,11 +119,11 @@ fn daemon_serves_a_real_fetch_roundtrip() {
     let mut guard = KillOnDrop(Some(daemon));
     wait_for_socket(guard.0.as_mut().unwrap(), &sock, Duration::from_secs(10)).unwrap();
 
-    // The bind-time permission contract (audit finding #7; umask-borne on
-    // darwin, fchmod on Linux): no peer_user configured → owner-only.
+    // A configured peer needs write access; otherwise the socket is owner-only.
     use std::os::unix::fs::PermissionsExt as _;
     let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "socket must be owner-only, got {mode:o}");
+    let expected = if peer_user.is_some() { 0o666 } else { 0o600 };
+    assert_eq!(mode, expected, "socket mode under umask {mask}");
 
     let out = Command::new(env!("CARGO_BIN_EXE_postmaster"))
         .arg("fetch")

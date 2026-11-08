@@ -199,9 +199,10 @@ where secret material is read or written:
   inode must also belong to the verified RAM device and service user.
   This checks intermediate-symlink targets as well. The launcher retains
   that handle for pruning, writes, cleanup, and monitoring.
-- **Socket permissions** use `fchmod` on the socket fd on Linux. macOS rejects
-  that operation, so Postmaster sets the umask before binding there and
-  restores it afterward.
+- **Socket permissions** use a bind-time umask on Linux and macOS, so the
+  pathname has its final mode from creation. Postmaster restores the prior
+  mask immediately afterward, including on bind failure. Binding runs
+  before serving threads start.
 
 ### External binary verification
 

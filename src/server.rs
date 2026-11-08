@@ -371,48 +371,32 @@ pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
 
 /// RAII guard that sets the process umask so a bound unix socket is born
 /// with `mode` (sockets are created `0777 & ~umask`) and restores the
-/// prior mask on drop. Darwin-only: Linux fchmod()s the already-bound
-/// socket fd, which Darwin cannot do — fchmod(2) rejects socket fds
-/// with EINVAL — and a path chmod would reopen the same TOCTOU (a
-/// swapped-in symlink redirecting the chmod to an attacker-chosen
-/// file). Being born with the right mode has no window at all.
-#[cfg(target_os = "macos")]
+/// prior mask on drop. Used only during single-threaded socket setup.
 #[derive(Debug)]
-struct UmaskGuard(libc::mode_t);
+struct UmaskGuard(rustix::fs::Mode);
 
-#[cfg(target_os = "macos")]
 impl UmaskGuard {
-    fn around_bind(mode: u32) -> Self {
-        let mask = (!mode & 0o777) as libc::mode_t;
-        // SAFETY: umask(2) cannot fail and has no memory-safety surface.
-        // The call site is single-threaded (run() spawns the serve
-        // threads only after acquire_listeners returns), so the
-        // process-wide flip cannot race.
-        Self(unsafe { libc::umask(mask) })
+    fn around_bind(mode: rustix::fs::Mode) -> Self {
+        let mask = !mode & rustix::fs::Mode::from_bits_truncate(0o777);
+        Self(rustix::process::umask(mask))
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Drop for UmaskGuard {
     fn drop(&mut self) {
-        // SAFETY: restoring the mask captured at construction; same
-        // single-threaded window and no-failure contract as above.
-        unsafe {
-            libc::umask(self.0);
-        }
+        rustix::process::umask(self.0);
     }
 }
 
 /// Bind and listen on all configured credential sockets. Returns
 /// a vector of `(UnixListener, path)` pairs ready for serving (the entry
 /// is re-looked-up by the caller).
+/// Call during single-threaded startup: bind mode temporarily changes umask.
 pub fn acquire_listeners(
     cfg: &Config,
     bind: bool,
     peer_uids: &std::collections::HashMap<PathBuf, Option<u32>>,
 ) -> Result<Vec<(UnixListener, PathBuf)>, String> {
-    #[cfg(not(target_os = "macos"))]
-    use std::os::fd::AsFd;
     if bind {
         let am_root = rustix::process::geteuid().is_root();
         let mut out = Vec::new();
@@ -475,27 +459,13 @@ pub fn acquire_listeners(
             // connect(2) needs write on the socket inode; the reachability
             // gate is the 0500 parent dir plus the peer-credential check.
             let mode = if expected.is_some() { 0o666 } else { 0o600 };
-            // Darwin has no fchmod(2) for socket fds (EINVAL — found by
-            // the T2 end-to-end conformance test, sweep 2026-08-07), and
-            // a path chmod would reopen the audit-#7 TOCTOU the fchmod
-            // below closes. Flip the process umask around the bind
-            // instead: the socket is born with `mode`, so there is no
-            // window at all. The process is single-threaded here — run()
-            // spawns the serve threads only after acquire_listeners
-            // returns — so the process-wide flip is race-free.
-            #[cfg(target_os = "macos")]
-            let _umask_guard = UmaskGuard::around_bind(mode);
-            let l =
-                UnixListener::bind(path).map_err(|e| format!("{}: bind: {e}", path.display()))?;
-            // Audit finding #7: use fchmod on the socket fd instead of
-            // set_permissions on the path to eliminate a TOCTOU between
-            // bind and chmod. Between those two path operations an attacker
-            // with directory write access could unlink the socket and
-            // create a symlink. fchmod operates on the already-bound fd,
-            // which is the socket inode we just created.
-            #[cfg(not(target_os = "macos"))]
-            rustix::fs::fchmod(l.as_fd(), rustix::fs::Mode::from_bits_truncate(mode))
-                .map_err(|e| format!("{}: fchmod: {e}", path.display()))?;
+            // fchmod on Linux changes the sockfs inode, not the pathname;
+            // Darwin rejects it. Bind with the final mode to avoid a chmod race.
+            let l = {
+                let _umask_guard =
+                    UmaskGuard::around_bind(rustix::fs::Mode::from_bits_truncate(mode));
+                UnixListener::bind(path).map_err(|e| format!("{}: bind: {e}", path.display()))?
+            };
             out.push((l, path.clone()));
         }
         return Ok(out);

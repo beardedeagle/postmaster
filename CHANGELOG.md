@@ -85,8 +85,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mappings. Startup rejects relative paths, symlinked socket parents,
   and empty credentials.
 - Applies a configured `peer_user` ACL independently of
-  `--allow-nonroot`. Socket permissions use a bind-time umask on macOS
-  and descriptor-based `fchmod` on Linux.
+  `--allow-nonroot`. Socket permissions use a bind-time umask on Linux
+  and macOS, with the prior mask restored immediately afterward.
 - Applies process hardening on secret-handling command paths and logs
   failures. Help, version output, and structural config checks avoid
   secret-path hardening work.

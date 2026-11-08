@@ -112,9 +112,7 @@ runs:
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
-        if ! command -v cargo-deny >/dev/null 2>&1; then
-          cargo install cargo-deny --version "$CARGO_DENY_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
-        fi
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" cargo-deny "$CARGO_DENY_VERSION" "$CARGO_INSTALL_TARGET_DIR"
 
     - name: Install cargo-audit
       if: ${{ inputs.install-cargo-audit == 'true' }}
@@ -124,9 +122,7 @@ runs:
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
-        if ! command -v cargo-audit >/dev/null 2>&1; then
-          cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
-        fi
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" cargo-audit "$CARGO_AUDIT_VERSION" "$CARGO_INSTALL_TARGET_DIR"
 
     - name: Install mdbook
       if: ${{ inputs.install-mdbook == 'true' }}
@@ -137,9 +133,5 @@ runs:
         CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
       run: |
         set -euo pipefail
-        if ! command -v mdbook >/dev/null 2>&1; then
-          cargo install mdbook --version "$MDBOOK_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
-        fi
-        if ! command -v mdbook-mermaid >/dev/null 2>&1; then
-          cargo install mdbook-mermaid --version "$MDBOOK_MERMAID_VERSION" --locked --target-dir "$CARGO_INSTALL_TARGET_DIR"
-        fi
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" mdbook "$MDBOOK_VERSION" "$CARGO_INSTALL_TARGET_DIR"
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" mdbook-mermaid "$MDBOOK_MERMAID_VERSION" "$CARGO_INSTALL_TARGET_DIR"
