@@ -1,13 +1,28 @@
 //! `postmaster setup` command path.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
 use super::ensure_keychain_items;
 use super::{default_keys_dir, ensure_keys_dir, ensure_keys_file, verify_key_sources};
 use crate::adapter::KeyNaming;
-use crate::exec_config::KeySourceSpec;
+use crate::exec_config::{ExecConfig, KeySourceSpec};
 use crate::server::log;
+
+/// Resolve distinct setup key variables in first-seen input order.
+fn wanted_keys(cfg: &ExecConfig) -> Result<Vec<String>, String> {
+    let mut wanted = Vec::new();
+    for f in &cfg.env_files {
+        wanted.push(KeyNaming::Env.key_var_for(f)?);
+    }
+    for f in &cfg.bundle_files {
+        wanted.push(KeyNaming::Bundle.key_var_for(f)?);
+    }
+    let mut seen = HashSet::new();
+    wanted.retain(|key| seen.insert(key.clone()));
+    Ok(wanted)
+}
 
 /// `postmaster setup`: verify platform prerequisites, create keys
 /// directory with correct permissions, optionally seed keychain items,
@@ -35,14 +50,7 @@ pub fn setup(
     let cfg = crate::launcher::parse_exec_config(config_path)?;
     cfg.validate_shape()?;
 
-    // Build the wanted key variable list from both env and bundle files
-    let mut wanted: Vec<String> = Vec::new();
-    for f in &cfg.env_files {
-        wanted.push(KeyNaming::Env.key_var_for(f)?);
-    }
-    for f in &cfg.bundle_files {
-        wanted.push(KeyNaming::Bundle.key_var_for(f)?);
-    }
+    let wanted = wanted_keys(&cfg)?;
 
     if recheck {
         // --recheck: verification only, no creation or modification
@@ -77,4 +85,39 @@ pub fn setup(
         cfg.keys.len()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_keys_are_unique_and_keep_first_seen_order() {
+        let mut cfg: ExecConfig = serde_json::from_value(serde_json::json!({
+            "mode": "env", "keys": [{"keychain": "postmaster"}],
+            "bundle_files": ["/x/first.json", "/x/second.json"]
+        }))
+        .unwrap();
+        assert_eq!(wanted_keys(&cfg).unwrap(), ["POSTMASTER_KEY"]);
+        cfg.env_files = [
+            "/x/.env.production",
+            "/x/.env",
+            "/y/.env.production",
+            "/x/.env.development",
+        ]
+        .map(PathBuf::from)
+        .into();
+        assert_eq!(
+            wanted_keys(&cfg).unwrap(),
+            [
+                "DOTENV_PRIVATE_KEY_PRODUCTION",
+                "DOTENV_PRIVATE_KEY",
+                "DOTENV_PRIVATE_KEY_DEVELOPMENT",
+                "POSTMASTER_KEY"
+            ]
+        );
+        cfg.env_files.push("/x/.env.bad-name".into());
+        assert!(wanted_keys(&cfg).is_err());
+    }
 }

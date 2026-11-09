@@ -62,7 +62,7 @@ fn daemon_serves_a_real_fetch_roundtrip() {
 
 #[test]
 fn daemon_serves_configured_peer_under_any_umask() {
-    let out = Command::new("/usr/bin/id").arg("-un").output().unwrap();
+    let out = Command::new("id").arg("-un").output().unwrap();
     assert!(out.status.success());
     let user = String::from_utf8(out.stdout).unwrap();
     for mask in ["000", "022", "077"] {

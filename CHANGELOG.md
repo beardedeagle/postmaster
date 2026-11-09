@@ -113,7 +113,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   launching with keys that may be stale after rotation.
 - Provides interactive and unattended `postmaster setup` workflows.
   Setup creates a `0700` keys directory, verifies owner-only key files,
-  and optionally seeds macOS Keychain items.
+  and optionally seeds each required macOS Keychain account once.
 - Provides `setup --recheck` for key-source accessibility checks and
   `--keys-dir` for an explicit key directory. `--force` re-prompts for
   key files or re-seeds Keychain items; force with unattended mode fails
@@ -138,6 +138,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the pinned installer digest before execution. Official GitHub actions
   and helper tools use pinned versions. Nix installer temporary files
   work with GNU and macOS `mktemp`.
+  Nix setup extends existing feature settings with `nix-command` and `flakes`.
   Cargo tool installation honors `CARGO_INSTALL_ROOT` and `CARGO_HOME` and
   verifies the selected executables before adding their directory to `PATH`.
 - Runs formatting, Clippy, and Markdown lint from pre-commit hooks.

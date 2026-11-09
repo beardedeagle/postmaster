@@ -782,7 +782,7 @@ mod tests {
         let dir = crate::test_util::temp_dir::TestDir::new("id-alias");
         let target = dir.join("store/bin");
         fs::create_dir_all(&target).unwrap();
-        fs::copy("/usr/bin/id", target.join("id")).unwrap();
+        fs::copy(verified_id_binary().unwrap(), target.join("id")).unwrap();
         fs::set_permissions(target.join("id"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::create_dir(dir.join("current-system")).unwrap();
         std::os::unix::fs::symlink(dir.join("store"), dir.join("current-system/sw")).unwrap();

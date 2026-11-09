@@ -50,6 +50,6 @@ runs:
       run: |
         set -euo pipefail
         mkdir -p "$HOME/.config/nix"
-        if ! grep -q 'experimental-features' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
-          echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+        if ! grep -qxF 'extra-experimental-features = nix-command flakes' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+          printf '\nextra-experimental-features = nix-command flakes\n' >> "$HOME/.config/nix/nix.conf"
         fi
