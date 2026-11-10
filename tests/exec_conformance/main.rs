@@ -86,13 +86,11 @@ fn run_exec(config: &Path, sh: &str, envs: &[(&str, &str)]) -> std::process::Out
     c.args(["exec", "--config"])
         .arg(config)
         .args(["--", "/bin/sh", "-c", sh])
-        // Hermeticity: an ambient SECRET/PLAIN/A/GOOD/BAD/SECRET_GOOD in
-        // the test runner's own environment would flip the precedence-test
-        // outcomes below, since these are exactly the value-variable names
-        // the suite asserts on. DOTENV_PUBLIC_KEY_PRODUCTION and
-        // POSTMASTER_SECRETS_DIR are asserted ABSENT in the child; an
-        // ambient copy would be inherited and flake those assertions
-        // (sweep 2026-08-07 T8).
+        // Hermeticity: an ambient SECRET/PLAIN/A/GOOD/BAD/SECRET_GOOD in the test
+        // runner's own environment would flip the precedence-test outcomes below, since
+        // these are exactly the value-variable names the suite asserts on.
+        // DOTENV_PUBLIC_KEY_PRODUCTION and POSTMASTER_SECRETS_DIR are asserted ABSENT
+        // in the child; an ambient copy would be inherited and flake those assertions.
         .env_remove("SECRET")
         .env_remove("PLAIN")
         .env_remove("FIRST")

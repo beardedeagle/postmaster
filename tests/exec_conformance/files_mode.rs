@@ -140,10 +140,9 @@ fn credentials_mode_fetch_loop() {
     );
     let out = run_exec(&cfg, &sh, &[]);
     if !out.status.success() {
-        // Hang guard (sweep 2026-08-07 T3): a regression that fails
-        // before connecting would leave the mock parked in accept() and
-        // the join below would hang the whole suite. Nudge the listener
-        // with a dummy connection so the thread can finish.
+        // Hang guard: a regression that fails before connecting would leave the mock
+        // parked in accept() and the join below would hang the whole suite. Nudge the
+        // listener with a dummy connection so the thread can finish.
         let _ = std::os::unix::net::UnixStream::connect(&sock);
     }
     server.join().unwrap();
@@ -168,9 +167,8 @@ fn credentials_mode_fetch_loop() {
 
 #[test]
 fn files_mode_exec_failure_leaves_only_the_sentinel() {
-    // sweep 2026-08-07 T6: an execvp failure (audit 2026-08-02 A9) must
-    // unwind the plaintext writes — after a failed exec the secrets dir
-    // holds ONLY the managed sentinel, never secret files.
+    // An execvp failure must unwind the plaintext writes — after a failed exec the
+    // secrets dir holds ONLY the managed sentinel, never secret files.
     let d = common::tmpdir("files-execfail");
     let secrets_dir = d.join("secrets");
     std::fs::create_dir_all(&secrets_dir).unwrap();
@@ -213,9 +211,8 @@ fn files_mode_exec_failure_leaves_only_the_sentinel() {
 
 #[test]
 fn files_mode_passthrough_nul_fails_closed_with_cleanup() {
-    // sweep 2026-08-07 T10: a passthrough value containing NUL cannot
-    // become an env var — fail closed AND unwind the secret file that
-    // was already written for it.
+    // A passthrough value containing NUL cannot become an env var — fail closed AND
+    // unwind the secret file that was already written for it.
     let d = common::tmpdir("files-ptnul");
     let secrets_dir = d.join("secrets");
     std::fs::create_dir_all(&secrets_dir).unwrap();
@@ -252,9 +249,8 @@ fn files_mode_passthrough_nul_fails_closed_with_cleanup() {
 
 #[test]
 fn files_mode_refuses_symlinked_secrets_dir() {
-    // sweep 2026-08-07 T11: a symlinked secrets_dir is a hard error
-    // before any plaintext is written — and the link target stays
-    // untouched.
+    // A symlinked secrets_dir is a hard error before any plaintext is written — and the
+    // link target stays untouched.
     let d = common::tmpdir("files-dirlink");
     let real = d.join("real-secrets");
     std::fs::create_dir_all(&real).unwrap();

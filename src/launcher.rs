@@ -34,12 +34,10 @@ use crate::server::{fetch_bytes, log, read_capped};
 /// the saved mask before execvp so the service starts with a clean
 /// signal state.
 ///
-/// The sigaction flag-handler and second pre-exec gate this guard used
-/// to implement were retired with the sibling-monitor design: the
-/// monitor owns stop semantics, so no async handler is
-/// needed anywhere. What remains is the deterministic write window
-/// (`block`) and the pre-exec mask restore (`restore_mask`) — now real
-/// on Linux too, because the fork+monitor model runs there as well.
+/// The monitor consumes stop signals synchronously. This guard protects
+/// the write window with `block` and restores the captured mask through
+/// `restore_mask` on Linux and macOS. A block failure is logged and leaves
+/// that window unguarded; terminal-input callers refuse to proceed.
 #[cfg(target_os = "macos")]
 pub(crate) struct TerminationGuard {
     /// `None` only if the block call failed (logged); restore then no-ops
@@ -208,8 +206,8 @@ pub fn parse_exec_config(config_path: &Path) -> Result<ExecConfig, String> {
 }
 
 /// Validate the public shape of an exec config without decrypting,
-/// reading key material, or touching the host filesystem. This is
-/// the `--check` contract for CI and automation tools.
+/// reading key material, or inspecting deployment resources. Only the
+/// configuration file is read. This is the `--check` contract for CI.
 pub fn check_config(config_path: &Path) -> Result<(), String> {
     let cfg = parse_exec_config(config_path)?;
     cfg.validate_shape()
@@ -217,11 +215,8 @@ pub fn check_config(config_path: &Path) -> Result<(), String> {
 
 /// Preflight key freshness check: fail if any encrypted env value was
 /// skipped during resolution because the key ring could not decrypt it.
-/// Under `strict: false` a partial key rotation
-/// would otherwise pass silently here — the old check only caught total
-/// failure (empty resolved set) — and the child would launch with a
-/// partial secret set. The failure list recorded by `resolve_all` makes
-/// every skip visible to `--verify-keys`.
+/// Under `strict: false`, the failure list recorded by `resolve_all` makes
+/// every skipped value visible to `--verify-keys`, including partial rotation.
 ///
 /// Bundle files need no scan here: `resolve_bundle` is all-or-nothing —
 /// the first undecryptable entry aborts `decrypt()` regardless of
@@ -274,9 +269,9 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
     }
     let ring = load_ring(&cfg.keys, &wanted, &cfg.required_namings())?;
 
-    // Resolve .env files (if any) via the env adapter. Values skipped
-    // under strict:false are recorded in `failed` so --verify-keys can
-    // fail closed on a partial key rotation (audit 2026-08-02 A3).
+    // Resolve .env files (if any) via the env adapter. Values skipped under strict:false
+    // are recorded in `failed` so --verify-keys can fail closed on a partial key
+    // rotation.
     let (mut resolved, failed): (Resolved, Vec<(String, String)>) = if cfg.env_files.is_empty() {
         (Vec::new(), Vec::new())
     } else {
@@ -298,8 +293,7 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
         .collect();
     // Bundle files follow env files and use the same first/last-wins contract.
     for bundle_path in &cfg.bundle_files {
-        // O_NOFOLLOW on the ciphertext open (audit 2026-08-02 A13):
-        // refuse to read through a planted symlink.
+        // O_NOFOLLOW on the ciphertext open: refuse to read through a planted symlink.
         let bundle_fd = rustix::fs::open(
             bundle_path,
             rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
@@ -319,9 +313,8 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
             if !cfg.overload && std::env::var_os(&name).is_some() {
                 continue;
             }
-            // NUL check for utf8 entries that would become env vars.
-            // One rule for every env-bound value (sweep 2026-08-07 X6):
-            // NUL is a hard error, identical to the .env path in
+            // NUL check for utf8 entries that would become env vars. One rule for every
+            // env-bound value: NUL is a hard error, identical to the .env path in
             // env_pairs — no strict-gated skip.
             if matches!(cfg.mode, ExecMode::Env)
                 && encoding == crate::bundle::Encoding::Utf8
@@ -353,24 +346,22 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     cfg.validate_shape()?;
 
     let program = argv.first().ok_or("exec: empty argv")?;
-    // Defer termination signals until the fork/exec below, so a signal
-    // landing mid-write can't strand plaintext on disk (audit 2026-08-02
-    // A11 — see TerminationGuard docs). The fork-child monitor inherits
-    // the blocked mask and keeps it for life; the parent restores the
-    // saved mask before execvp.
+    // Defer termination signals until the fork/exec below, so a signal landing
+    // mid-write can't strand plaintext on disk (see TerminationGuard docs). The
+    // fork-child monitor inherits the blocked mask and keeps it for life; the parent
+    // restores the saved mask before execvp.
     let sig_guard = TerminationGuard::block();
     let mut extra: Vec<(OsString, OsString)> = Vec::new();
-    // Names of plaintext files written beneath the pinned secrets-dir
-    // fd, tracked across the match so the failure paths (and the monitor,
-    // post-fork) can unlink them fd-relative (audit 2026-08-02 A9).
+    // Names of plaintext files written beneath the pinned secrets-dir fd, tracked
+    // across the match so the failure paths (and the monitor, post-fork) can unlink
+    // them fd-relative.
     let mut written: Vec<String> = Vec::new();
-    // The pinned secrets-dir fd (Files / Credentials-fetch modes only).
-    // Opened ONCE with O_DIRECTORY|O_NOFOLLOW|O_RDONLY|CLOEXEC and kept
-    // until after the exec-failure cleanup, so every write and every
-    // cleanup unlink is relative to the same pinned inode (audit
-    // 2026-08-02 A12). Across the fork the monitor inherits the fd
-    // (CLOEXEC fires only on exec, which the monitor never performs) and
-    // holds it for the service's lifetime.
+    // The pinned secrets-dir fd (Files / Credentials-fetch modes only). Opened ONCE
+    // with O_DIRECTORY|O_NOFOLLOW|O_RDONLY|CLOEXEC and kept until after the
+    // exec-failure cleanup, so every write and every cleanup unlink is relative to the
+    // same pinned inode. Across the fork the monitor inherits the fd (CLOEXEC fires
+    // only on exec, which the monitor never performs) and holds it for the service's
+    // lifetime.
     let mut secrets_dir_fd: Option<std::os::fd::OwnedFd> = None;
 
     match cfg.mode {
@@ -426,9 +417,8 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 }
             }
             // resolved (Zeroizing<Vec<u8>> values) dropped here —
-            // decrypted values zeroized before execvp. Only file paths
-            // (extra: OsString pairs) survive to execvp, not the
-            // plaintext values themselves.
+            // decrypted values zeroized before execvp. File pointers and
+            // any passthrough plaintext remain in extra for the child.
             drop(resolved);
             secrets_dir_fd = Some(dir_fd);
         }
@@ -449,7 +439,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                     ));
                 }
             } else {
-                // launchd path: pull each key from postmaster ourselves.
+                // Local socket path, normally used with launchd.
                 let dir = cfg
                     .secrets_dir
                     .as_deref()
@@ -501,8 +491,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     // the sibling monitor BEFORE exec. The fork-child keeps the guard's
     // blocked mask for life and supervises this process — stop-signal
     // forwarding, bounded grace, SIGKILL escalation, and plaintext cleanup
-    // on every death path (sibling-monitor design 2026-08-05; see
-    // monitor.rs). The parent execs the service exactly as before, so
+    // on every service-death path (see monitor.rs). The parent execs the service, so
     // MainPID is unchanged. The monitor runs for ALL exec launches,
     // including env mode (uniform semantics; its cleanup is a no-op
     // there). The pid is captured pre-fork: post-fork the parent IS the
@@ -554,7 +543,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     }
     // Parent only from here (the fork-child diverged). Restore the
     // pre-guard signal mask so the service starts with a clean signal
-    // state, then exec exactly as before.
+    // state, then exec the service.
     sig_guard.restore_mask();
     let mut cmd = std::process::Command::new(program);
     cmd.args(&argv[1..]).envs(extra);
@@ -568,12 +557,11 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
         cmd.env_remove(name);
     }
     let err = cmd.exec(); // only returns on failure
-    // execvp failed: the process image was NOT replaced, so any
-    // plaintext secret files written above would otherwise persist
-    // (the macOS ramdisk survives process death). Remove them before
-    // returning the error (audit 2026-08-02 A9). The monitor watching
-    // this process fires on the imminent exit and cleans again —
-    // unlinkat of already-removed names is a no-op.
+    // execvp failed: the process image was NOT replaced, so any plaintext secret files
+    // written above would otherwise persist (the macOS ramdisk survives process death).
+    // Remove them before returning the error. The monitor watching this process fires
+    // on the imminent exit and cleans again — unlinkat of already-removed names is a
+    // no-op.
     if let Some(dir_fd) = &secrets_dir_fd {
         cleanup_written(dir_fd, &written);
     }
@@ -615,7 +603,7 @@ mod tests {
             format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32)),
         )
         .unwrap();
-        // KeyRing::load enforces 0600-or-stricter (audit finding #1).
+        // KeyRing::load enforces 0600-or-stricter.
         fs::set_permissions(&keys_path, fs::Permissions::from_mode(0o600)).unwrap();
         let env_path = d.join(".env");
         fs::write(&env_path, "A=hello\n").unwrap();

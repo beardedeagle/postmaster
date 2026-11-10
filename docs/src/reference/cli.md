@@ -1,8 +1,6 @@
 # CLI reference
 
-All postmaster commands, flags, and exit codes. The CLI is hand-rolled
-with no external parsing library — every flag below is the complete
-set, directly from the argument parser in `cli/mod.rs`.
+Commands, flags, and exit codes accepted by `src/cli/mod.rs`.
 
 ## Synopsis
 
@@ -105,9 +103,9 @@ Exit codes:
 
 ## setup
 
-Create keys directory, verify permissions, optionally seed keychain
-(macOS), validate environment. Idempotent — skips steps that are
-already correct.
+Create the keys directory, check key sources, and optionally seed macOS
+Keychain accounts. Setup skips steps that are already satisfied. It derives
+one required-account list in first-seen input order, without duplicate prompts.
 
 ```console
 $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--keys-dir <path>]
@@ -153,11 +151,12 @@ $ postmaster cleanup --config <exec.json>
 | --- | --- |
 | `--config <path>` | Path to `exec.json` (reads `secrets_dir` from config) |
 
-Safety guard: cleanup refuses to bulk-delete a **non-empty** directory
-that lacks the `.postmaster-managed` sentinel file (dropped by postmaster
-when it writes there) — a misconfigured `secrets_dir` can never wipe a
-directory postmaster doesn't manage. Empty or missing directories are
-fine.
+Cleanup refuses to bulk-delete a non-empty directory without the
+`.postmaster-managed` sentinel. The marker identifies a managed directory,
+not individual files, so keep one `secrets_dir` per service. Empty or missing
+directories need no cleanup. If a secret-file stat or removal fails, the command
+retains the sentinel and returns an error so cleanup can be retried. Removing
+the sentinel after successful cleanup is best effort.
 
 Integrations can wire this to `ExecStopPost` in systemd. On macOS, the
 ramdisk destruction handles cleanup automatically when the launchd job
@@ -165,9 +164,9 @@ stops.
 
 ## fetch
 
-macOS credential fetch client — connects to a postmaster socket and
-reads the decrypted value to EOF. Reads are hard-capped at 16 MiB;
-an oversize stream fails rather than truncates.
+Connect to a local Postmaster socket and write its decrypted value to stdout.
+Reads stop at EOF and are capped at 16 MiB; an oversized stream fails without
+truncating the value. This command is available on Linux and macOS.
 
 ```console
 $ postmaster fetch /run/postmaster-credd/myapp/DATABASE_URL.sock

@@ -19,7 +19,7 @@
 //! inherited from the launcher's `TerminationGuard` across fork and
 //! re-asserted at monitor start — and are consumed synchronously via the
 //! `sigpending`/`sigwait` family. No signal handlers exist anywhere in
-//! the process (the sigaction flag-handler was retired with this design).
+//! the process.
 //! SIGPIPE is additionally blocked so a stderr write to a closed pipe
 //! cannot kill the monitor mid-supervision.
 //!
@@ -33,7 +33,7 @@
 //! 2. Otherwise, if the service is dead (liveness watch: pidfd + `poll`
 //!    on Linux, kqueue `EVFILT_PROC`/`NOTE_EXIT` on macOS, `kill(pid, 0)`
 //!    only as fallback) → `cleanup_written` → exit. This covers natural
-//!    exit, `kill -9`, and crashes — the net-new cleanup coverage.
+//!    exit, `kill -9`, and crashes.
 //! 3. Otherwise, sleep one tick. Liveness/stop latency adds to cleanup
 //!    latency, never to the grace cap.
 //!
@@ -498,8 +498,6 @@ fn take_pending_stop(set: &libc::sigset_t) -> Option<Signal> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("postmaster's sibling monitor supports Linux and macOS only");
 
-// Tests live in monitor/tests.rs (sweep 2026-08-07 X8): the
-// production half stays readable at ~500 lines; the test half keeps
-// the same module path (monitor::tests) and crate-internal access.
+// Keep monitor tests in a child module with access to the private implementation.
 #[cfg(test)]
 mod tests;

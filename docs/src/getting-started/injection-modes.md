@@ -4,16 +4,16 @@ Postmaster supports three ways to deliver decrypted secrets to the child
 process. Each mode makes a different tradeoff between convenience and
 security.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** choosing how secrets reach your application — as
-environment variables, as files, or as systemd credentials.
+Choose how secrets reach your application. Storage and process isolation
+depend on the deployment as well as the selected mode.
 
-| Mode | Best for | Secrets in environ? | Hygiene |
+| Mode | Use | Secrets in environ? | Storage and access |
 | --- | --- | --- | --- |
-| `env` | 12-factor apps, simple services | Yes | Lowest — same-UID processes can read `/proc/PID/environ` |
+| `env` | Apps that read environment variables | Yes | Environment copies can reach process listings, diagnostics, and child processes |
 | `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | Only when `passthrough` requests it | No environment copy by default; the app still reads plaintext files |
-| `credentials` | systemd services wanting strongest isolation | No — reads `$CREDENTIALS_DIRECTORY` | Highest — unit-private unswappable ramfs |
+| `credentials` | Apps that read credential files | No additional value copy | Systemd supplies the credentials directory, or Postmaster fetches values from local sockets |
 
 ## Mode comparison
 
@@ -35,8 +35,8 @@ flowchart TB
 
 ## `mode = "env"`
 
-Decrypted values are exported into the process environment and the
-wrapper `exec`s your binary. Correct for 12-factor apps.
+Postmaster exports resolved values into the application environment and
+replaces the launcher with your binary.
 
 **Exposure:** environment variables are readable via
 `/proc/<pid>/environ` by root and the same UID, inherited by every child,
@@ -76,7 +76,8 @@ Old read handles keep the old contents. Foreign, linked, and special entries
 fail closed, and exported paths require protected ancestry. Trusted symlink
 aliases and sticky shared parents remain supported.
 
-For a mostly-file-capable app with a straggler that needs an env var:
+If the application reads most values from files but needs one in its
+environment, list that key in `passthrough`:
 
 ```json
 {
@@ -93,20 +94,21 @@ rejection, since they become environment variables).
 
 ## `mode = "credentials"`
 
-Real systemd credentials, served on demand by the postmaster daemon.
-The consumer's unit gets
+The launcher exports `<KEY>_FILE` pointers into credentials that systemd has
+already supplied. Systemd can obtain those credentials from Postmaster's
+daemon. In that deployment, the consumer's unit gets
 `LoadCredential=<KEY>:/run/postmaster-credd/<svc>/<KEY>.sock` per key and
 the app reads `$CREDENTIALS_DIRECTORY/<KEY>` from unit-private,
 **unswappable** ramfs.
 
-No Node, no jq, no shell anywhere in the consumer's start path. The
-optional wrapper only exports non-secret `<KEY>_FILE` pointers.
-Strongest hygiene of the three.
+The launcher exports file pointers without reading the credential values.
+Systemd owns their storage and access controls.
 
-On macOS, postmaster runs `--bind` (owns its sockets), the wrapper
-`postmaster fetch`es each key onto the RAM disk, and exports
-`$CREDENTIALS_DIRECTORY` set to `secrets_dir` — same path convention as
-systemd credentials, so app code is unchanged.
+For local socket delivery, normally used with launchd on macOS, the daemon
+runs with `--bind`. The launcher fetches each configured key, writes it beneath
+`secrets_dir`, and exports `CREDENTIALS_DIRECTORY` along with `<KEY>_FILE`
+pointers. The file naming convention matches systemd credentials. The fetch
+branch is selected by `sockets`, not by the operating system.
 
 ## Fail-closed rules
 

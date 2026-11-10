@@ -133,11 +133,10 @@ fn strict_false_skips_undecryptable_and_continues() {
 
 #[test]
 fn verify_keys_aborts_on_stale_keys_with_strict_false() {
-    // Audit finding #4: --verify-keys should catch stale keys even when
-    // strict is false. Encrypt with a different key than the one in the
-    // keyring, set strict:false, and pass --verify-keys. The exec must
-    // abort with a --verify-keys error rather than launching the child
-    // with no secrets.
+    // --verify-keys should catch stale keys even when strict is false. Encrypt with a
+    // different key than the one in the keyring, set strict:false, and pass
+    // --verify-keys. The exec must abort with a --verify-keys error rather than
+    // launching the child with no secrets.
     let d = common::tmpdir("verifykeys");
     let other_sk_hex = "33".repeat(32);
     let other_sk_bytes = hex::decode(&other_sk_hex).unwrap();
@@ -198,11 +197,8 @@ fn verify_keys_aborts_on_stale_keys_with_strict_false() {
 
 #[test]
 fn verify_keys_aborts_on_partial_failure_with_strict_false() {
-    // Audit 2026-08-02 A3: with strict:false, resolution silently skips
-    // undecryptable values. When SOME values still decrypt, the resolved
-    // set is non-empty and the old freshness check passed — the child
-    // launched with a partial secret set. --verify-keys must now abort
-    // on any recorded skip.
+    // --verify-keys must reject partial decryption even when strict:false would
+    // allow the remaining values to launch the child.
     let d = common::tmpdir("verifykeys-partial");
     let other_sk_hex = "33".repeat(32);
     let other_sk_bytes = hex::decode(&other_sk_hex).unwrap();
@@ -219,7 +215,7 @@ fn verify_keys_aborts_on_partial_failure_with_strict_false() {
         &[
             format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
             // Decrypts with the keyring's key — the resolved set is
-            // non-empty, which is what fooled the old check.
+            // non-empty, so a count-only check would miss the failure.
             format!("SECRET_GOOD=\"{}\"", common::enc("good-secret")),
             // Encrypted to a key NOT in the keyring — skipped under
             // strict:false. This is the partial-rotation case.

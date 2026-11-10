@@ -42,7 +42,7 @@ impl_trait_redundant_captures = "warn"
 # join at teardown) that may legitimately fail, and the adjacent comments
 # explain why that's acceptable. Security-relevant hardening calls
 # (mlockall-style, non-dumpable, core limits, ptrace-deny) LOG their
-# failures instead (audit 2026-08-02 A10). Converting either to
+# failures instead. Converting either to
 # unwrap/expect/error handling would CHANGE behavior in a fail-closed
 # daemon, so the lint stays off.
 let_underscore_drop = "allow"
@@ -112,8 +112,8 @@ zeroize = "1"
 sha2 = "0.11"
 getrandom = "0.4"
 # Syscall layer: rustix's default linux_raw backend issues raw syscalls from
-# Rust — no libc FFI in these paths, and the unsafe surface collapses to the
-# single fd-ownership assertion at the systemd socket-activation boundary.
+# Rust. Signal-mask operations and systemd fd adoption require narrow unsafe
+# blocks; fork(2) uses libc at the launcher boundary.
 rustix = { version = "1", features = ["net", "process", "mm", "fs", "termios", "event"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

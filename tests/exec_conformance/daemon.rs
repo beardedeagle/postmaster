@@ -1,7 +1,6 @@
-//! Daemon end-to-end conformance (sweep 2026-08-07 T2): the real binary
-//! in serve mode, a real bound socket, and the real fetch client — the
-//! serve/fetch roundtrip and the startup preflight refusal, which the
-//! unit tests only exercise in-process.
+//! Daemon end-to-end conformance: the real binary in serve mode, a real bound socket,
+//! and the real fetch client — the serve/fetch roundtrip and the startup preflight
+//! refusal, which the unit tests only exercise in-process.
 
 use sha2::Digest as _;
 use std::process::Command;
@@ -167,10 +166,8 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
 
 #[test]
 fn daemon_preflight_refuses_an_empty_credential_at_startup() {
-    // sweep 2026-08-07 D4 end-to-end: an empty resolved value can never
-    // be served (zero bytes means refusal on the wire), so the daemon
-    // must fail at STARTUP naming the key, not look healthy while every
-    // fetch comes back empty.
+    // Zero bytes means refusal on the wire; reject empty values at startup
+    // and name the key rather than starting a daemon that cannot serve it.
     let d = common::tmpdir("daemonpre");
     let env = common::write_env_file(&d, ".env", &["EMPTY=".to_string()]);
     let keys = common::write_keys_file(&d, "", &[common::TEST_SK_HEX]);

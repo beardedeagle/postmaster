@@ -1,11 +1,11 @@
 //! Key loading, variable name resolution, and ciphertext decryption.
 //!
-//! All secret material is Zeroized. Decryption is tried with rotation candidates.
+//! The key ring and resolved values use zeroizing buffers. Decryption tries
+//! rotation candidates in order; the source environment is not zeroized.
 //! Plaintext values (from `dotenvx set --plain`) are passed through.
 //!
-//! Key-naming conventions are abstracted via the `KeyNaming` trait
-//! (see `adapter/mod.rs`), so the core logic is adapter-neutral. The `.env`
-//! adapter's `KeyNaming::Env` is the first implementation.
+//! The `KeyNaming` enum in `adapter/mod.rs` defines the dotenv and bundle
+//! namespaces used by loading and resolution.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub mod provisioning;
 pub mod source;
 mod verify;
 
-/// Re-exported so `crate::keys::verify_external_binary` keeps resolving.
+/// Shared external-helper verification.
 pub use verify::verify_external_binary;
 
 /// Key-variable predicates shared by loading, setup and launch validation.
@@ -37,11 +37,7 @@ pub(crate) use env::{is_key_var_name, is_private_key_var_name};
 /// comma-separated rotation convention; decryption tries each in order.
 pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
 
-// Redacted Debug: variable names only, never key material. A derived impl
-// would print every 32-byte key verbatim — zeroize's `Zeroizing` derives
-// its own Debug pass-through to the inner value — a latent leak channel on
-// a public type (sweep 2026-08-07 K1). Tests need *a* Debug impl for
-// `Result::expect_err`; this keeps that working without the leak.
+// Zeroizing forwards Debug to its inner value; derive would expose every private key.
 impl std::fmt::Debug for KeyRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyRing")
@@ -59,8 +55,8 @@ impl KeyRing {
 
     /// Load a `.env.keys` file from `path` and build a key ring.
     ///
-    /// Security invariants enforced on the opened file (all checked on the
-    /// file descriptor, never the path, to eliminate TOCTOU windows):
+    /// Checks apply to the opened inode, so path replacement cannot change
+    /// which file is validated and read:
     ///   - `O_NOFOLLOW`: reject a symlink at `path` (defense-in-depth; also
     ///     closes the credential-source symlink attack leg).
     ///   - `mode & 0o077 == 0`: no group or world read/write/exec. A keys
@@ -76,17 +72,18 @@ impl KeyRing {
         load::load(path, namings)
     }
 
-    /// Core parser shared by every key source: keep keys exactly matching
-    /// the required adapters' key prefixes (`PREFIX` or `PREFIX_<suffix>` —
-    /// the key-variable predicate; a bare starts_with admitted unreachable
-    /// prefix-collision material like `DOTENV_PRIVATE_KEYFOO` from keys
-    /// files), split comma-separated rotation
-    /// candidates, hex-decode to 32-byte zeroized keys. Empty result is an
-    /// error (fail closed). Takes `Zeroizing<String>` values so callers
-    /// never hand key material as a plain heap String that drops without
-    /// zeroization. `namings` is the set the config's artifacts require
-    /// (see `ExecConfig::required_namings`) — the ring admits exactly
-    /// those prefixes, no more (least privilege on key material).
+    /// Parse key values shared by all local key sources.
+    ///
+    /// Keep names matching the required adapters' exact prefix or a prefix
+    /// followed by `_<nonempty suffix>`. Split comma-separated rotation
+    /// candidates and decode each into a zeroizing 32-byte key.
+    /// `namings` comes from `ExecConfig::required_namings`; other namespaces
+    /// are discarded. Input values use `Zeroizing<String>` so discarded
+    /// material is wiped on drop.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for invalid key material or an empty required ring.
     pub fn from_pairs(
         pairs: impl IntoIterator<Item = (String, Zeroizing<String>)>,
         namings: &[KeyNaming],
@@ -129,14 +126,14 @@ impl KeyRing {
         Ok(KeyRing(map))
     }
 
-    /// Private key variables from the process environment (external
-    /// provisioning; `key.file = null` in the module). Reads all
-    /// variables matching any required adapter's key prefix.
+    /// Read private-key variables matching the required adapter namespaces
+    /// from the process environment.
     pub fn from_env(namings: &[KeyNaming]) -> Result<Self, String> {
         env::from_env(namings)
     }
 
-    /// macOS System keychain: one generic-password item per variable,
+    /// Read macOS Keychain through the default search list. Each variable uses
+    /// one generic-password item:
     /// service = `service`, account = the adapter's key variable name.
     /// Only the vars actually needed (derived from artifact names) are
     /// fetched.
@@ -166,7 +163,7 @@ fn empty_error(namings: &[KeyNaming]) -> String {
     }
 }
 
-/// Shell-identifier check shared with the Nix module's eval-time isIdent.
+/// Check an ASCII identifier used for environment names and secret filenames.
 pub fn is_ident(k: &str) -> bool {
     let mut cs = k.chars();
     matches!(cs.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
@@ -220,8 +217,8 @@ pub fn decrypt_value(
             return Ok(Zeroizing::new(pt));
         }
     }
-    // No candidate count in the error text — the rotation-set size is
-    // not something errors should leak (audit 2026-08-02 A15).
+    // No candidate count in the error text — the rotation-set size is not something
+    // errors should leak.
     Err(format!(
         "{}: no key under {var} decrypts {key}",
         env_file.display()
@@ -266,8 +263,7 @@ pub struct Resolution {
     pub failed: Vec<(String, String)>,
 }
 
-// Redacted Debug, same channel as K1 (sweep 2026-08-07 K2): names only —
-// a derived impl would print the decrypted plaintext values themselves.
+// A derived Debug implementation would expose decrypted values; print names only.
 impl std::fmt::Debug for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Resolution")
@@ -284,8 +280,8 @@ impl std::fmt::Debug for Resolution {
 }
 
 /// Resolve every key across `files` per the precedence contract
-/// (see docs/src/launcher-contract.md): within one file the LAST assignment
-/// wins (dotenv semantics); across files the FIRST file defining a key wins
+/// (see `docs/src/reference/launcher-contract.md`): within one file the last
+/// assignment wins; across files the first file defining a key wins
 /// unless `overload`; keys already present in the process environment are
 /// skipped unless `overload`. Adapter metadata keys are dropped;
 /// non-identifier keys are a hard error (they become env names/filenames).
@@ -326,9 +322,8 @@ pub fn resolve_all(
             file_vals.insert(k, v); // last assignment within a file wins
         }
         for k in file_order {
-            // Unreachable invariant (file_order mirrors file_vals), but a
-            // clear error beats an abort under panic=abort (audit
-            // 2026-08-02 A22).
+            // Unreachable invariant (file_order mirrors file_vals), but a clear error
+            // beats an abort under panic=abort.
             let Some(v) = file_vals.remove(&k) else {
                 return Err(format!("internal: {k} in file_order but not file_vals"));
             };
@@ -348,8 +343,8 @@ pub fn resolve_all(
         if !overload && env_has(&k) {
             continue; // process environment wins
         }
-        // Unreachable invariant (order mirrors merged), but a clear error
-        // beats an abort under panic=abort (audit 2026-08-02 A22).
+        // Unreachable invariant (order mirrors merged), but a clear error beats an
+        // abort under panic=abort.
         let Some((file, raw)) = merged.remove(&k) else {
             return Err(format!("internal: {k} in order but not merged"));
         };
@@ -400,8 +395,7 @@ pub mod tests {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "{}", content).unwrap();
         }
-        // KeyRing::load now enforces 0600-or-stricter permissions (audit
-        // finding #1). The temp file must pass that check.
+        // Match the owner-only permissions required by KeyRing::load.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         f(&path);
         let _ = std::fs::remove_file(&path);
@@ -696,9 +690,8 @@ pub mod tests {
             )
             .is_err()
         );
-        // non-strict: skipped, not served wrong — and the skip is
-        // recorded so --verify-keys can fail closed on it (audit
-        // 2026-08-02 A3).
+        // Non-strict: skipped, not served wrong — and the skip is recorded so
+        // --verify-keys can fail closed on it.
         let out = resolve_all(
             &[d.join(".env")],
             &ring,
@@ -715,9 +708,8 @@ pub mod tests {
 
     #[test]
     fn keyring_debug_redacts_key_material() {
-        // sweep 2026-08-07 K1: a derived Debug would print every 32-byte
-        // key verbatim (Zeroizing's Debug passes through to the inner
-        // value). Names only.
+        // A derived Debug would print every 32-byte key verbatim (Zeroizing's Debug
+        // passes through to the inner value). Names only.
         let ring = KeyRing::from_pairs(
             [(
                 "DOTENV_PRIVATE_KEY".to_string(),
@@ -736,8 +728,7 @@ pub mod tests {
 
     #[test]
     fn resolution_debug_redacts_plaintext() {
-        // sweep 2026-08-07 K2: same channel — a derived Debug would print
-        // the decrypted plaintext values themselves.
+        // Debug output must expose names without decrypted values.
         let r = Resolution {
             resolved: vec![(
                 "MY_SECRET".to_string(),
@@ -756,9 +747,7 @@ pub mod tests {
 
     #[test]
     fn from_pairs_uses_the_exact_key_var_predicate() {
-        // sweep 2026-08-07 K6: bare starts_with admitted
-        // DOTENV_PRIVATE_KEYFOO from keys files as unreachable dead
-        // material; the A16 predicate drops it exactly as from_env does.
+        // Reject prefix lookalikes consistently across file and environment sources.
         let ring = KeyRing::from_pairs(
             [
                 (
@@ -779,9 +768,7 @@ pub mod tests {
 
     #[test]
     fn resolve_all_refuses_symlinked_env_file() {
-        // sweep 2026-08-07 T5: the O_NOFOLLOW ciphertext open (audit
-        // 2026-08-02 A13) — a planted symlink at a configured .env path
-        // is a hard error, never a read-through.
+        // A symlink at a configured .env path must fail before reading its target.
         let d = tdir("symlink");
         std::fs::write(d.join(".env.real"), "A=plain\n").unwrap();
         std::os::unix::fs::symlink(d.join(".env.real"), d.join(".env")).unwrap();
@@ -800,9 +787,8 @@ pub mod tests {
 
     #[test]
     fn decrypt_value_fails_closed_on_bad_base64_and_missing_ring_entry() {
-        // sweep 2026-08-07 T14: decrypt_value's two fail-closed legs,
-        // exercised directly (the resolve paths reach them only
-        // indirectly).
+        // decrypt_value's two fail-closed legs, exercised directly (the resolve paths
+        // reach them only indirectly).
         let env_file = Path::new(".env");
         let ring = KeyRing(HashMap::new());
 

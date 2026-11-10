@@ -1,9 +1,9 @@
-# Signal Deferral (TerminationGuard)
+# Signal deferral (TerminationGuard)
 
-> **At a glance:** while postmaster decrypts and injects, termination
-> signals are blocked to protect the plaintext-write window. The launcher
-> restores the captured mask before exec. Masking failures are logged and
-> leave the write window unguarded.
+While Postmaster decrypts and injects, termination
+signals are blocked to protect the plaintext-write window. The launcher
+restores the captured mask before exec. Masking failures are logged and
+leave the write window unguarded.
 
 ## Location
 
@@ -19,11 +19,11 @@ explicitly removed, so a SIGTERM landing *during* the plaintext-write
 window would leave material on disk with no cleanup. `TerminationGuard`
 blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT (`monitor::STOP_SIGNALS`) from
 just after config validation until the fork/exec at the end of the
-window — a deterministic write window: no termination signal can kill
-the launcher mid-write.
+window when masking succeeds. A masking failure is logged and leaves
+the window unguarded. SIGKILL cannot be blocked.
 
 At the end of the window the launcher forks the sibling monitor (see
-[Sibling Launch Monitor](./monitor.md)), which **inherits the blocked
+[Sibling launch monitor](./monitor.md)), which **inherits the blocked
 mask and keeps it for life** — the fork-child's guard is never dropped
 (the monitor entry point diverges and exits via `_exit`/`exit_group`,
 running no destructors). The parent calls `restore_mask()` before
@@ -41,7 +41,7 @@ when stderr fails. Setup refuses terminal input if masking fails.
 Redirected input keeps stdin's existing buffer and normal signal
 behavior. Linux uses rustix's raw signal APIs; Darwin uses libc.
 
-## Why Unsafe
+## Why unsafe
 
 Raw signal-mask operations — `pthread_sigmask` on Darwin (whose stable
 kernel ABI is libc), `rt_sigprocmask` via rustix's `runtime` module on
@@ -51,7 +51,7 @@ pre-fork guard shares its platform notes with the monitor page: the
 rustix `runtime` API is experimental (lockfile-pinned), and the mask set
 holds only standard signals no libc reserves.
 
-## UB Vectors and Mitigations
+## UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
@@ -62,7 +62,7 @@ holds only standard signals no libc reserves.
 | Mask clobber | Restoring a mask never captured | Both legs are Option-shaped and store `None` on block failure (logged); restore then no-ops |
 | Mask leak to the service | Service inheriting blocked termination signals | Mask restored before `execvp` on every path (explicit + `Drop` on early-Err) — the monitor *wants* the mask and is the only inheritor |
 
-## Remaining Risks
+## Remaining risks
 
 | Risk | Likelihood | Impact |
 |------|------------|--------|
@@ -81,8 +81,7 @@ The guard's contract is exercised end-to-end by the monitor tests
 (`monitor::tests` — every one of them blocks via
 `TerminationGuard::block()` before forking the real monitor loop, exactly
 mirroring production) and by the exec integration suites
-(`tests/exec_check.rs`, `tests/exec_conformance/`). The retired
-flag-handler test was removed with the handler.
+(`tests/exec_check.rs`, `tests/exec_conformance/`).
 
 Input tests use pseudo-terminals to check hidden single-line and multiline
 input, idle noncanonical reads, prompt failures, queued values, and terminal

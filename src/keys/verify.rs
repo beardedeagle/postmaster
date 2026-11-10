@@ -3,27 +3,19 @@
 
 use std::path::Path;
 
-/// Verify the integrity of an external binary before invoking it as part
-/// of a secret-handling path. This is a defense-in-depth trust boundary
-/// check: the binary path is a trust root, and we
-/// verify it has not been tampered with before exec.
+/// Check platform trust requirements before invoking an external helper.
 ///
-/// On macOS: `codesign -v <path>` verifies the code signature. The binary
-/// is additionally SIP-protected, so this catches a hypothetical SIP
-/// bypass or a misconfigured environment.
+/// On macOS, `codesign -v <path>` checks the code signature. Callers use
+/// fixed system paths protected by SIP.
 ///
 /// On Linux: verify the file is a regular file, owned by root (uid 0),
-/// and not group/other writable. There is no universal code-signing mechanism
-/// on Linux, so ownership and permission checks are the practical
-/// defense-in-depth boundary.
+/// and not writable by group or others. These are ownership and permission
+/// checks, not a content-signature check.
 ///
 /// Bootstrap limitation: on macOS the verifier
 /// itself invokes `/usr/bin/codesign`. Self-verifying codesign with
 /// codesign is circular — a compromised codesign would vouch for
-/// itself — so codesign is trusted via SIP alone. Moving verification
-/// onto the Security.framework StaticCode API (the `security-framework`
-/// crate route already chosen for keychain access) would remove this
-/// residual trust gap.
+/// itself. The verifier trusts the system's SIP protection for that tool.
 pub fn verify_external_binary(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

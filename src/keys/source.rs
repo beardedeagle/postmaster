@@ -18,8 +18,7 @@ use crate::keys::KeyRing;
 ///
 /// `namings` is the adapter set the config's artifacts require
 /// (`ExecConfig::required_namings`): the ring admits exactly those key
-/// prefixes. Hardcoding a single naming here previously dropped
-/// `POSTMASTER_KEY*` at parse time and broke bundle configs end-to-end.
+/// prefixes, including both namespaces for mixed dotenv and bundle inputs.
 // `wanted_vars` is only consumed by the macOS keychain source; on other
 // targets the parameter is unused, so silence that leg's clippy warning
 // without touching the signature or source-selection semantics.
@@ -34,13 +33,11 @@ pub fn load_ring(
             KeySourceSpec::Credential(name) => {
                 if let Some(dir) = std::env::var_os("CREDENTIALS_DIRECTORY") {
                     let p = Path::new(&dir).join(name);
-                    // Use symlink_metadata instead of p.exists(): exists()
-                    // follows symlinks, so a planted symlink at
-                    // $CREDENTIALS_DIRECTORY/<name> pointing to a
-                    // world-readable file would be silently followed.
-                    // Reject symlinks outright (audit finding #2); the
-                    // subsequent KeyRing::load also opens with O_NOFOLLOW
-                    // as defense-in-depth.
+                    // Use symlink_metadata instead of p.exists(): exists() follows
+                    // symlinks, so a planted symlink at $CREDENTIALS_DIRECTORY/<name>
+                    // pointing to a world-readable file would be silently followed.
+                    // Reject symlinks outright; the subsequent KeyRing::load also opens
+                    // with O_NOFOLLOW as defense-in-depth.
                     match fs::symlink_metadata(&p) {
                         Ok(md) if md.file_type().is_symlink() => {
                             return Err(format!(
@@ -58,10 +55,9 @@ pub fn load_ring(
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                             // absent: fall through to next source
                         }
-                        // A permission-denied or malformed credential dir is
-                        // NOT "absent" — it is misconfigured. Fail loudly
-                        // rather than silently selecting a source the
-                        // operator didn't expect (sweep 2026-08-07 K8).
+                        // A permission-denied or malformed credential dir is NOT
+                        // "absent" — it is misconfigured. Fail loudly rather than
+                        // silently selecting a source the operator didn't expect.
                         Err(e) => {
                             return Err(format!(
                                 "{}: cannot stat credential source: {e}",
@@ -117,11 +113,10 @@ mod tests {
         unsafe {
             std::env::remove_var("CREDENTIALS_DIRECTORY");
         }
-        // Guard against an ambient valid key var in the test runner's own
-        // environment (e.g. DOTENV_PRIVATE_KEY exported in CI): with one
-        // present, the environment source SUCCEEDS and the terminal error
-        // is unobservable — skip rather than flake (sweep 2026-08-07 T16).
-        // Only the Env prefix counts here: these namings require Env alone.
+        // Guard against an ambient valid key var in the test runner's own environment
+        // (e.g. DOTENV_PRIVATE_KEY exported in CI): with one present, the environment
+        // source SUCCEEDS and the terminal error is unobservable — skip rather than
+        // flake. Only the Env prefix counts here: these namings require Env alone.
         let ambient = std::env::vars_os().any(|(k, _)| {
             k.to_str()
                 .is_some_and(|k| crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), k))
@@ -144,8 +139,8 @@ mod tests {
 
     #[test]
     fn load_ring_credential_rejects_symlink() {
-        // Audit finding #2: a symlink planted at
-        // $CREDENTIALS_DIRECTORY/<name> must be rejected, not followed.
+        // A symlink planted at $CREDENTIALS_DIRECTORY/<name> must be rejected, not
+        // followed.
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("source");
         let real = d.join("real-keys");
@@ -176,9 +171,8 @@ mod tests {
 
     #[test]
     fn load_ring_credential_stat_error_is_terminal() {
-        // sweep 2026-08-07 K8: a permission-denied credential dir is
-        // misconfigured, not "absent" — it must hard-error rather than
-        // fall through to the next source.
+        // A permission-denied credential dir is misconfigured, not "absent" — it must
+        // hard-error rather than fall through to the next source.
         use std::os::unix::fs::PermissionsExt;
         if rustix::process::geteuid().is_root() {
             // chmod 000 does not exclude root; the EACCES leg is
@@ -366,9 +360,8 @@ mod tests {
 
     #[test]
     fn load_ring_credential_loads_present_file() {
-        // sweep 2026-08-07 T9: the positive credential leg — a present,
-        // well-formed credential file loads through the same selection
-        // path the negative legs reject.
+        // The positive credential leg — a present, well-formed credential file loads
+        // through the same selection path the negative legs reject.
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("source");
         let cred_dir = d.join("creds");

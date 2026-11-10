@@ -62,11 +62,7 @@ fn write_keys(dir: &std::path::Path, with_dotenv: bool) -> std::path::PathBuf {
 
 #[test]
 fn bundle_exec_loads_postmaster_key_through_load_ring() {
-    // Regression for the bundle-ring gap: load_ring hardcoded
-    // KeyNaming::Env at every source leg, so POSTMASTER_KEY never entered
-    // the ring and EVERY bundle config failed at exec with "key ring has
-    // no POSTMASTER_KEY entry". This test drives the real binary through
-    // load_ring; it fails on the old code and passes on the fix.
+    // The real launcher must load POSTMASTER_KEY for bundle inputs.
     let d = common::tmpdir("bundlee2e");
     let bundle = write_bundle(&d, &[("SECRET", "bundle-secret-value")]);
     let keys = write_keys(&d, false);
@@ -245,9 +241,8 @@ fn mixed_env_and_bundle_exec_resolves_both_adapters() {
 
 #[test]
 fn bundle_exec_refuses_symlinked_bundle_file() {
-    // sweep 2026-08-07 T5: the O_NOFOLLOW open on bundle ciphertext
-    // (audit 2026-08-02 A13) must hold end-to-end — a planted symlink at
-    // a configured bundle path is a hard error, never a read-through.
+    // The O_NOFOLLOW open on bundle ciphertext must hold end-to-end — a planted symlink
+    // at a configured bundle path is a hard error, never a read-through.
     let d = common::tmpdir("bundle-symlink");
     let bundle = write_bundle(&d, &[("SECRET", "unreachable")]);
     let keys = write_keys(&d, false);
@@ -269,9 +264,8 @@ fn bundle_exec_refuses_symlinked_bundle_file() {
 
 #[test]
 fn bundle_env_precedence_matches_env_adapter() {
-    // sweep 2026-08-07 T10: bundle entries follow the same precedence
-    // contract as .env values — the process environment wins unless
-    // overload.
+    // Bundle values follow dotenv precedence: the process environment wins
+    // unless overload is enabled.
     let d = common::tmpdir("bundle-prec");
     let bundle = write_bundle(&d, &[("SECRET", "from-bundle")]);
     let keys = write_keys(&d, false);
@@ -392,9 +386,9 @@ fn bundle_shadowed_nul_value_still_fails_closed() {
 
 #[test]
 fn bundle_nul_value_is_a_hard_error_under_any_strictness() {
-    // sweep 2026-08-07 T10 (X6): an env-bound bundle value containing NUL
-    // is a HARD error — one rule for every env-bound value. strict:false
-    // must NOT skip it the way it skips undecryptable values.
+    // An env-bound bundle value containing NUL is a HARD error — one rule for every
+    // env-bound value. strict:false must NOT skip it the way it skips undecryptable
+    // values.
     let d = common::tmpdir("bundle-nul");
     let bundle = write_bundle(&d, &[("SECRET", "before\0after")]);
     let keys = write_keys(&d, false);

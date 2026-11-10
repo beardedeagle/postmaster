@@ -30,13 +30,12 @@ rustPlatform.buildRustPackage {
   meta = {
     description = cargoToml.package.description;
     longDescription = ''
-      postmaster is a dependency-lean Rust daemon (edition 2024; pure-Rust
-      crypto with no openssl, no async runtime) that serves decrypted
-      values as systemd LoadCredential AF_UNIX sources (with equivalent
-      support under nix-darwin). It enables encrypted .env files to be
-      treated as ordinary, world-readable Nix store artifacts while
-      guaranteeing that plaintext secrets only ever appear inside
-      unit-private unswappable credential ramfs.
+      Postmaster decrypts local dotenv and bundle inputs and delivers values
+      through environment variables, files, or systemd credentials before
+      replacing the launcher with the application. It also serves credentials
+      over local Unix sockets. Deployments provide storage, access controls,
+      and service-manager hardening. Encrypted artifacts can be public;
+      private keys and plaintext entries need separate protection.
     '';
     homepage = "https://github.com/beardedeagle/postmaster";
     license = lib.licenses.mit;

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/beardedeagle/postmaster/docs/schema/exec.schema.json",
   "title": "postmaster exec.json",
-  "description": "Public launcher configuration for the current dotenvx-shaped postmaster materialization ABI instance.",
+  "description": "Public Postmaster launch configuration: local inputs, key sources, and projection settings.",
   "type": "object",
   "additionalProperties": false,
   "required": ["mode"],

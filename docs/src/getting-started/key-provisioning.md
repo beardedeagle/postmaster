@@ -3,14 +3,13 @@
 This page covers how to get private keys onto hosts and how to rotate
 them without downtime.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** the operational side of postmaster — how the
-decryption key gets to the host, and how to rotate it safely.
+Provision a local private-key source and rotate it alongside encrypted inputs.
 
 | Reader | What to take |
 | -------- | ------------ |
-| Operator / SRE | All sections — this is your playbook |
+| Operator / SRE | Provisioning strategies and rotation |
 | Security engineer | The rotation window and fail-closed behavior |
 | New user | Skim strategies A and B, come back when you deploy |
 
@@ -50,13 +49,12 @@ keys file fails closed for a service running as a normal user.
 
 On macOS, runtime loading and file-source `setup --recheck` also reject ACL
 grants that let anyone other than root or the effective user read or modify the
-key file.
-These checks leave the file and its ACL intact, including read-only files.
+key file. These checks leave the file and its ACL intact, including read-only
+files.
 
 ## Strategy B: TPM2 / host-sealed blob
 
-Fully declarative — the key is sealed to the host's TPM2 and can only
-be decrypted on that specific machine:
+Seal the key to the host's TPM2 so decryption requires that host:
 
 ```console
 # on the target host, once (--name MUST match postmaster-<service>)
@@ -103,8 +101,8 @@ effective uid, so `root` here only works for services that run as root.
 
 ## Strategy D: macOS Keychain
 
-The recommended path is `postmaster setup`, which seeds the wanted
-keychain items interactively. By hand, use `security
+Use `postmaster setup` to seed each required Keychain account once,
+in first-seen input order. By hand, use `security
 add-generic-password` *without* `-w` so it prompts for the value:
 
 ```console
@@ -115,8 +113,8 @@ $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
 Avoid `-w "<hex>"`: it puts the private key in the process argv,
 visible to every process on the host via `ps`.
 
-No file on disk — keys live as generic-password items in the default
-keychain search list. Postmaster reads them natively via the
+This source stores keys as generic-password items in the default Keychain
+search list. Postmaster reads them through the
 Security.framework API (`security-framework` crate).
 
 `postmaster setup` hides terminal input for both key files and Keychain values.

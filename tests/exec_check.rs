@@ -163,7 +163,7 @@ fn docs_exec_schema_covers_every_exec_config_field() {
         .and_then(serde_json::Value::as_object)
         .unwrap();
     // Keep this list in sync with the fields on `ExecConfig` in
-    // src/exec_config.rs — it is the schema/parser drift tripwire (T1).
+    // src/exec_config.rs to catch schema/parser drift.
     for field in [
         "mode",
         "keys",

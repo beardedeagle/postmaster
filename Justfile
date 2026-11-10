@@ -18,12 +18,11 @@ fmt-check:
 clippy:
     cargo +{{stable_toolchain}} clippy --all-targets -- -D warnings
 
-# Release-profile clippy (house battery gate; sweep 2026-08-07 R2)
+# Check release-only code paths with Clippy.
 clippy-release:
     cargo +{{stable_toolchain}} clippy --all-targets --release -- -D warnings
 
-# Linux-target clippy (house battery gate; sweep 2026-08-07 R2). The
-# target is pinned in rust-toolchain.toml, so rustup installs it.
+# Check Linux-only code paths; rust-toolchain.toml declares the target.
 clippy-linux:
     cargo +{{stable_toolchain}} clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 
@@ -63,8 +62,7 @@ docs-serve:
     trap 'rm -f docs/src/changelog.md' EXIT
     (cd docs && mdbook serve --open)
 
-# Markdown prose lint (sweep 2026-08-07 R6; rules + ignores in
-# .markdownlint-cli2.jsonc). markdownlint-cli2 version pinned.
+# Markdown rules and ignores live in .markdownlint-cli2.jsonc; pin the linter version.
 lint-md:
     npx --yes markdownlint-cli2@0.23.2 "**/*.md"
 

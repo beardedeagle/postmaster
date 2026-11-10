@@ -8,13 +8,13 @@ use crate::server::log;
 
 /// `postmaster cleanup`: remove all secret files from the secrets_dir
 /// configured in the exec config. Intended for `ExecStopPost` in systemd
-/// or equivalent lifecycle hooks. Does not decrypt — only removes files
-/// that postmaster would have written. Bulk removal is guarded by the
+/// or equivalent lifecycle hooks. Removes regular files without decrypting.
+/// Bulk removal is guarded by the
 /// `.postmaster-managed` sentinel: a non-empty directory lacking it is
 /// refused (postmaster only bulk-deletes directories it manages). The
-/// sentinel is removed last, and ONLY when every managed regular file
+/// sentinel is removed last, and only when every managed regular file
 /// was removed successfully — on any stat/unlink failure the sentinel
-/// is RETAINED and the command fails, so a retry is not refused as
+/// is retained and the command fails, so a retry is not refused as
 /// unmanaged while plaintext files survive. Safe to run even if the
 /// directory is empty or does not exist.
 pub fn cleanup(config_path: &Path) -> Result<(), String> {
@@ -23,11 +23,10 @@ pub fn cleanup(config_path: &Path) -> Result<(), String> {
         .secrets_dir
         .as_deref()
         .ok_or("cleanup: config has no secrets_dir — nothing to clean up")?;
-    // Pin the directory by fd: O_DIRECTORY|O_NOFOLLOW rejects a symlinked
-    // or non-directory secrets dir at open, and the sentinel check, the
-    // per-entry stat, and every unlink below are all relative to the
-    // pinned inode — no path is ever re-resolved (audit 2026-08-02
-    // A12/A19).
+    // Pin the directory by fd: O_DIRECTORY|O_NOFOLLOW rejects a symlinked or
+    // non-directory secrets dir at open, and the sentinel check, the per-entry stat,
+    // and every unlink below are all relative to the pinned inode — no path is ever
+    // re-resolved.
     let dir_fd = match open_secrets_dir(dir) {
         Ok(fd) => fd,
         Err(rustix::io::Errno::NOENT) => {
@@ -53,9 +52,8 @@ pub fn cleanup(config_path: &Path) -> Result<(), String> {
         ));
         return Ok(());
     }
-    // Managed-dir guard (audit 2026-08-02 A19): non-empty and no
-    // sentinel means postmaster never wrote here — bulk deletes could
-    // hit foreign files. Refuse.
+    // Managed-dir guard: non-empty and no sentinel means postmaster never wrote here —
+    // bulk deletes could hit foreign files. Refuse.
     match rustix::fs::statat(
         &dir_fd,
         MANAGED_SENTINEL,
@@ -148,8 +146,8 @@ mod tests {
     #[test]
     fn cleanup_removes_all_files_from_secrets_dir() {
         let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
-        // cleanup requires a postmaster-managed (owner-only) dir
-        // (audit 2026-08-02 A19); match real deployments.
+        // Cleanup requires a postmaster-managed (owner-only) dir; match real
+        // deployments.
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(dir.join("KEY_A"), b"secret-a").unwrap();
@@ -180,9 +178,8 @@ mod tests {
 
     #[test]
     fn cleanup_refuses_unmanaged_dir() {
-        // audit 2026-08-02 A19: a non-empty dir without the sentinel was
-        // never written by postmaster; cleanup must refuse to bulk-delete
-        // there (foreign files could be present).
+        // A non-empty dir without the sentinel was never written by postmaster; cleanup
+        // must refuse to bulk-delete there (foreign files could be present).
         let dir = crate::test_util::temp_dir::TestDir::new("cleanup");
         fs::write(dir.join("FOREIGN"), b"not-ours").unwrap();
         let cfg_path = dir.join("exec.json");

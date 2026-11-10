@@ -1,6 +1,4 @@
-//! Tests for the sibling monitor, extracted from monitor.rs. Same
-//! module path (`monitor::tests`), same crate-internal visibility —
-//! nothing here changed but location.
+//! Sibling-monitor lifecycle, signal forwarding, cleanup, and heap-wiping tests.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use super::*;

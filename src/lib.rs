@@ -1,10 +1,7 @@
-//! postmaster library.
+//! CLI dispatch and secret handling for Postmaster.
 //!
-//! The bulk of the logic lives in the submodules so that unit tests can
-//! exercise key loading, resolution, argument parsing, and serving logic
-//! without going through main().
-//!
-//! Security and fail-closed semantics are preserved exactly.
+//! Submodules expose key loading, resolution, argument parsing, and serving
+//! logic to tests without launching the binary entry point.
 
 // `multiple_crate_versions` is warn-level in Cargo.toml; allowed here for
 // exactly one uncontrollable case: syn 2 + syn 3 coexist only because
@@ -28,24 +25,22 @@ pub mod server;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-/// The bundle adapter, re-exported so `crate::bundle` keeps resolving.
+/// Public alias for the bundle adapter.
 pub use adapter::bundle;
-/// The CLI module under its former name, so `crate::config` keeps resolving.
+/// Public alias for CLI parsing and daemon configuration.
 pub use cli as config;
 pub use cli::{Invocation, parse_args, parse_args_from};
 pub use keys::provisioning::{cleanup, setup};
-/// Key-source selection under its former name, so `crate::key_source`
-/// keeps resolving.
+/// Public alias for ordered key-source selection.
 pub use keys::source as key_source;
 pub use server::{fetch, harden_process, run};
 
-/// Re-exported for binary use. The real main is here so tests can call into it.
+/// Dispatch a parsed invocation from the binary or tests.
 pub fn main() -> std::process::ExitCode {
-    // Harden only the arms that can touch secret material (sweep
-    // 2026-08-07 D17): --help/--version and --check must not print
-    // hardening noise (e.g. an mlockall failure) for invocations that
-    // never decrypt. Serve/Exec/Fetch/Setup/Cleanup stay hardened BEFORE
-    // any decryption and before execvp, exactly as before.
+    // Harden only the arms that can touch secret material: --help/--version and --check
+    // must not print hardening noise (e.g. an mlockall failure) for invocations that
+    // never decrypt. Serve/Exec/Fetch/Setup/Cleanup stay hardened BEFORE any decryption
+    // and before execvp.
     let result = match parse_args() {
         Ok(Invocation::Serve(args)) => {
             harden_process();

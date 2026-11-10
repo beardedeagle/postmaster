@@ -1,23 +1,20 @@
 # postmaster
 
-**postmaster** is a standalone, format-neutral local secret
-materialization engine. It decrypts encrypted secret inputs at process
-launch time and injects them into a child process via environment
-variables, files, or systemd credentials — then `execvp`s your binary
-directly. No Node, no shell, no separate CLI process in the runtime path.
+Postmaster decrypts local secret inputs at process launch and delivers values
+through environment variables, files, or systemd credentials. It then replaces
+the launcher with your binary through `execvp`.
 
 The first input adapter is wire-compatible with
 [dotenvx](https://github.com/dotenvx/dotenvx)-encrypted `.env` files (same
 ECIES/secp256k1 + HKDF-SHA256 + AES-256-GCM crypto path), so existing
-`.env` files encrypted with the dotenvx CLI decrypt byte-exact through
-postmaster's native Rust implementation. dotenvx is one adapter, not the
-ceiling — the architecture supports file-based (`.env`), HashiCorp Vault,
-AWS SSM, and other secret providers (1Password, etc.) as source/custody
-backends.
+`.env` files encrypted with the dotenvx CLI decrypt through Postmaster's
+native Rust implementation. Postmaster also reads encrypted
+`postmaster_bundle` JSON files. External systems such as Vault, AWS SSM,
+and 1Password can deliver private keys to its local key sources before launch.
 
-Postmaster works with Nix, AWS CDK, Ansible, SaltStack, Puppet,
-Terraform, and OpenTofu as deployment automation targets, all sharing
-the same `exec.json` contract.
+Deployment tools such as Nix, AWS CDK, Ansible, SaltStack, Puppet, Terraform,
+and OpenTofu can generate the same `exec.json` contract. Postmaster doesn't
+fetch secrets from those tools or remote stores.
 
 Encrypted values can be public: each value is ECIES/secp256k1-encrypted,
 and the embedded public key permits encryption but not decryption.
@@ -73,9 +70,8 @@ $ postmaster --help
 
 ## Injection modes
 
-**`mode = "env"`.** Decrypted values are exported into the
-process environment and the wrapper `exec`s your binary. Correct for
-12-factor apps.
+**`mode = "env"`.** Postmaster exports resolved values into the application
+environment and replaces the launcher with your binary.
 
 **`mode = "files"`.** Values are written one-file-per-key onto a
 namespace-private tmpfs (`TemporaryFileSystem=/run/postmaster`; on macOS,
@@ -85,16 +81,16 @@ variables are exported by default, following the Docker-secrets convention.
 absent from environ, `ps e`, crash-dump environment sections, and
 ambient child inheritance.
 
-**`mode = "credentials"`.** Real systemd credentials, served on demand by
-the postmaster daemon. The consumer's unit gets
+**`mode = "credentials"`.** The launcher exports pointers to credentials
+that systemd has already supplied, or fetches them from configured local
+Postmaster sockets. With daemon-backed systemd delivery, the consumer gets
 `LoadCredential=<KEY>:/run/postmaster-credd/<svc>/<KEY>.sock` per key and
 the app reads `$CREDENTIALS_DIRECTORY/<KEY>` from unit-private, unswappable
-ramfs. Strongest hygiene of the three.
+ramfs. The deployment controls credential storage and access.
 
 ## Key sources
 
-Postmaster reads private keys from local terminal sources only — it never
-fetches from remote systems:
+Postmaster reads private keys from four local sources:
 
 - **systemd credentials** (`LoadCredential=`) — PID 1 places key material
   in `$CREDENTIALS_DIRECTORY` before postmaster starts. Includes
@@ -112,8 +108,9 @@ fetches from remote systems:
 Postmaster is the local secret materialization stage in a 5-stage
 pipeline: custody (Vault/SSM/1Password/TPM2) → rendering (Nix/Terraform/
 CDK/Ansible/Salt/Puppet) → delivery (credentials/files/keychain/env) →
-materialization (postmaster) → launch (execvp). Each stage is owned by a
-different system; postmaster owns exactly materialization. The
+materialization (postmaster) → launch (execvp). Each stage has a separate
+responsibility. Postmaster handles local materialization and the handoff to
+the target process. The
 stage-by-stage breakdown lives in
 [The secret pipeline](docs/src/architecture/postmaster.md#the-secret-pipeline).
 

@@ -46,7 +46,7 @@ mod tests {
     }
 
     fn vectors() -> Vec<Vector> {
-        // Fixed outputs of the previously deployed AAD fork at 81e1b84.
+        // Fixed ECIES envelopes pin the wire format and entry-name authentication.
         serde_json::from_str(include_str!("aad/vectors.json")).unwrap()
     }
 

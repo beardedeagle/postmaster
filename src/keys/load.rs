@@ -1,4 +1,4 @@
-//! `.env.keys` file loading with on-fd stat hardening (no TOCTOU window).
+//! `.env.keys` loading with type, ownership, and access checks on the opened inode.
 
 use std::path::Path;
 
@@ -10,10 +10,9 @@ use crate::adapter::KeyNaming;
 /// Implementation of [`KeyRing::load`]; the contract is documented on the
 /// method.
 pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
-    // NONBLOCK is inert on regular files; on a FIFO it turns the otherwise
-    // blocking open into an immediate success that the file-type check
-    // below rejects — a FIFO here must never hang the launcher at open
-    // (sweep 2026-08-07 K5).
+    // NONBLOCK is inert on regular files; on a FIFO it turns the otherwise blocking
+    // open into an immediate success that the file-type check below rejects — a FIFO
+    // here must never hang the launcher at open.
     let oflags = rustix::fs::OFlags::RDONLY
         | rustix::fs::OFlags::NOFOLLOW
         | rustix::fs::OFlags::CLOEXEC
@@ -26,9 +25,8 @@ pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String
     })?;
     let stat =
         rustix::fs::fstat(&fd).map_err(|e| format!("keys file {}: fstat: {e}", path.display()))?;
-    // Regular files only: Mode carries no S_IFMT bits, so a directory would
-    // pass the permission mask below and fail later with an opaque parse
-    // error (sweep 2026-08-07 K5).
+    // Regular files only: Mode carries no S_IFMT bits, so a directory would pass the
+    // permission mask below and fail later with an opaque parse error.
     if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
         return Err(format!(
             "keys file {}: not a regular file (fail closed)",
@@ -174,8 +172,8 @@ mod tests {
 
     #[test]
     fn load_rejects_directory_keys_file() {
-        // sweep 2026-08-07 K5: Mode carries no S_IFMT bits, so a directory
-        // would pass the permission mask — reject by file type.
+        // Mode carries no S_IFMT bits, so a directory would pass the permission mask —
+        // reject by file type.
         let dir = tdir("dir-as-keys");
         match KeyRing::load(&dir, &[KeyNaming::Env]) {
             Err(e) if e.contains("not a regular file") => {}

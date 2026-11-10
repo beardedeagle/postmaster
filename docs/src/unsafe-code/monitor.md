@@ -1,9 +1,9 @@
-# Sibling Launch Monitor
+# Sibling launch monitor
 
-> **At a glance:** a sibling process watches the service until it exits.
-> It forwards stop signals, escalates to SIGKILL after a 250 ms grace, and
-> removes secret files after exit, a crash, or `kill -9`. It scrubs projected
-> environment pairs but retains the launcher's original environment.
+A sibling process watches the service until it exits.
+It forwards stop signals, escalates to SIGKILL after a 250 ms grace, and
+removes secret files after exit, a crash, or `kill -9`. It scrubs projected
+environment pairs but retains the launcher's original environment.
 
 ## Lifecycle
 
@@ -48,8 +48,8 @@ Unsafe blocks: fork(2) (libc, both platforms); rustix `runtime`
 
 ## Purpose
 
-The sibling monitor closes the launch-handoff stop-semantics gap and
-adds plaintext cleanup on **every** service-death path. After
+The sibling monitor forwards stop signals and attempts plaintext cleanup
+after service exit. After
 validation, plaintext writes, and zeroization of the key ring and resolved
 buffers, and before `execvp`,
 the launcher `fork()`s. The parent restores its
@@ -61,16 +61,15 @@ after a 250 ms grace (a single global security policy, deliberately not
 configurable), watches liveness (pidfd+poll on Linux, kqueue
 `EVFILT_PROC`/`NOTE_EXIT` on macOS, `kill(pid, 0)` only as fallback), and
 runs `cleanup_written` before exiting — on stop, on natural exit, on
-`kill -9`, on crash. The sigaction flag-handler and second pre-exec gate
-were retired with this design: the monitor is the single owner of stop
-semantics, so no async-signal context exists anywhere.
+`kill -9`, and crashes. The monitor consumes signals synchronously; it
+does not install signal handlers.
 
 The scrub does not erase the monitor's original process environment.
 Private keys supplied through environment variables can remain there for
 the monitor's lifetime. Use a non-environment key source to avoid that
 exposure. See [Private-key environment variables](../architecture/threat-model.md#private-key-environment-variables).
 
-## Why Unsafe
+## Why unsafe
 
 - **`fork(2)` has no rustix wrapper** (a deliberate rustix omission), so
   it is a direct libc call on both platforms. On Linux this is the
@@ -110,7 +109,7 @@ are reaped, so NOTE_EXIT registration on an already-exited service fails
 rustix 1.1.6 exports the experimental API as `runtime_448b8ad740e2a26f`.
 The launcher and monitor import it as `runtime`.
 
-## UB Vectors and Mitigations
+## UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
@@ -124,7 +123,7 @@ The launcher and monitor import it as `runtime`.
 | Zombie blindness | `kill(pid, 0)` succeeds on zombies | pidfd/kqueue are the primary mechanisms precisely because they fire at exit, not at reap; polling is fallback-only and documented |
 | Handler unsoundness | Non-reentrant work in signal context | Eliminated by design — there are no signal handlers; consumption is synchronous in the loop |
 
-## Remaining Risks
+## Remaining risks
 
 | Risk | Likelihood | Impact |
 |------|------------|--------|

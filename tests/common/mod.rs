@@ -55,8 +55,7 @@ pub fn write_keys_file(dir: &Path, env_suffix: &str, sk_hexes: &[&str]) -> PathB
     };
     let p = dir.join(".env.keys");
     fs::write(&p, format!("{var}=\"{}\"\n", sk_hexes.join(","))).unwrap();
-    // KeyRing::load now enforces 0600-or-stricter permissions and euid
-    // ownership (audit finding #1). The temp file must pass that check.
+    // Match the owner-only permissions required by KeyRing::load.
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
     p
 }

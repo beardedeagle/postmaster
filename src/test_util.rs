@@ -11,8 +11,6 @@ pub(crate) mod temp_dir;
 /// racing another test's mutation, is a data race; edition 2024 marks
 /// those calls `unsafe`.
 ///
-/// ALL env-touching tests in every module hold this ONE lock for the
-/// mutation's full scope. Module-local locks do not exclude each other:
-/// separate per-module statics raced, and the loser's panic poisoned a
-/// mutex, failing unrelated tests (~1 in 5 baseline runs).
+/// Environment-mutating and whole-environment snapshot tests hold this lock
+/// for the full scope. Separate module-local locks would not exclude each other.
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

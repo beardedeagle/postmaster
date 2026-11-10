@@ -1,10 +1,9 @@
 # Launcher contract (exec.json)
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** the complete specification of `exec.json` — every
-field, every mode, every validation rule. This is the contract a
-binding (Nix, Terraform, CDK, Ansible) must produce.
+This reference defines the fields, modes, and validation rules for `exec.json`.
+Deployment integrations must generate this format.
 
 ### Who this is for
 
@@ -19,10 +18,10 @@ binding (Nix, Terraform, CDK, Ansible) must produce.
 
 | Term | Plain meaning |
 | ------ | --------------- |
-| **exec.json** | JSON config that tells postmaster what to decrypt and how to launch |
+| **exec.json** | JSON config that selects inputs, key sources, and projection mode. The launch command follows `--` separately. |
 | **Projection mode** | How secrets reach the child: env, files, or credentials |
 | **Key source** | Where the decryption key comes from (file, credential, keychain, env) |
-| **Strict** | If true (default), any decryption failure aborts the launch |
+| **Strict** | If true, dotenv decryption failures abort launch. Bundle authentication failures abort under either setting. |
 | **Passthrough** | In files mode, specific keys also exported as env vars |
 
 `postmaster exec` is the concrete instance of the
@@ -141,10 +140,10 @@ Every field except `mode` has a default, so a minimal config is just
 | `bundle_files` | array of paths | `[]` | Encrypted `postmaster_bundle` JSON containers, resolved after `env_files`. The first definition wins unless `overload` selects the last; bundle keys use the same identifier rule and injection modes. |
 | `strict` | bool | **`true`** | Undecryptable dotenv values abort launch when true and are omitted when false. Bundle authentication failures always abort. |
 | `overload` | bool | `false` | File-derived values override the process environment; later files override earlier ones. |
-| `secrets_dir` | path or `null` | `null` | `files` mode, and `credentials` mode on the launchd/fetch path: directory plaintext files are written into. |
+| `secrets_dir` | path or `null` | `null` | `files` mode, and `credentials` mode on the socket-fetch path: directory plaintext files are written into. |
 | `passthrough` | array of strings | `[]` | `files` mode only: these keys are *also* exported as real env vars, in addition to their `_FILE` pointer. |
 | `credential_keys` | array of strings | `[]` | `credentials` mode: keys to expose as `$CREDENTIALS_DIRECTORY/<KEY>`. Required (non-empty) for that mode. |
-| `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects the darwin/launchd fetch path; empty means systemd already materialized the credentials via `LoadCredential=`. |
+| `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects local socket fetching on either OS; empty means systemd already materialized the credentials via `LoadCredential=`. |
 | `verify_ramdisk` | path or `null` | `null` | darwin only: require a RAM-backed HFS mount and a service-owned `secrets_dir` on that device. The verified directory handle is retained for plaintext I/O. |
 
 Note the field name is `verify_ramdisk`, not `ramdisk` or `ramdisk_mount` —
@@ -354,23 +353,23 @@ this mode — it dispatches on whether `sockets` is empty:
   against running this mode outside systemd). For each key, exports
   `<KEY>_FILE=$CREDENTIALS_DIRECTORY/<KEY>` — no reading, no
   permission changes; systemd already owns that file.
-- **`sockets` non-empty (darwin/launchd fetch path):** requires
+- **`sockets` non-empty (local fetch path):** requires
   `secrets_dir`; runs the ramdisk guard if `verify_ramdisk` is set. For
   each key, looks up its socket in `sockets` (missing entry is an error),
   connects and reads to EOF via the same client path `postmaster fetch`
   uses, writes the bytes to `<secrets_dir>/<KEY>` at `0600`, and exports
   `<KEY>_FILE`. After all keys, also exports
   `CREDENTIALS_DIRECTORY` set to `secrets_dir`
-  — unlike the systemd branch, there is no real `LoadCredential`
-  mechanism on darwin, so the launcher has to tell the consumer that
-  `secrets_dir` *is* its credentials directory.
+  so the application can use the same credential-directory convention.
+  This path is normally used with launchd, but `sockets` selects it on
+  either supported operating system.
 
 ## Fail-closed rules
 
 - **`strict` (default `true`).** In `env`/`files` modes, if a selected dotenv
   value fails to decrypt (bad key, wrong key, malformed ciphertext), the whole
   exec aborts before the child runs — nothing partial is injected. With
-  `strict: false`, an undecryptable value is logged and simply omitted
+  `strict: false`, an undecryptable value is logged and omitted
   from the resolved set (never served as an error string or empty value).
   Bundle entries must authenticate regardless of `strict`. `--verify-keys`
   also rejects skipped dotenv values when `strict` is false.
@@ -384,8 +383,9 @@ this mode — it dispatches on whether `sockets` is empty:
   to serve); failing closed"` rather than writing an empty credential
   file.
 - **16 MiB read cap.** Config JSON, bundle JSON, and credential fetch payloads
-  are capped at 16 MiB by `read_capped`; oversized payloads fail. Dotenv and
-  private-key files are streamed through `dotenvy` without this cap.
+  are capped at 16 MiB by `read_capped`; oversized payloads fail. Dotenv
+  sources have the separate byte, assignment, and expansion limits described
+  above. Private-key files use the `dotenvy` streaming parser without that cap.
 - **Missing `$CREDENTIALS_DIRECTORY`** in `credentials` mode's systemd
   branch fails closed rather than silently exporting nothing.
 - **Private keys never come from the Nix store.** A `{"file": …}` key
@@ -466,11 +466,10 @@ with external secret-management tooling that materializes a
   `{"credential": "postmaster-myapp"}`. AWS tooling owns IAM, network I/O,
   and retrieval; postmaster inherits systemd's local credential access
   control.
-- **macOS Keychain → `{"keychain": "<service>"}`.** No external tooling
-  needed beyond what's already documented for `key.keychainService`
-  (Operational notes) — this is the existing source, not a new
-  composition, but the one to reach for on darwin when a file or
-  `LoadCredential` isn't a fit.
+- **macOS Keychain → `{"keychain": "<service>"}`.** Use
+  `postmaster setup` to seed the required accounts under that service name.
+  Postmaster reads those items through Security.framework. See
+  [Key provisioning](../getting-started/key-provisioning.md#strategy-d-macos-keychain).
 
 ## Conformance
 

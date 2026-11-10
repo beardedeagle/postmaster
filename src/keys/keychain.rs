@@ -1,4 +1,4 @@
-//! macOS System keychain key source.
+//! macOS Keychain source using the default keychain search list.
 
 use zeroize::Zeroizing;
 
@@ -13,11 +13,9 @@ pub(super) fn from_keychain(
     vars: &[String],
     namings: &[KeyNaming],
 ) -> Result<KeyRing, String> {
-    // Reads go through the Security.framework API, not the
-    // /usr/bin/security CLI (F1 direction): no subprocess, no argv,
-    // and no stdout buffer holding key material — the UTF-8-failure
-    // path validates from a borrow so the error never carries the
-    // bytes (audit 2026-08-02 A17).
+    // Reads go through the Security.framework API, not the /usr/bin/security CLI: no
+    // subprocess, no argv, and no stdout buffer holding key material — the
+    // UTF-8-failure path validates from a borrow so the error never carries the bytes.
     let mut pairs = Vec::new();
     for var in vars {
         let bytes = Zeroizing::new(

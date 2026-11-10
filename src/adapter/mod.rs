@@ -1,15 +1,11 @@
 //! Adapter enum for key-naming conventions.
 //!
-//! Different input adapters (`.env` files, `postmaster_bundle`, etc.) have
-//! different conventions for how private keys are named, how metadata keys
-//! are filtered, and how artifact filenames map to key variable names. This
-//! enum encapsulates those conventions so the core key-loading and
-//! resolution logic is adapter-neutral.
+//! Dotenv and bundle inputs have different key names, metadata filters, and
+//! filename mappings. `KeyNaming` keeps those rules together for loading and
+//! resolution.
 //!
-//! An enum (not a trait) is used deliberately: the set of adapters is small
-//! and security-critical. Exhaustive match ensures every call site handles
-//! every adapter at compile time — adding a variant is a deliberate act
-//! that forces all code paths to acknowledge it.
+//! Exhaustive matches make new adapter variants a compile-time obligation
+//! for each dispatch site.
 
 pub mod bundle;
 
@@ -17,9 +13,7 @@ use std::path::Path;
 
 /// The key-naming convention for a secret input adapter.
 ///
-/// Adding a variant is a deliberate act: every match on this enum must
-/// handle the new variant or the code will not compile. This is the
-/// security boundary — no adapter can silently slip through unhandled.
+/// Each dispatch match must handle every adapter variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyNaming {
     /// The `.env` file adapter. Uses `DOTENV_PRIVATE_KEY[_<ENV>]` as its
@@ -72,11 +66,10 @@ impl KeyNaming {
                 let env = rest.strip_prefix('.').ok_or_else(|| {
                     format!("{base}: env files must follow the `.env[.<environment>]` convention")
                 })?;
-                // Reject anything outside [A-Za-z0-9_]: such characters
-                // would sanitize to '_', making distinct filenames collide
-                // on the same key variable (`.env..x` ≡ `.env._x`)
-                // (audit 2026-08-02 A20). Letters fold to upper case, the
-                // dotenvx convention.
+                // Reject anything outside [A-Za-z0-9_]: such characters would sanitize
+                // to '_', making distinct filenames collide on the same key variable
+                // (`.env..x` ≡ `.env._x`). Letters fold to upper case, the dotenvx
+                // convention.
                 if env.is_empty() || !env.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     return Err(format!(
                         "{base}: environment name must be non-empty [A-Za-z0-9_] only"
@@ -125,15 +118,13 @@ mod tests {
 
     #[test]
     fn key_var_for_requires_the_dot_env_convention() {
-        // Consolidated from the keys/exec_config test copies (sweep
-        // 2026-08-07 T13): the mapping lives here, so its legs do too.
+        // Dotenv inputs must follow the .env[.<environment>] naming convention.
         assert!(KeyNaming::Env.key_var_for(Path::new("no-dot-env")).is_err());
     }
 
     #[test]
     fn key_var_for_rejects_aliasing_names() {
-        // audit 2026-08-02 A20: `.env..x` used to alias `.env._x` onto the
-        // same key variable (DOTENV_PRIVATE_KEY__X); lossy names now fail.
+        // Reject lossy names that could alias another file's key variable.
         assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env..x")).is_err());
         assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.-x")).is_err());
         assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.")).is_err());

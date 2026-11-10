@@ -1,17 +1,17 @@
-# Test-Only env Mutation
+# Test-only environment mutation
 
-> **At a glance:** some tests must change the process environment,
-> which Rust 2024 marks `unsafe` because it can race other threads.
-> Every such test holds one shared process-wide lock, so env-mutating
-> tests can never run — or race — concurrently.
+Some tests must change the process environment,
+which Rust 2024 marks `unsafe` because it can race other threads.
+Every such test holds one shared process-wide lock, so env-mutating
+tests can never run — or race — concurrently.
 
 ## Location
 
 ```text
 src/test_util.rs                 — the shared ENV_LOCK itself
-src/keys/source.rs (test module) — 8 tests, 17 set/remove calls
-src/keys/env.rs (test module)    — 2 tests, 8 set/remove calls
-src/keys/provisioning/mod.rs (test module) — 3 tests, 14 set/remove calls + ambient vars() scans
+src/keys/source.rs (test module) — credential and source-selection tests
+src/keys/env.rs (test module)    — environment key-loading tests
+src/keys/provisioning/mod.rs (test module) — environment provisioning checks
 ```
 
 ## Purpose
@@ -23,7 +23,7 @@ Several key-source tests must set or clear `DOTENV_PRIVATE_KEY*` /
 `POSTMASTER_KEY*` / `CREDENTIALS_DIRECTORY` to exercise source
 selection.
 
-## UB Vectors and Mitigations
+## UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
@@ -34,14 +34,10 @@ Each site carries a SAFETY comment naming the serialization discipline.
 
 ## Why one process-wide lock
 
-The discipline was previously **per-module**: `keys/source.rs` and
-`keys/provisioning/mod.rs` each had their own `ENV_LOCK` static, and
-`keys/env.rs`'s `from_env_loads_and_fails_closed` mutated env holding no
-lock at all. Module-local locks do not exclude each other, so two such
-tests still raced — the loser's panic poisoned a mutex and failed
-unrelated tests (~1 in 5 baseline runs). Every env-mutating test in
-every module now acquires the single `crate::test_util::ENV_LOCK`; any
-new env-touching test must do the same.
+Module-local locks do not exclude tests in other modules. Every test that
+mutates the environment, or reads variables another test mutates, must hold
+`crate::test_util::ENV_LOCK` for that scope. The lock serializes cooperating
+tests; it does not control environment access inside unrelated libraries.
 
 ## Tests
 

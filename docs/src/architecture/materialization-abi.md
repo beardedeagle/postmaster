@@ -4,20 +4,18 @@
 contract between public deployment artifacts, local private key material,
 and the process that receives plaintext at runtime.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** the contract that every integration (Nix, Terraform,
-CDK, Ansible, etc.) must follow when wiring postmaster. If you're writing
-a binding or evaluating whether a generated config is correct, this is
-your page.
+Deployment integrations generate local inputs for Postmaster. This contract
+defines those inputs, key sources, resolution rules, and output projections.
 
 ### Who this is for
 
 | Reader | What to take |
 | -------- | ------------ |
 | Integration author | The entire page — this is your contract |
-| Security engineer | "Non-goals" and "Resolution" — what postmaster will never do |
-| New user | "Current ABI instance" and the exec.json example — the 60-second tour |
+| Security engineer | "Non-goals" and "Resolution" |
+| New user | "Current ABI instance" and the exec.json example |
 | Platform / SRE | "Key sources" and "Validation" — what the host needs |
 
 ### Quick glossary
@@ -25,7 +23,7 @@ your page.
 | Term | Plain meaning |
 | ------ | --------------- |
 | **ABI** | Application Binary Interface — the contract between config files, key material, and the launcher |
-| **exec.json** | A JSON file that tells postmaster what to decrypt, how to inject, and what to launch |
+| **exec.json** | A JSON file that selects inputs, key sources, and projection mode. The launch command is supplied separately after `--`. |
 | **Projection** | Where decrypted secrets go — env vars, files, or systemd credentials |
 | **Adapter** | An input format (.env, postmaster_bundle) — postmaster supports multiple, not just one |
 
@@ -38,8 +36,8 @@ The ABI is deliberately local:
 - required validation and decryption checks finish before `exec`
 
 This page describes the ABI and how `exec.json` fits inside it. It is a
-contract for bindings and documentation recipes, not an invitation to put
-provider clients into `postmaster`.
+contract for bindings and documentation recipes. Remote provider clients
+belong in the delivery tooling, outside `postmaster`.
 
 ## Non-goals
 
@@ -123,13 +121,14 @@ filename selects the private key variable:
 - environment names must be non-empty `[A-Za-z0-9_]` (letters fold to
   upper case); anything else is rejected
 
-The `.env` adapter is the first adapter, not the ceiling of the system.
+The bundle adapter below provides another input format under the same
+projection contract.
 
 ## Neutral bundle adapter
 
-The `postmaster_bundle` adapter is a second input format, not a replacement
-for `.env`. Its job is to let non-`.env` ecosystems produce a public
-encrypted artifact without pretending their native model is an `.env` file.
+The `postmaster_bundle` adapter reads structured JSON artifacts alongside
+dotenv inputs. Producers can represent binary and UTF-8 entries without
+encoding their native data model as a dotenv file.
 
 The on-disk format is a JSON container. JSON keeps generated artifacts easy
 for Terraform, OpenTofu, CDK, Ansible, Salt, Puppet, and Nix to render and
@@ -173,10 +172,9 @@ uses the uncompressed ephemeral and shared points, matching `ecies` defaults.
 The entry name's exact UTF-8 bytes are the AAD; plaintext is returned only
 after AES-256-GCM authentication succeeds.
 
-The remaining metadata (profile, recipient ids, encodings) is not yet
-cryptographically bound. Binding it requires specifying canonical serialized
-bytes for the authenticated metadata first — generated artifacts need
-deterministic bytes for reproducible builds and stable test vectors.
+The remaining metadata, including profile, recipient IDs, and encodings, is
+not cryptographically bound. A format that authenticates those fields would
+need canonical serialized bytes for reproducible builds and stable vectors.
 
 The design constraints are:
 
@@ -286,8 +284,8 @@ The deployment must supply RAM-backed storage. The launcher does not establish
 RAM backing when `verify_ramdisk` is absent.
 
 The launcher refuses to follow symlinks when writing secret files. On macOS,
-when `verify_ramdisk` is set, it verifies the configured mount before writing
-plaintext.
+when `verify_ramdisk` is set, it verifies the configured mount and the opened
+directory's device and ownership before writing plaintext.
 
 `passthrough` may additionally export selected keys as real environment
 variables. Passthrough values containing NUL bytes are rejected.
@@ -297,9 +295,10 @@ variables. Passthrough values containing NUL bytes are rejected.
 On systemd, PID 1 has already materialized credentials and the launcher only
 exports `<KEY>_FILE` pointers into `$CREDENTIALS_DIRECTORY`.
 
-On launchd, the launcher can fetch configured keys from local postmaster
-sockets, write them into the verified RAM disk directory, and export
-credential-style pointers.
+When `sockets` is configured, the launcher fetches values from local
+Postmaster sockets, writes them beneath `secrets_dir`, and exports
+credential-style pointers. This path is normally used with launchd. RAM
+backing is verified only when `verify_ramdisk` is set on macOS.
 
 Every `credential_keys` entry must be a valid identifier before any fetch or
 write occurs.
@@ -330,19 +329,20 @@ the key file is missing, the keychain item is absent, or the credential
 source is not provisioned. The launcher's fail-closed behavior is the
 runtime guarantee; `--check` cannot substitute for it.
 
-`postmaster setup --config <exec.json> --recheck` provides runtime
-environment verification — it probes the filesystem and keychain to
-confirm that key material is actually accessible at the configured paths,
-without decrypting any secrets. It complements `--check`: run `--check`
-in CI for config correctness, run `setup --recheck` on the host for
-environment readiness.
+`postmaster setup --config <exec.json> --recheck` checks local provisioning
+without decrypting secrets. File sources receive descriptor-based ownership,
+permission, and macOS ACL checks. Credential sources receive path-presence and
+regular-file checks. Keychain checks look for the required items; environment
+checks look for required variables. These checks do not prove that the keys
+can decrypt the configured inputs. Run `--check` in CI for config shape and
+`setup --recheck` on the host for provisioning checks.
 
 The full `postmaster setup` command goes beyond verification: it
 creates the keys directory with 0700 permissions, verifies or creates
-keys files with 0600, optionally seeds keychain items (macOS, interactive),
-and validates platform prerequisites. It is idempotent — each step checks
-whether the target state is already present and correct, and skips if it
-is. Flags: `--recheck` (verification only), `--unattended` (non-interactive,
+key files with owner-only permissions, and optionally seeds macOS Keychain
+items interactively. It derives a unique required-account list in first-seen
+input order. Steps already satisfied are skipped.
+Flags: `--recheck` (verification only), `--unattended` (non-interactive,
 fail closed), `--force` (re-create/re-seed), `--keys-dir <path>` (override
 default path).
 

@@ -1,9 +1,8 @@
 //! Secret file operations — writing, cleanup, and pruning of plaintext
 //! secret files on RAM-backed filesystems.
 //!
-//! All file operations use `O_NOFOLLOW` and fd-based permissions to
-//! eliminate TOCTOU race conditions against symlink attacks. The secrets
-//! directory is pinned once by an open fd (`O_DIRECTORY|O_NOFOLLOW`) and
+//! The secrets directory is pinned by an open fd (`O_DIRECTORY|O_NOFOLLOW`),
+//! and permissions are checked on opened inodes. Subsequent
 //! output creation, entry checks, and cleanup are relative to that pinned inode.
 //! Exported-path validation separately checks lexical and resolved ancestry.
 
@@ -290,10 +289,10 @@ pub fn cleanup_written(dir_fd: impl AsFd, names: &[String]) {
 /// plaintext is transient — is best served by cleaning what we can rather
 /// than aborting the launch over an unrelated stale file.
 pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
-    // Pin the directory by fd: O_DIRECTORY|O_NOFOLLOW rejects a symlinked
-    // or non-directory secrets dir at open, and the sentinel check, the
-    // per-entry stat, and every unlink below are all relative to the
-    // pinned inode — no path is ever re-resolved (audit 2026-08-02 A12).
+    // Pin the directory by fd: O_DIRECTORY|O_NOFOLLOW rejects a symlinked or
+    // non-directory secrets dir at open, and the sentinel check, the per-entry stat,
+    // and every unlink below are all relative to the pinned inode — no path is ever
+    // re-resolved.
     let dir_fd = match open_secrets_dir(dir) {
         Ok(fd) => fd,
         // If the directory does not exist yet, there is nothing to prune.
@@ -322,9 +321,8 @@ pub(crate) fn prune_stale_at(
     if names.is_empty() {
         return Ok(());
     }
-    // Managed-dir guard (audit 2026-08-02 A19): non-empty and no
-    // sentinel means postmaster never wrote here — bulk deletes could
-    // hit foreign files. Refuse.
+    // Managed-dir guard: non-empty and no sentinel means postmaster never wrote here —
+    // bulk deletes could hit foreign files. Refuse.
     match rustix::fs::statat(
         dir_fd,
         MANAGED_SENTINEL,
@@ -340,8 +338,8 @@ pub(crate) fn prune_stale_at(
     }
     for name in &names {
         let Some(name_str) = name.to_str() else {
-            // Every other skip in this loop logs; a foreign file with a
-            // non-UTF8 name must not persist silently (sweep 2026-08-07 X7).
+            // Every other skip in this loop logs; a foreign file with a non-UTF8 name
+            // must not persist silently.
             crate::server::log(&format!(
                 "{}: prune: skipping non-UTF8 entry name",
                 dir.display()
@@ -385,8 +383,8 @@ mod tests {
 
     fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
         let d = crate::test_util::temp_dir::TestDir::new(tag);
-        // prune_stale requires a postmaster-managed (owner-only) dir
-        // (audit 2026-08-02 A19); match real deployments.
+        // prune_stale requires a postmaster-managed (owner-only) dir; match real
+        // deployments.
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
         d
@@ -567,7 +565,7 @@ mod tests {
     fn prune_stale_removes_unconfigured_files() {
         let dir = tdir("prune");
         // Simulate a previous launch that wrote KEY_A and KEY_B (the
-        // sentinel marks the dir as postmaster-managed — A19).
+        // sentinel marks the directory as managed).
         fs::write(dir.join("KEY_A"), b"old-a").unwrap();
         fs::write(dir.join("KEY_B"), b"old-b").unwrap();
         fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
@@ -585,9 +583,8 @@ mod tests {
 
     #[test]
     fn prune_stale_refuses_unmanaged_dir() {
-        // audit 2026-08-02 A19: a non-empty dir without the sentinel was
-        // never written by postmaster; bulk deletes could hit foreign
-        // files.
+        // A non-empty dir without the sentinel was never written by postmaster; bulk
+        // deletes could hit foreign files.
         let dir = tdir("prune-unmanaged");
         fs::write(dir.join("FOREIGN"), b"not-ours").unwrap();
 

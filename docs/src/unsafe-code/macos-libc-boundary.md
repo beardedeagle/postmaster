@@ -1,4 +1,4 @@
-# macOS libc Boundary
+# macOS libc boundary
 
 On Darwin the stable kernel ABI *is* libc, so these calls have no
 raw-syscall route (contrast with Linux, where rustix's `linux_raw`
@@ -23,14 +23,14 @@ The credential socket must only answer the service user. On Linux the
 daemon reads peer credentials with `SO_PEERCRED` (safe rustix); Darwin
 has no `SO_PEERCRED`, so the equivalent is `getpeereid(2)` via libc.
 
-### UB Vectors and Mitigations
+### UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
 | Out-param types | `getpeereid` writes a `uid_t` and a `gid_t` | Out-params are exactly `libc::uid_t`/`libc::gid_t` |
 | fd validity | The socket fd must stay valid for the call | Borrowed from `stream` for the call's duration only |
 
-### Remaining Risks
+### Remaining risks
 
 `getpeereid` establishes *same-euid*, not *same-process*: any process
 running as the service user passes. That is an accepted residual of the
@@ -53,7 +53,7 @@ attachment to the daemon. Compiled only under `not(debug_assertions)`;
 assertions, including through a profile environment override, disables this
 call. A failed attach-denial request is logged.
 
-### UB Vectors and Mitigations
+### UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|

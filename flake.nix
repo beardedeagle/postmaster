@@ -1,12 +1,9 @@
 {
   description = ''
-    postmaster — a standalone, format-neutral local secret
-    materialization engine. Decrypts encrypted secret inputs at process
-    launch time and injects them into a child process via environment
-    variables, files, or systemd credentials, then execvp's the target
-    binary directly. Supports file-based (.env), HashiCorp Vault, AWS SSM,
-    and other secret providers as source/custody backends, with Nix, CDK,
-    Ansible, SaltStack, Puppet, Terraform, and OpenTofu as automation targets.
+    Postmaster decrypts local secret inputs and delivers values through
+    environment variables, files, or credentials before execvp replaces the
+    launcher with the application. Deployment tools generate exec.json and
+    provide local keys, storage, permissions, and service-manager policy.
   '';
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";

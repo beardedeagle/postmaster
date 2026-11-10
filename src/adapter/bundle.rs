@@ -1,5 +1,4 @@
-//! `postmaster_bundle` adapter: a neutral JSON container for encrypted
-//! secrets that doesn't pretend to be an `.env` file.
+//! `postmaster_bundle` adapter for structured, encrypted JSON inputs.
 //!
 //! The bundle format is a JSON file with:
 //! - `format`: must be `"postmaster.bundle"` (fail closed on unknown)
@@ -45,10 +44,8 @@ pub struct Bundle {
     pub entries: std::collections::BTreeMap<String, BundleEntry>,
 }
 
-/// A recipient in the bundle: public routing metadata reserved for
-/// future recipient selection. Parsed and shape-validated only today —
-/// resolution selects ring candidates by the fixed `POSTMASTER_KEY`
-/// variable, never by recipient.
+/// Public recipient metadata, parsed but not used for key selection.
+/// Resolution uses the fixed `POSTMASTER_KEY` variable.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Recipient {
@@ -82,8 +79,8 @@ pub enum Encoding {
 
 /// The only supported crypto suite: ECIES (secp256k1, HKDF-SHA256,
 /// AES-256-GCM) with the entry name bound as AES-GCM additional
-/// authenticated data. Pre-AAD v1 ciphertexts are rejected at decryption
-/// (authentication failure), not just here.
+/// authenticated data. Ciphertexts that do not authenticate with that entry
+/// name are rejected during decryption.
 const SUITE: &str = "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad";
 
 /// Parse a bundle JSON file, rejecting invalid metadata and reserved key names.
@@ -153,8 +150,8 @@ pub fn resolve_bundle(
                 .decode(&entry.ciphertext)
                 .map_err(|_| format!("{}: {name} is not valid base64", bundle_path.display()))?,
         );
-        // AAD = the entry name: a ciphertext pasted under a different
-        // entry fails authentication here (audit 2026-08-02 A7).
+        // AAD = the entry name: a ciphertext pasted under a different entry fails
+        // authentication here.
         let mut decrypted: Option<Zeroizing<Vec<u8>>> = None;
         for sk in candidates {
             if let Some(pt) = crate::aad::decrypt(&sk[..], &ciphertext, name.as_bytes()) {
@@ -178,7 +175,7 @@ pub fn resolve_bundle(
             }
             None => {
                 let _ = ciphertext; // zeroize on drop
-                // No candidate count in the error text (audit 2026-08-02 A15).
+                // No candidate count in the error text.
                 return Err(format!(
                     "{}: no key under {var} decrypts {name}",
                     bundle_path.display()
@@ -336,8 +333,7 @@ mod tests {
 
     #[test]
     fn resolve_bundle_rejects_relocated_ciphertext() {
-        // audit 2026-08-02 A7: a ciphertext encrypted under one entry
-        // name must not decrypt under another.
+        // A ciphertext encrypted under one entry name must not decrypt under another.
         let ct = enc("REAL", "top-secret");
         let bundle = make_bundle(vec![("FAKE", &ct, Encoding::Utf8)]);
         let ring = crate::keys::tests::make_test_ring();
@@ -416,9 +412,7 @@ mod tests {
 
     #[test]
     fn resolve_bundle_requires_a_postmaster_key_entry() {
-        // sweep 2026-08-07 T14: a ring built for a different naming (the
-        // bundle-ring gap's unit-test shape) must fail closed with the
-        // missing-entry error, never a silent skip or decrypt failure.
+        // A ring containing only dotenv keys must report the missing bundle key.
         let ct = enc("SECRET", "unreachable");
         let bundle = make_bundle(vec![("SECRET", &ct, Encoding::Utf8)]);
         let env_only_ring = KeyRing::from_pairs(
@@ -438,8 +432,8 @@ mod tests {
 
     #[test]
     fn resolve_bundle_rejects_invalid_base64() {
-        // sweep 2026-08-07 T14: malformed base64 in a ciphertext field is
-        // a hard parse error naming the entry, not a decrypt failure.
+        // Malformed base64 in a ciphertext field is a hard parse error naming the
+        // entry, not a decrypt failure.
         let bundle = make_bundle(vec![("SECRET", "!!!not-base64!!!", Encoding::Utf8)]);
         let ring = crate::keys::tests::make_test_ring();
         let err = resolve_bundle(&bundle, &ring, Path::new("/test")).unwrap_err();

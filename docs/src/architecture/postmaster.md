@@ -4,14 +4,13 @@ Postmaster is a standalone Rust binary that decrypts secret inputs
 at process launch, injects them into the child process, and replaces
 its own process image with the target binary via `execvp`.
 
-It is not a library. It is not a plugin host. It is not a daemon
-framework. It is a single binary with a fixed, local, offline
-contract.
+It ships as a standalone binary with a local, offline contract. Decryption
+and projection are implemented in the repository's Rust library crate.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** the architecture of postmaster — what it does,
-what it owns, and where it fits in the secret delivery pipeline.
+This page describes Postmaster's runtime responsibilities and the deployment
+stages around it.
 
 ### Who this is for
 
@@ -21,7 +20,7 @@ what it owns, and where it fits in the secret delivery pipeline.
 | Platform / SRE | "Implementation" and "Dependency policy" — what you're deploying |
 | Security engineer | The entire page — this defines the security boundary |
 | Integration author | "What postmaster does NOT own" and the [Launcher contract](../reference/launcher-contract.md) |
-| Product / project manager | "What postmaster owns" and the pipeline diagram — the 30-second summary |
+| Product / project manager | "What postmaster owns" and the pipeline diagram |
 
 ### Quick glossary
 
@@ -66,7 +65,7 @@ plaintext in its environment or files":
    seeds keychain items (macOS), and validates the environment —
    idempotently.
 
-## What postmaster does NOT own
+## What Postmaster does not own
 
 Deployment tooling owns authoring, custody, and service-manager policy:
 
@@ -92,8 +91,8 @@ Deployment tooling owns authoring, custody, and service-manager policy:
   Postmaster runs a sibling monitor alongside
   the exec'd service: it forwards stop signals, escalates to SIGKILL
   after a bounded grace, and removes plaintext secret files on every
-  death path (see "The secret pipeline" below) — supervision of
-  plaintext, not of the service's health.
+  death path while the monitor survives. Integration cleanup and storage
+  teardown provide backstops if it doesn't.
 
 - **Child behavior.** What the child process does with its secrets —
   reading from environment variables, files, or credentials — is the
@@ -103,8 +102,9 @@ Deployment tooling owns authoring, custody, and service-manager policy:
 
 ## The secret pipeline
 
-The full secret lifecycle is a pipeline of distinct stages, each
-owned by a different system. Postmaster owns exactly one stage.
+The secret lifecycle has separate custody, rendering, delivery,
+materialization, and launch responsibilities. Postmaster handles
+materialization and the process handoff.
 
 ```mermaid
 flowchart LR
@@ -191,8 +191,8 @@ remote systems.
 
 ### Stage 4: Materialization (postmaster)
 
-Postmaster decrypts encrypted inputs and injects them into the child
-context. This is the only stage postmaster owns.
+Postmaster decrypts local inputs and projects the resulting values into the
+application's environment or files.
 
 - Decrypts `.env` files via the `ecies` crate (native Rust, offline)
 - Decrypts `postmaster_bundle` entries with name-bound AES-GCM AAD
@@ -204,16 +204,16 @@ context. This is the only stage postmaster owns.
 ### Stage 5: Launch (execvp)
 
 Postmaster forks a **sibling monitor** and then calls `execvp` in the
-parent. The parent's process image is replaced. The child binary IS
-`MainPID`. Postmaster is gone from the service's process.
+parent. The service binary remains `MainPID`; the launcher's process image
+is gone.
 
 The fork-child becomes the monitor. It scrubs its projected environment
 pairs, keeps the termination signals blocked for life, and
 supervises its parent — forwards stop signals with a 250 ms grace
 before SIGKILL escalation, and removes the plaintext secret files on
 every service-death path (natural exit, `kill -9`, crash), then exits.
-One tiny extra process per service for the service's lifetime; liveness
-is pidfd+`poll` on Linux and kqueue `NOTE_EXIT` on macOS.
+One monitor process runs for the service's lifetime. It watches liveness
+with pidfd and `poll` on Linux, or kqueue `NOTE_EXIT` on macOS.
 
 The monitor retains the original process environment, which can contain
 private keys supplied through environment variables. Use a non-environment
@@ -250,7 +250,7 @@ is `cfg`-gated (`SO_PEERCRED`→`getpeereid`, `prctl`/`mlockall`→core-limit +
 `PT_DENY_ATTACH`).
 
 The binary has five entry points: the default daemon (`--bind`/
-socket-activated `serve`), `fetch` (the darwin fetch client), `exec`
+socket-activated `serve`), `fetch` (the local socket client), `exec`
 (decrypt + inject + `execvp`), `setup` (idempotent environment
 verification and key provisioning), and `cleanup` (plaintext file
 removal for `ExecStopPost`). Its config schema, key-source precedence,
@@ -276,18 +276,17 @@ Postmaster has 11 direct dependencies (9 portable, 2 platform-gated):
   the only libc FFI on Linux is `fork(2)` — see the unsafe registry)
 - `libc` — macOS (getpeereid, `PT_DENY_ATTACH`, the monitor's
   kqueue/signal ops) plus Linux `fork(2)` only (rustix has no fork
-  wrapper — review-gated doctrine exception)
+  wrapper)
 - `security-framework` — macOS only (Security.framework keychain reads)
 - `zeroize` — secret memory wiping
 
 Bundle envelopes use Postmaster's AAD decoder with the released `ecies`
 curve/HKDF helpers and RustCrypto AES-GCM. This preserves existing ciphertext
-compatibility without a git patch or an upstream AAD API dependency.
+compatibility without an upstream AAD API dependency.
 
-No CLI parsing library (clap, etc.). No async runtime. No OpenSSL.
-No network client. No plugin system. The dependency set is
-intentionally minimal: smaller binary, smaller attack surface,
-faster startup, fewer supply-chain risks.
+The CLI parser uses the standard library. There is no async runtime, OpenSSL
+dependency, remote secret-store client, or plugin system. Each dependency
+must justify its role in the runtime path.
 
 New dependencies are rejected unless they are strictly necessary
 for the core decrypt-inject-execvp path and cannot be implemented in

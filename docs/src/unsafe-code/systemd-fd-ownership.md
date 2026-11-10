@@ -1,9 +1,8 @@
-# systemd fd Ownership (Linux)
+# systemd fd ownership (Linux)
 
-> **At a glance:** on Linux, systemd hands postmaster ready-made
-> sockets as inherited file descriptors. Adopting them is the one
-> `unsafe` act on the serving path — valid exactly because systemd's
-> `sd_listen_fds(3)` contract says which descriptors they are.
+On Linux, systemd hands Postmaster sockets as inherited file descriptors.
+Postmaster validates the `sd_listen_fds(3)` protocol before adopting them
+as owned listeners.
 
 ## Location
 
@@ -18,13 +17,13 @@ unit owns the per-(service, key) sockets and the daemon inherits them as
 fds `[3, 3+n)`. Serving requires a `UnixListener`, so each inherited fd
 is adopted with `UnixListener::from_raw_fd`.
 
-## Why Unsafe
+## Why unsafe
 
 `from_raw_fd` asserts *ownership*: if the fd were invalid, duplicated
 elsewhere, or owned by someone else, the result is double-close /
 use-after-close — undefined behavior the compiler cannot check.
 
-## UB Vectors and Mitigations
+## UB vectors and mitigations
 
 | Vector | Description | Mitigation |
 |--------|-------------|------------|
@@ -33,7 +32,7 @@ use-after-close — undefined behavior the compiler cannot check.
 | fd leak to child | Inherited socket leaking across execvp | `FD_CLOEXEC` is set on the listener immediately after adoption |
 | Not-a-socket | Wrong unit passed non-socket fds | `getsockname(2)` mapping to the filesystem path fails closed immediately |
 
-## Remaining Risks
+## Remaining risks
 
 | Risk | Likelihood | Impact |
 |------|------------|--------|

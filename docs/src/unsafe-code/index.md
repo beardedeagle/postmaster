@@ -1,4 +1,4 @@
-# Unsafe Code
+# Unsafe code
 
 Postmaster deliberately allows `unsafe` at the lint level (documented in
 `[lints.rust]` in `Cargo.toml`) because it is a syscall-boundary daemon:
@@ -36,7 +36,7 @@ Every `unsafe` block requires:
 Note what is NOT in the inventory: `mlockall`, `setrlimit(Core, 0)`, and
 `set_dumpable(NotDumpable)` hardening all use **safe** rustix wrappers.
 
-## Adding Unsafe Code
+## Adding Unsafe code
 
 1. **Exhaust safe alternatives** — rustix first; is there a safe way at all?
 2. **Justify in the platform note** — why this platform has no safe route

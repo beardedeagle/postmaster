@@ -1,9 +1,9 @@
 # Threat model
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** what postmaster protects, what it cannot prevent,
-and why it's built this way. This is the security reference.
+This reference defines Postmaster's trust boundary, deployment requirements,
+and remaining exposure.
 
 ### Who this is for
 
@@ -12,14 +12,14 @@ and why it's built this way. This is the security reference.
 | Security engineer | The entire page — every claim is about the security boundary |
 | Platform / SRE | "Swap and core dumps" and "Hardening inheritance" — what to configure |
 | Integration author | "Why a native launcher" — understand the design constraints |
-| New user | "Secrets at rest" and "Fail-closed" — the 30-second security summary |
-| Product / project manager | The residuals table — what postmaster does NOT protect against |
+| New user | "Secrets at rest" and "Fail-closed" |
+| Product / project manager | The residuals table |
 
 ### Quick glossary
 
 | Term | Plain meaning |
 | ------ | --------------- |
-| **execvp** | Replaces the current process — no parent holds secrets after launch |
+| **execvp** | Replaces the launcher with the target binary while keeping its PID. The sibling monitor is a separate process. |
 | **Fail-closed** | A failed required check prevents launch; dotenv decryption is strict by default |
 | **Zeroize** | Overwrite secret memory with zeros before it's freed |
 | **mlockall** | Pin memory in RAM so the kernel can't swap it to disk |
@@ -35,18 +35,18 @@ and why it's built this way. This is the security reference.
 | Plaintext on persistent disk | Avoided when the deployment supplies RAM-backed secret storage |
 | Plaintext in swap | Mitigated — mlockall + MemorySwapMax=0 |
 | Core dumps | Mitigated — PR_SET_DUMPABLE=0, RLIMIT_CORE=0 |
-| Shell injection | Prevented — no shell anywhere in the path |
+| Shell injection through secret values | Values are passed without shell evaluation |
 | Symlink attacks on key files | Prevented — O_NOFOLLOW + fstat |
 | Same-UID env var exposure (env mode) | Residual — use files or credentials mode |
-| Root on the host | Residual — root is always game over |
+| Root on the host | Outside the trust boundary; privileged processes can inspect memory |
 | VM/hypervisor inspection | Residual — outside the trust boundary |
-| CPU cache/register residue | Non-goal — no mitigation available |
+| CPU cache/register residue | Outside Postmaster's memory-wiping guarantees |
 
 ## Why a native launcher, not a shell wrapper
 
-Postmaster is a native Rust binary, not a shell wrapper around an
-external CLI. This decision is driven by three security properties that
-a shell-based approach cannot provide.
+Postmaster decrypts in Rust and replaces the launcher with the service.
+The relevant properties are process identity, value handling, and local
+decryption.
 
 ### Process identity: execvp, not spawn
 
@@ -55,12 +55,12 @@ call that replaces the current process image with the target binary.
 The process ID (PID) does not change. The service binary is `MainPID`
 from its first instruction.
 
-A shell wrapper or Node.js parent process would `spawn` a child
-instead. The parent stays alive as `MainPID`, which breaks:
+A wrapper that spawns the service and remains alive keeps another process
+in the service unit. That affects:
 
 - **systemd readiness notifications** (`Type=notify`, `sd_notify`):
-  systemd expects `MainPID` to send `READY=1`. A parent process that
-  spawns the real service means the wrong process is notifying.
+  notifications must come from the process the unit is configured to accept.
+  Keeping the wrapper as `MainPID` can leave the service outside that rule.
 - **Cgroup memory accounting**: the parent's memory (including private
   key material) is counted against the service unit's cgroup.
 - **Secret lifetime**: the parent process holds private keys and
@@ -70,16 +70,13 @@ instead. The parent stays alive as `MainPID`, which breaks:
 
 ### No shell interpolation
 
-A shell-based launcher would use `eval` or source-based injection to
-set environment variables. That leaves `$(…)` and backticks live
-inside double quotes. Combined with a public key embedded in the
-repository (which lets any repo writer add or replace encrypted
-values), this would be remote code execution at service start for
-anyone who can commit to the repo.
+A launcher that evaluates secret values through a shell can execute `$(…)`
+or backticks inside those values. Anyone with the public key can encrypt a
+replacement value, so artifact write access combined with shell evaluation
+can become command execution at service start.
 
-Postmaster never evaluates secret values as shell code. Decrypted values move directly
-into the child's environment array or a file write. No shell sits
-between decryption and injection to reinterpret the values.
+Postmaster doesn't evaluate secret values as shell code. Decrypted values
+move directly into the application's environment array or a file write.
 
 ### Private-key environment variables
 
@@ -230,8 +227,8 @@ no external binary is invoked for it. The external binaries postmaster
 does invoke in secret-adjacent paths (`/usr/bin/id`, `/sbin/mount`,
 `/usr/bin/hdiutil`) are verified before use:
 
-- **macOS:** `codesign -v` verifies a valid Apple code signature
-  (defense-in-depth; the binaries are also SIP-protected).
+- **macOS:** `codesign -v` checks the designated system binary's code
+  signature. The fixed system paths are also SIP-protected.
 - **Linux:** verified as regular files owned by root (uid 0) with no group
   or other write permissions. `id` lookup resolves system aliases, including
   the NixOS system profile, verifies the target and its directory ancestry,
@@ -295,10 +292,10 @@ node's lifetime.
 
 ### Root on the host
 
-A process running as root can read any other process's memory via
-`/proc/PID/mem` or `ptrace`. This is the Unix trust boundary — root is
-always game over. Postmaster's `PR_SET_DUMPABLE=0` and `PT_DENY_ATTACH`
-prevent non-privileged peers from attaching, but cannot stop root.
+A privileged process can inspect other processes through mechanisms such as
+`/proc/PID/mem` or `ptrace`. Root access is outside Postmaster's trust boundary.
+The launcher's `PR_SET_DUMPABLE=0` and `PT_DENY_ATTACH` checks restrict
+unprivileged attachment, but don't protect against a privileged inspector.
 
 ### Rotation timing oracle
 
@@ -402,8 +399,8 @@ rest or zram to keep swap pages in RAM.
 **Core dumps:** Disabled at the process level (`PR_SET_DUMPABLE=0` on
 Linux, `RLIMIT_CORE=0` on macOS) and at the unit level
 when configured by the integration (`LimitCORE=0`, `CoredumpFilter=0`). Host-wide
-`systemd.coredump.extraConfig = "Storage=none"` is a belt for all
-units.
+`systemd.coredump.extraConfig = "Storage=none"` disables storage for all
+units handled by systemd-coredump.
 
 **Pre-execvp zeroization:** Private keys (the `KeyRing`) are zeroized
 when `decrypt()` returns and the `ring` local goes out of scope —
@@ -430,18 +427,15 @@ pages before reusing them, so the plaintext exists only in freed
 pages until the kernel reclaims them — a transient window, not a
 persistent risk.
 
-No further mitigation is possible: the kernel needs the env array
-to be intact at the moment of `execvp`, and `execvp` replaces the
-process image without running destructors. Fork+wait would keep
-secrets in a long-lived parent heap (strictly worse) and was rejected.
+The environment array must remain intact for `execvp`. Process replacement
+releases the old address space without running its remaining destructors.
 
 ### Monitor inherited heap — Mitigated
 
 The sibling monitor is forked after zeroization, so the key ring and
 the `Zeroizing` resolved values are already wiped in the copy it
-inherits. The projected
-`extra` env array (plaintext values in env mode and in files-mode
-passthrough). The monitor scrubs its copy **first**, before the
+inherits. The projected `extra` array still contains plaintext in env mode
+and files-mode passthrough. The monitor scrubs its copy before the
 supervision loop starts: each `OsString` is consumed into its existing
 buffer (no copy) and wiped in place with `zeroize` — free() alone
 would leave the bytes in the monitor's mapped pages for its whole life,
@@ -470,40 +464,34 @@ requirements. Swap and crash-dump protections remain separate requirements.
 `MemorySwapMax=0` can be wired by the service manager (systemd) or the
 deployment integration. This enforces the cgroup's swap limit —
 the kernel will not swap the unit's pages even under host memory
-pressure. The residual is only if the host kernel itself is
-compromised, which falls under "root on the host is always game over."
-Host-wide encrypted swap is recommended as defense-in-depth for the
-entire host, not just postmaster's cgroup.
+pressure. This depends on the deployment applying the setting and on a
+trusted host kernel. Host-wide encrypted swap also protects pages outside
+Postmaster's cgroup.
 
-### VM and hypervisor inspection — Residual (no mitigation available)
+### VM and hypervisor inspection
 
 A hypervisor can inspect guest memory, take snapshots, or
 live-migrate VMs to other hosts. Postmaster's `mlockall` and
 `MemorySwapMax=0` operate inside the guest kernel; the hypervisor is
-outside the trust boundary. The only defense is confidential computing
-hardware (AMD SEV-SNP, Intel TDX, AWS Nitro Enclaves), which is
-outside postmaster's scope and dependency set.
+outside the trust boundary. Confidential-computing platforms can provide
+additional isolation, but their setup and guarantees are outside
+Postmaster's scope.
 
-### CPU registers and cache — Non-goal (no mitigation available)
+### CPU registers and cache
 
 Plaintext secrets pass through CPU registers and L1/L2/L3 cache
-during decryption and injection. Postmaster does not attempt to flush
-cache lines or zero registers after use. This is a non-goal:
-mitigating cache-line side channels and register residue requires
-constant-time crypto implementations and hardware support (e.g., TSX
-memory scrubbing, `wbinvd` instruction) that are outside postmaster's
-scope. The crypto library (`ecies`) uses `secp256k1` and `AES-256-GCM`
-primitives that are not guaranteed constant-time on all targets; this
-is a property of the crypto library, not postmaster.
+during decryption and injection. Postmaster does not flush cache lines or
+zero registers after use. Zeroizing its buffers does not establish that
+registers, caches, or temporary copies are clear. Constant-time behavior
+also depends on the crypto implementations and target hardware; Postmaster
+does not guarantee it on every target.
 
-### Privileged ptrace — Residual (no mitigation available)
+### Privileged ptrace
 
 `PR_SET_DUMPABLE=0` (Linux) and `PT_DENY_ATTACH` (macOS release builds)
-prevent non-privileged peers from attaching. A privileged process
-(root, or a process with `CAP_SYS_PTRACE`) can still read process
-memory — this is unavoidable and the same trust boundary as "root on
-the host is always game over." No software mitigation exists for
-privileged memory inspection within the same kernel.
+restrict unprivileged attachment when those calls succeed. A process with
+sufficient OS privileges can still inspect memory. Postmaster does not
+provide isolation from a privileged inspector in the same kernel.
 
 ### Plaintext file persistence window (files mode) — Mitigated
 
@@ -515,32 +503,27 @@ function also removes stale files from prior launches before writing
 new ones.
 
 A `TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT across the
-write window on both platforms, so a signal landing mid-write cannot
-strand partial plaintext. At the end of the window — after zeroization,
+write window on both platforms when masking succeeds. Masking failures
+are logged and leave that window unguarded; SIGKILL cannot be blocked.
+At the end of the window, after zeroization and
 before `execvp` — the launcher forks. The parent restores its pre-guard
 mask and execs the service (MainPID unchanged); the fork-child is the
 **sibling monitor**: it keeps the four termination signals blocked for
 life and owns stop semantics.
 
-*Monitor model:* the monitor consumes stop signals synchronously (no
-handlers anywhere — the sigaction flag-handler and second pre-exec gate
-were retired with this design), forwards them to
-the service, and escalates to SIGKILL after a **250 ms grace** — a
-single global constant, deliberately not configurable (per-service
-erosion of a security policy is unacceptable; the per-unit knob is the
-manager's own stop timeout). Cleanup runs on **every** death path:
-forwarded stops, natural exit, `kill -9`, crashes. Liveness uses a
-pidfd + `poll` on Linux and kqueue `NOTE_EXIT` on macOS — both fire at
-exit (zombie- and PID-reuse-proof); `kill(pid, 0)` polling is fallback
-only. On systemd the monitor receives its own copy of cgroup-wide stop
-signals, so it never depends on a signal the launcher already consumed.
-On launchd, signals go to the job's main process only, so the monitor
-is primarily a cleanup-watcher there — the macOS stop-path exposure
-(plus the bounded PID-reuse window of its `kill(2)` forwarding, Darwin
-having no pidfd) remains bounded by the ramdisk teardown at job stop,
-the strongest backstop in the system. A monitor that dies before the
-service leaves the pre-existing backstops (`ExecStopPost`, teardown,
-`prune_stale`) — the same floor as before the monitor existed.
+The monitor consumes stop signals synchronously, forwards them to the
+service, and escalates to SIGKILL after a fixed 250 ms grace. The service
+manager's stop timeout is separate. The monitor attempts cleanup after
+forwarded stops, natural exit, `kill -9`, and crashes. Liveness uses a
+pidfd with `poll` on Linux and kqueue `NOTE_EXIT` on macOS. Both report exit
+without waiting for reaping; `kill(pid, 0)` polling is a fallback.
+
+On systemd the monitor receives its own copy of cgroup-wide stop signals.
+On launchd, signals go to the job's main process, so the monitor primarily
+watches for exit and cleans up. macOS forwarding uses `kill(2)` and retains
+a PID-reuse risk because Darwin has no pidfd. Ramdisk teardown at job stop
+provides a separate cleanup path. If the monitor dies first, cleanup depends
+on `ExecStopPost`, ramdisk teardown, or the next launch's `prune_stale`.
 
 ### Shared `secrets_dir` (multi-tenant misuse) — Documented contract
 

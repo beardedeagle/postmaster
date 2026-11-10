@@ -36,18 +36,16 @@ fn default_keys_dir() -> PathBuf {
     PathBuf::from("/var/lib/postmaster")
 }
 
-/// Create the keys directory with 0700 permissions if it doesn't exist.
-/// If it exists, verify permissions and ownership are correct, correcting
-/// the mode whenever wrong. `force` has no directory effect — there is
-/// nothing to re-seed in a directory; force governs the keys file and the
-/// keychain items.
+/// Create a 0700 keys directory, or check the existing directory's ownership
+/// and remove group or other access. `force` affects key files and Keychain
+/// items, not the directory.
 #[allow(clippy::print_stderr)]
 fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
     if keys_dir.exists() {
         // Open the directory itself and work on the fd throughout:
-        // O_DIRECTORY|O_NOFOLLOW rejects symlinks and non-directories at
-        // open, and fchmod on the fd eliminates the TOCTOU between a
-        // path-based check and a path-based chmod (audit 2026-08-02 A5).
+        // O_DIRECTORY|O_NOFOLLOW rejects symlinks and non-directories at open, and
+        // fchmod on the fd eliminates the TOCTOU between a path-based check and a
+        // path-based chmod.
         let dir_fd = rustix::fs::open(
             keys_dir,
             rustix::fs::OFlags::RDONLY
@@ -84,12 +82,11 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // Create the directory with 0700. create_dir_all follows intermediate
-    // symlinks, so first reject any existing symlink component in the
-    // prefix (audit 2026-08-02 O5). Residual TOCTOU: a component could be
-    // swapped between this check and the create, but an attacker with
-    // that write access could plant the symlink outright — and the open
-    // below is still NOFOLLOW on the final component.
+    // Create the directory with 0700. create_dir_all follows intermediate symlinks, so
+    // first reject any existing symlink component in the prefix. Residual TOCTOU: a
+    // component could be swapped between this check and the create, but an attacker
+    // with that write access could plant the symlink outright — and the open below is
+    // still NOFOLLOW on the final component.
     let mut prefix = PathBuf::new();
     for comp in keys_dir.components() {
         prefix.push(comp);
@@ -130,10 +127,9 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Verify a keys file exists with correct permissions (0600, owned by
-/// euid). If the file doesn't exist, in interactive mode, prompt the
-/// operator to create it. In unattended mode, fail closed. If the file
-/// exists but has wrong permissions, fix them.
+/// Check an owned, regular key file and remove group or other access.
+/// Prompt for missing contents in interactive mode; fail closed if unattended.
+/// New files and forced replacements use fresh 0600 inodes.
 ///
 /// `--force` re-prompts for the contents even when the file is already
 /// correct (manual key rotation). Force requires
@@ -275,7 +271,7 @@ fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), St
 
 /// Verify keychain items exist for the wanted key variables. If they
 /// don't exist and we're in interactive mode, offer to seed them.
-/// `--force` re-seeds EVERY wanted item, present or not. On macOS only.
+/// `--force` re-seeds every wanted item, including existing ones. macOS only.
 #[cfg(target_os = "macos")]
 #[allow(clippy::print_stderr)]
 fn ensure_keychain_items(
@@ -286,8 +282,8 @@ fn ensure_keychain_items(
 ) -> Result<(), String> {
     let mut missing: Vec<&str> = Vec::new();
     for var in wanted {
-        // Existence check via the Security.framework API (F1) — no
-        // subprocess; retrieved bytes zeroized on drop (A17).
+        // Existence check via the Security.framework API — no subprocess; retrieved
+        // bytes zeroized on drop.
         match security_framework::passwords::get_generic_password(service, var) {
             Ok(bytes) => {
                 let _ = zeroize::Zeroizing::new(bytes); // zeroize on drop
@@ -296,8 +292,8 @@ fn ensure_keychain_items(
         }
     }
 
-    // --force re-seeds every wanted item, present or not; without it
-    // only the missing ones are offered (sweep 2026-08-07 K7).
+    // --force re-seeds every wanted item, present or not; without it only the missing
+    // ones are offered.
     let to_seed: Vec<&str> = if force {
         wanted.iter().map(String::as_str).collect()
     } else {
@@ -339,9 +335,8 @@ fn ensure_keychain_items(
             return Err(format!("{var}: empty value, refusing to seed"));
         }
         // Seed via the Security.framework API, not the security CLI:
-        // `add-generic-password -w <value>` exposes key material in
-        // the subprocess argv, readable by any local process via ps /
-        // proc_pidinfo (audit 2026-08-02 O3; F1 crate direction).
+        // `add-generic-password -w <value>` exposes key material in the subprocess
+        // argv, readable by any local process via ps / proc_pidinfo.
         security_framework::passwords::set_generic_password(service, var, value.as_bytes())
             .map_err(|e| format!("keychain {service}: failed to seed {var}: {e}"))?;
         log(&format!("keychain {service}: seeded {var}"));
@@ -350,8 +345,9 @@ fn ensure_keychain_items(
     Ok(())
 }
 
-/// Verify that all configured key sources are accessible. This is the
-/// `--recheck` path — same as the old `setup_recheck` function.
+/// Check configured key-source prerequisites without decrypting values.
+/// File sources get descriptor-based access checks; credentials get presence
+/// and type checks. Keychain and environment sources check required names.
 fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String> {
     // `wanted` is only consulted by the macOS keychain check below.
     #[cfg(not(target_os = "macos"))]
@@ -365,10 +361,9 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 let dir = std::env::var_os("CREDENTIALS_DIRECTORY")
                     .ok_or("$CREDENTIALS_DIRECTORY is not set")?;
                 let p = Path::new(&dir).join(name);
-                // Mirror load_ring's discipline (sweep 2026-08-07 K4):
-                // verification must not pass what resolution rejects —
-                // exists() follows symlinks, but the loader refuses a
-                // symlinked credential outright.
+                // Mirror load_ring's discipline: verification must not pass what
+                // resolution rejects — exists() follows symlinks, but the loader
+                // refuses a symlinked credential outright.
                 match fs::symlink_metadata(&p) {
                     Ok(md) if md.file_type().is_symlink() => {
                         return Err(format!(
@@ -405,10 +400,9 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                         path.display()
                     ));
                 }
-                // NONBLOCK is inert on regular files and prevents a FIFO
-                // from hanging verification at open; the file-type check
-                // then rejects anything that isn't a regular file (sweep
-                // 2026-08-07 K5).
+                // NONBLOCK is inert on regular files and prevents a FIFO from hanging
+                // verification at open; the file-type check then rejects anything that
+                // isn't a regular file.
                 let oflags = rustix::fs::OFlags::RDONLY
                     | rustix::fs::OFlags::NOFOLLOW
                     | rustix::fs::OFlags::CLOEXEC
@@ -449,8 +443,8 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 {
                     checked += 1;
                     for var in wanted {
-                        // Security.framework API (F1) — no subprocess;
-                        // retrieved bytes zeroized on drop (A17).
+                        // Security.framework API — no subprocess; retrieved bytes
+                        // zeroized on drop.
                         match security_framework::passwords::get_generic_password(service, var) {
                             Ok(bytes) => {
                                 let _ = zeroize::Zeroizing::new(bytes); // zeroize on drop
@@ -471,21 +465,13 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
             }
             KeySourceSpec::Environment => {
                 checked += 1;
-                // Every naming the config's artifacts require must be
-                // present: accepting ANY single prefix let `POSTMASTER_KEY`
-                // satisfy verification for an env-files-only config (setup
-                // said OK, exec then failed) — and vice versa.
-                //
-                // The SAME predicate KeyRing::from_env applies (audit
-                // 2026-08-02 A16): a bare starts_with would count a
-                // prefix-substring collision like DOTENV_PRIVATE_KEYFOO
-                // as key material that from_env then refuses to load —
-                // verification must not pass what resolution rejects.
+                // Require each adapter namespace with the same exact-prefix predicate
+                // as KeyRing::from_env; unrelated keys must not satisfy setup checks.
                 for naming in cfg.required_namings() {
                     let prefix = naming.key_prefix();
-                    // vars_os: std::env::vars() panics during iteration on
-                    // non-Unicode entries — an abort under panic=abort, not
-                    // a clean verification failure (sweep 2026-08-07 K3).
+                    // vars_os: std::env::vars() panics during iteration on non-Unicode
+                    // entries — an abort under panic=abort, not a clean verification
+                    // failure.
                     if !std::env::vars_os().any(|(k, _)| {
                         k.to_str()
                             .is_some_and(|k| crate::keys::is_key_var_name(prefix, k))
@@ -501,9 +487,8 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
         return Err("no key sources configured (configure keys=[…])".into());
     }
 
-    // Every per-source failure above early-returns, so reaching the log
-    // means checked == verified — report the count, not a fraction that
-    // is always N/N (sweep 2026-08-07 K12).
+    // Every per-source failure above early-returns, so reaching the log means checked
+    // == verified — report the count, not a fraction that is always N/N.
     log(&format!(
         "setup: {checked} key source(s) verified — environment ready"
     ));
@@ -524,10 +509,9 @@ mod tests {
 
     #[test]
     fn verify_key_sources_uses_from_env_predicate() {
-        // audit 2026-08-02 A16: verification must admit exactly what
-        // KeyRing::from_env admits. A prefix-substring collision like
-        // DOTENV_PRIVATE_KEYFOO is NOT a key var, so with only such a
-        // var set, verification must fail.
+        // Verification must admit exactly what KeyRing::from_env admits. A
+        // prefix-substring collision like DOTENV_PRIVATE_KEYFOO is NOT a key var, so
+        // with only such a var set, verification must fail.
         let _guard = ENV_LOCK.lock().unwrap();
         let cfg = env_only_cfg();
         let bogus = "DOTENV_PRIVATE_KEYFOO_PMVERIFY";
@@ -572,8 +556,7 @@ mod tests {
 
     #[test]
     fn verify_key_sources_credential_rejects_symlink() {
-        // sweep 2026-08-07 K4: verification must not pass what resolution
-        // rejects — exists() followed symlinks; the loader refuses them.
+        // Rechecks must reject symlinks just as runtime loading does.
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let cred_dir = d.join("creds");
@@ -606,9 +589,8 @@ mod tests {
 
     #[test]
     fn ensure_keys_file_force_unattended_fails_closed() {
-        // sweep 2026-08-07 K7: --force re-prompts for contents, which
-        // unattended mode cannot do — fail closed rather than silently
-        // skipping the re-create the operator asked for.
+        // --force re-prompts for contents, which unattended mode cannot do — fail
+        // closed rather than silently skipping the re-create the operator asked for.
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");
@@ -710,12 +692,10 @@ mod tests {
 
     #[test]
     fn ensure_keys_dir_creates_0700_and_corrects_wide_modes() {
-        // sweep 2026-08-07 T7: the provisioning primitives had no direct
-        // coverage — create sets exactly 0700, and a pre-existing 0755
-        // dir is corrected in place.
+        // Creation and repair must both leave the directory at 0700.
         use std::os::unix::fs::PermissionsExt;
         // Canonicalize the temp base: on macOS it sits under /var →
-        // /private/var, and the O5 prefix walk would (correctly) refuse
+        // /private/var, and the directory-prefix walk would refuse
         // the symlinked /var component for reasons unrelated to this test.
         let d = crate::test_util::temp_dir::TestDir::new("mod");
 
@@ -736,11 +716,9 @@ mod tests {
 
     #[test]
     fn ensure_keys_dir_refuses_a_symlinked_prefix() {
-        // sweep 2026-08-07 T7 (audit 2026-08-02 O5): create_dir_all
-        // follows intermediate symlinks, so the prefix walk must refuse
-        // them before anything is created.
-        // Canonicalize the temp base (macOS /var → /private/var) so the
-        // walk reaches OUR planted symlink instead of refusing the
+        // create_dir_all follows intermediate symlinks, so the prefix walk must refuse
+        // them before anything is created. Canonicalize the temp base (macOS /var →
+        // /private/var) so the walk reaches OUR planted symlink instead of refusing the
         // OS-provided /var component first.
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let real = d.join("real");
@@ -760,8 +738,8 @@ mod tests {
 
     #[test]
     fn ensure_keys_file_corrects_mode_and_missing_unattended_fails() {
-        // sweep 2026-08-07 T7: a 0644 keys file is corrected to 0600; a
-        // missing file in unattended mode fails closed (no prompt).
+        // A 0644 keys file is corrected to 0600; a missing file in unattended mode
+        // fails closed (no prompt).
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");

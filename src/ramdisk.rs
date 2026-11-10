@@ -101,10 +101,9 @@ pub(crate) fn open_verified_ramdisk_dir(
     mount_point: &Path,
     secrets_dir: &Path,
 ) -> Result<OwnedFd, String> {
-    // Trust boundary (audit 2026-08-02 O2): a compromised /sbin/mount or
-    // hdiutil could report persistent disk as the RAM-backed postmaster
-    // ramdisk and let plaintext land on persistent storage. Verify both
-    // helpers before invoking.
+    // Trust boundary: a compromised /sbin/mount or hdiutil could report persistent disk
+    // as the RAM-backed postmaster ramdisk and let plaintext land on persistent
+    // storage. Verify both helpers before invoking.
     crate::keys::verify_external_binary(Path::new("/sbin/mount"))?;
     crate::keys::verify_external_binary(Path::new("/usr/bin/hdiutil"))?;
     let out = std::process::Command::new("/sbin/mount")
@@ -287,8 +286,8 @@ image-type      : read/write
 
     #[test]
     fn path_beneath_enforces_containment() {
-        // sweep 2026-08-07 X1: the guard must relate secrets_dir to the
-        // verified mount, not check each independently.
+        // The guard must relate secrets_dir to the verified mount, not check each
+        // independently.
         let mp = Path::new("/private/var/run/postmaster");
         assert!(path_beneath(
             Path::new("/private/var/run/postmaster/myapp"),

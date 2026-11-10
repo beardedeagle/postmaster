@@ -42,5 +42,4 @@ jobs:
       - name: Quality gate (fmt, clippy, build, test)
         run: just ci-rust
 
-# The dependency-policy (cargo deny) job lives in security.yml — do not
-# duplicate it here (sweep 2026-08-07 R9).
+# The dependency-policy (cargo deny) job lives in security.yml.

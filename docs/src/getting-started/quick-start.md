@@ -2,11 +2,10 @@
 
 This page launches a command with values from an encrypted `.env` file.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** a hands-on walkthrough of the simplest path —
-encrypting secrets, provisioning keys, and launching a service with
-postmaster.
+Encrypt a dotenv file, provision its private key, and launch a command with
+Postmaster.
 
 ## Prerequisites
 
@@ -83,8 +82,8 @@ visible to every process on the host via `ps`.
 
 ## Step 3: Create exec.json
 
-Postmaster reads an `exec.json` config that specifies what to decrypt,
-how to inject, and what binary to launch:
+The `exec.json` config selects inputs, key sources, and projection mode.
+You supply the command to launch separately after `--`:
 
 ```json
 {
@@ -122,10 +121,9 @@ DATABASE_URL=postgres://user:pass@localhost:5432/myapp
 API_TOKEN=secret-token-here
 ```
 
-Postmaster decrypted the values, injected them as environment variables,
-and `execvp`'d `/usr/bin/env` — which printed them. In a real deployment,
-the service manager (systemd or launchd) runs postmaster, which
-replaces itself with your binary.
+Postmaster decrypts the values, exports them as environment variables, and
+replaces the launcher with `/usr/bin/env`, which prints them. In a deployment,
+systemd or launchd runs Postmaster with your service command instead.
 
 ```mermaid
 flowchart TB

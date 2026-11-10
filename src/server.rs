@@ -65,10 +65,9 @@ pub fn serve(
                 continue;
             }
         };
-        // Peer ACL (sweep 2026-08-07 D1): a configured peer_user is
-        // ALWAYS enforced — --allow-nonroot widens root→configured-user,
-        // never root→anyone. The flag skips verification only when no
-        // peer_user is configured (the dev loop it exists for).
+        // Peer ACL: a configured peer_user is ALWAYS enforced — --allow-nonroot widens
+        // root→configured-user, never root→anyone. The flag skips verification only
+        // when no peer_user is configured (the dev loop it exists for).
         if !allow_nonroot || peer_uid.is_some() {
             match peer_euid(&stream) {
                 Ok(0) => {}
@@ -105,8 +104,7 @@ pub fn serve(
 
 /// Maximum bytes accepted for a credential fetch payload, bundle JSON, or config
 /// read. These payloads are small; the cap keeps a hostile or broken
-/// peer (or a swapped-in special file) from forcing unbounded heap
-/// allocation. 16 MiB is far above any legitimate payload.
+/// peer from forcing unbounded heap allocation. Oversized payloads fail.
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Read `reader` to EOF with a hard size cap.
@@ -145,8 +143,8 @@ pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     Ok(buf)
 }
 
-/// Client half for platforms without LoadCredential (darwin wrappers):
-/// connect, read one credential to EOF, emit on stdout. Zero bytes means
+/// Connect to a local credential socket, read to EOF, and write to stdout.
+/// Available on Linux and macOS. Zero bytes means
 /// the server refused to serve — fail closed, exactly like LoadCredential
 /// failing the unit.
 pub fn fetch(path: &Path) -> Result<(), String> {
@@ -201,9 +199,8 @@ fn peer_euid(stream: &UnixStream) -> std::io::Result<u32> {
 /// Failures are logged. Dumpability and memory locks reset across exec.
 #[cfg(target_os = "linux")]
 pub fn harden_process() {
-    // No core dumps, no ptrace from non-privileged peers. Best-effort by
-    // policy, but a failure is security-relevant — log it (audit
-    // 2026-08-02 A10).
+    // No core dumps, no ptrace from non-privileged peers. Best-effort by policy, but a
+    // failure is security-relevant — log it.
     if let Err(e) =
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
     {
@@ -227,9 +224,8 @@ pub fn harden_process() {
 /// Failures are logged.
 #[cfg(target_os = "macos")]
 pub fn harden_process() {
-    // Closest analog to PR_SET_DUMPABLE for dumps: no core files, ever.
-    // Best-effort by policy, but failures are security-relevant — log
-    // them (audit 2026-08-02 A10).
+    // Closest analog to PR_SET_DUMPABLE for dumps: no core files, ever. Best-effort by
+    // policy, but failures are security-relevant — log them.
     if let Err(e) = rustix::process::setrlimit(
         rustix::process::Resource::Core,
         rustix::process::Rlimit {
@@ -260,14 +256,12 @@ pub fn harden_process() {
 
 /// Resolve a user name to a uid without getpwnam FFI.
 pub fn uid_of(name: &str) -> Result<u32, String> {
-    // Trust boundary (audit 2026-08-02 O2): a compromised `id` returning
-    // a wrong uid would defeat the socket peer-uid ACL. macOS invokes
-    // /usr/bin/id by absolute path under SIP, verified via codesign.
-    // Linux never uses PATH resolution — a PATH-resolved `id` would
-    // inherit a potentially attacker-controlled PATH; instead the first
-    // candidate absolute path that verifies (regular file, root-owned,
-    // no group/other write bits — checked by fstat on an
-    // O_NOFOLLOW|CLOEXEC fd) is invoked, and if none verifies the lookup
+    // Trust boundary: a compromised `id` returning a wrong uid would defeat the socket
+    // peer-uid ACL. macOS invokes /usr/bin/id by absolute path under SIP, verified via
+    // codesign. Linux never uses PATH resolution — a PATH-resolved `id` would inherit a
+    // potentially attacker-controlled PATH; instead the first candidate absolute path
+    // that verifies (regular file, root-owned, no group/other write bits — checked by
+    // fstat on an O_NOFOLLOW|CLOEXEC fd) is invoked, and if none verifies the lookup
     // fails closed.
     #[cfg(target_os = "macos")]
     let id = {
@@ -348,11 +342,10 @@ fn verify_id_candidate(path: &str) -> Result<PathBuf, String> {
 pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
     match source {
         KeysSource::Credential(name) => {
-            // Same discipline as the exec-config credential source
-            // (audit 2026-08-02 A8): the name must be a single relative
-            // path component — otherwise "../../…" would escape
-            // $CREDENTIALS_DIRECTORY and read an arbitrary root-readable
-            // file as key material.
+            // Same discipline as the exec-config credential source: the name must be a
+            // single relative path component — otherwise "../../…" would escape
+            // $CREDENTIALS_DIRECTORY and read an arbitrary root-readable file as key
+            // material.
             crate::exec_config::validate_credential_source_name(name)?;
             let dir = std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(
                 "keys.credential configured but $CREDENTIALS_DIRECTORY is unset \
@@ -472,11 +465,10 @@ pub fn acquire_listeners(
         for path in cfg.credentials.keys() {
             let expected = peer_uids.get(path).copied().flatten();
             if let Some(parent) = path.parent() {
-                // Refuse a symlinked socket parent unconditionally in
-                // bind mode (sweep 2026-08-07 D2): create_dir_all,
-                // remove_file, and bind all follow a swapped parent, and
-                // the O_NOFOLLOW fd discipline below only runs when
-                // privileged with a configured peer_user.
+                // Refuse a symlinked socket parent unconditionally in bind mode:
+                // create_dir_all, remove_file, and bind all follow a swapped parent,
+                // and the O_NOFOLLOW fd discipline below only runs when privileged with
+                // a configured peer_user.
                 match fs::symlink_metadata(parent) {
                     Ok(md) if md.file_type().is_symlink() => {
                         return Err(format!(
@@ -499,11 +491,9 @@ pub fn acquire_listeners(
                 // only that user (and root) can even reach the socket. Only
                 // meaningful when we run privileged; dev runs skip it.
                 if am_root && let Some(uid) = expected {
-                    // Open the directory and operate on the fd throughout:
-                    // O_NOFOLLOW rejects a symlink at the final component
-                    // (audit 2026-08-02 A1/A2), and fchown/fchmod on the fd
-                    // act on the pinned inode, immune to path swaps
-                    // (audit finding #6).
+                    // Open the directory and operate on the fd throughout: O_NOFOLLOW
+                    // rejects a symlink at the final component, and fchown/fchmod on
+                    // the fd act on the pinned inode, immune to path swaps.
                     let dir_fd = rustix::fs::open(
                         parent,
                         rustix::fs::OFlags::RDONLY
@@ -560,7 +550,7 @@ pub fn acquire_listeners(
         let mut seen: Vec<PathBuf> = Vec::new();
         let mut out = Vec::new();
         for fd in fds {
-            // SAFETY: the sole unsafe in the program. sd_listen_fds() proved
+            // SAFETY: sd_listen_fds() proved
             // LISTEN_PID names this process, so fds [3, 3+n) are listening
             // sockets systemd created for us and nothing else owns them; taking
             // ownership here is exactly the sd_listen_fds(3) contract.
@@ -675,8 +665,8 @@ pub fn run(args: &Args) -> Result<(), String> {
         "preflight ok: {} credential(s) decryptable",
         cfg.credentials.len()
     ));
-    // --allow-nonroot never overrides a configured peer_user (sweep
-    // 2026-08-07 D1); say so once at startup when both are present.
+    // --allow-nonroot never overrides a configured peer_user; say so once at startup
+    // when both are present.
     if args.allow_nonroot && peer_uids.values().any(Option::is_some) {
         log(
             "note: --allow-nonroot does not override configured peer_user ACLs — peer_user sockets still verify the connecting uid",
@@ -688,9 +678,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     for (listener, path) in listeners {
         let entry = match cfg.credentials.get(&path) {
             Some(e) => e.clone(),
-            // Unreachable (listeners derive from cfg.credentials), but a
-            // clear error beats an abort under panic=abort (audit
-            // 2026-08-02 A22).
+            // Unreachable (listeners derive from cfg.credentials), but a clear error
+            // beats an abort under panic=abort.
             None => {
                 return Err(format!(
                     "{}: internal: listener path missing from config",
@@ -807,8 +796,8 @@ mod tests {
 
     #[test]
     fn preflight_rejects_empty_resolved_value() {
-        // sweep 2026-08-07 D4: zero bytes means refusal on the wire, so
-        // an empty value must fail at startup, not at first fetch.
+        // Zero bytes means refusal on the wire, so an empty value must fail at startup,
+        // not at first fetch.
         let dir = crate::test_util::temp_dir::TestDir::new("server");
         let env_file = dir.join(".env");
         fs::write(&env_file, "KEY=\n").unwrap();
@@ -844,7 +833,7 @@ mod tests {
 
     #[test]
     fn validate_absolute_paths_rejects_relative() {
-        // sweep 2026-08-07 D14: socket and keys paths must be absolute.
+        // Socket and keys paths must be absolute.
         let mut credentials = std::collections::HashMap::new();
         credentials.insert(
             PathBuf::from("relative/key.sock"),
@@ -873,9 +862,7 @@ mod tests {
 
     #[test]
     fn read_capped_passes_at_cap_and_fails_over_cap() {
-        // sweep 2026-08-07 T4: the A6 cap boundary itself — an at-cap
-        // read passes byte-exact; one byte over fails rather than
-        // truncates (a truncated secret must never be served whole).
+        // Accept the exact cap; reject excess bytes rather than serving a truncated secret.
         let at_cap = std::io::repeat(0x41).take(MAX_READ_BYTES);
         let got = read_capped(at_cap, Path::new("/test")).unwrap();
         assert_eq!(got.len() as u64, MAX_READ_BYTES);

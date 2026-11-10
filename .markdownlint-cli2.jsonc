@@ -1,7 +1,5 @@
 {
-  // markdownlint-cli2 configuration (sweep 2026-08-07 R6): one file, one
-  // source of truth — the old .markdownlint.jsonc (rules) and
-  // .markdownlintignore (never read by cli2) were consolidated here.
+  // Keep Markdown rules and ignored paths together in the CLI configuration.
   "config": {
     // Prose is wrapped at 80; tables and code blocks legitimately exceed any fixed
     // width (a multi-column row or a CLI line can't be 80 chars) and render fine.
