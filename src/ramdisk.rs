@@ -323,9 +323,8 @@ image-type      : read/write
         let candidate = mount.join("link/service");
         assert!(path_beneath(&candidate, &mount));
         assert!(fs::symlink_metadata(&candidate).unwrap().is_dir());
-        // /dev is a distinct filesystem on supported Linux/macOS hosts.
-        let expected_device = fs::metadata("/dev").unwrap().dev();
-        assert_ne!(expected_device, fs::metadata(&candidate).unwrap().dev());
+        // Inject a different device ID; /dev can share the build filesystem.
+        let expected_device = fs::metadata(&candidate).unwrap().dev() ^ 1;
 
         let err = open_verified_dir(&mount, &candidate, expected_device).unwrap_err();
 

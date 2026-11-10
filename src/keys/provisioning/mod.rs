@@ -594,15 +594,21 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");
-        fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        let contents = format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32));
+        fs::write(&keys, &contents).unwrap();
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
 
         let err =
             ensure_keys_file(&keys, true, true).expect_err("force + unattended must fail closed");
-        assert!(err.contains("unattended"), "{err}");
-
-        // Non-force unattended with a valid file verifies fine.
-        ensure_keys_file(&keys, false, true).expect("valid file must verify without force");
+        let verification = ensure_keys_file(&keys, false, true);
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("unattended"), "{err}");
+            verification.expect("valid file must verify without force");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+            assert_eq!(verification.unwrap_err(), err);
+        }
+        assert_eq!(fs::read_to_string(&keys).unwrap(), contents);
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -743,17 +749,27 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = crate::test_util::temp_dir::TestDir::new("mod");
         let keys = d.join(".env.keys");
-        fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        let contents = format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32));
+        fs::write(&keys, &contents).unwrap();
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
 
-        ensure_keys_file(&keys, false, true).expect("verify/correct should succeed");
+        let verification = ensure_keys_file(&keys, false, true);
         let mode = fs::metadata(&keys).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "a 0644 keys file must be corrected to 0600");
 
         let missing = d.join("absent.keys");
         let err = ensure_keys_file(&missing, false, true)
             .expect_err("missing file + unattended must fail closed");
-        assert!(err.contains("unattended mode"), "{err}");
+        if crate::test_util::root_has_trusted_owner() {
+            verification.expect("verify/correct should succeed");
+            assert_eq!(mode, 0o600, "a 0644 keys file must be corrected to 0600");
+            assert!(err.contains("unattended mode"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+            assert_eq!(verification.unwrap_err(), err);
+            assert_eq!(mode, 0o644, "untrusted ancestry must prevent mutation");
+        }
+        assert_eq!(fs::read_to_string(&keys).unwrap(), contents);
+        assert!(!missing.exists());
 
         let _ = fs::remove_dir_all(&d);
     }

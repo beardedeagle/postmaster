@@ -496,22 +496,32 @@ mod tests {
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
         let fd = open_secrets_dir(&secret).unwrap();
         let error = validate_projection(&fd, &secret).unwrap_err();
-        assert!(error.contains("untrusted replacement"), "{error}");
+        let trusted_root = crate::test_util::root_has_trusted_owner();
+        if trusted_root {
+            assert!(error.contains("untrusted replacement"), "{error}");
+        } else {
+            assert_eq!(error, "/: directory path is owned by an untrusted user");
+        }
         fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
-        assert_eq!(validate_projection(&fd, &secret).unwrap(), secret);
+        let direct = validate_projection(&fd, &secret);
         std::os::unix::fs::symlink(&shared, dir.join("alias")).unwrap();
-        assert_eq!(
-            validate_projection(&fd, &dir.join("alias/service")).unwrap(),
-            secret
-        );
-        write_secret_file(&fd, &secret, "KEY", b"secret").unwrap();
-        let child = std::process::Command::new("/bin/sh")
-            .args(["-c", "cat \"$KEY_FILE\""])
-            .env("KEY_FILE", secret.join("KEY"))
-            .output()
-            .unwrap();
-        assert!(child.status.success());
-        assert_eq!(child.stdout, b"secret");
+        let alias = validate_projection(&fd, &dir.join("alias/service"));
+        if trusted_root {
+            assert_eq!(direct.unwrap(), secret);
+            assert_eq!(alias.unwrap(), secret);
+            write_secret_file(&fd, &secret, "KEY", b"secret").unwrap();
+            let child = std::process::Command::new("/bin/sh")
+                .args(["-c", "cat \"$KEY_FILE\""])
+                .env("KEY_FILE", secret.join("KEY"))
+                .output()
+                .unwrap();
+            assert!(child.status.success());
+            assert_eq!(child.stdout, b"secret");
+        } else {
+            assert_eq!(direct.unwrap_err(), error);
+            assert_eq!(alias.unwrap_err(), error);
+            assert!(!secret.join("KEY").exists());
+        }
     }
 
     #[test]

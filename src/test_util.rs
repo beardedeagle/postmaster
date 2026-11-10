@@ -4,6 +4,13 @@ pub(crate) mod aad_fixture;
 pub(crate) mod pty;
 pub(crate) mod temp_dir;
 
+/// Whether `/` is owned by root or the current effective user.
+pub(crate) fn root_has_trusted_owner() -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let owner = std::fs::metadata("/").expect("stat filesystem root").uid();
+    owner == 0 || owner == rustix::process::geteuid().as_raw()
+}
+
 /// Process-wide lock serializing every unit test that mutates — or
 /// wholesale snapshots — the process-global environment. The test
 /// harness runs tests in parallel threads of one process, so

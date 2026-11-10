@@ -745,20 +745,32 @@ mod tests {
         let err = verify_id_candidate(&p).unwrap_err();
 
         let _ = fs::remove_file(&path);
-        assert!(
-            err.contains("owned by uid") || err.contains("writable"),
-            "{err}"
-        );
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(
+                err.contains("owned by uid") || err.contains("writable"),
+                "{err}"
+            );
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
     }
 
     #[test]
     #[cfg(not(target_os = "macos"))]
-    fn verified_id_binary_finds_a_system_id() {
-        // On any Linux host at least one candidate must verify — glibc
-        // systems have /usr/bin/id or /bin/id, NixOS has
-        // /run/current-system/sw/bin/id.
-        let id = verified_id_binary().unwrap();
-        assert!(id.is_absolute());
+    fn verified_id_binary_uses_system_paths_or_fails_closed() {
+        let paths = ["/usr/bin/id", "/bin/id", "/run/current-system/sw/bin/id"];
+        let available = paths.iter().any(|p| Path::new(p).try_exists().unwrap());
+        let result = verified_id_binary();
+        if available && crate::test_util::root_has_trusted_owner() {
+            assert!(result.unwrap().is_absolute());
+        } else {
+            let err = result.unwrap_err();
+            assert!(err.starts_with("no trustworthy `id` binary found"), "{err}");
+            assert!(err.contains("refusing PATH resolution"), "{err}");
+            for path in paths {
+                assert!(err.contains(path), "{err}");
+            }
+        }
     }
 
     #[test]
