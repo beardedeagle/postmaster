@@ -63,7 +63,8 @@ runs:
         if [[ -n "${GITHUB_PATH:-}" ]]; then
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         fi
-        # Installs the toolchain and components pinned in rust-toolchain.toml.
+        # Refresh stable before resolving the repository's components and targets.
+        rustup update stable --no-self-update
         rustup show
         if [[ -n "$RUST_TARGETS" ]]; then
           rustup target add $RUST_TARGETS

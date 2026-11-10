@@ -137,7 +137,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Cross builds use `cargo zigbuild`; builds preserve compiler flags and
   profile overrides, and `max` builds remap source paths.
 - Uses Justfile recipes for local checks and GitHub workflow definitions.
-  In-repo setup actions configure toolchains; Nix installation verifies
+  In-repo setup actions refresh stable before resolving the repository's
+  components and targets. Nix installation verifies
   the pinned installer digest before execution. Official GitHub actions
   and helper tools use pinned versions. Nix installer temporary files
   work with GNU and macOS `mktemp`.
