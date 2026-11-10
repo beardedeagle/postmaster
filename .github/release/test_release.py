@@ -173,6 +173,54 @@ class ReleaseTests(unittest.TestCase):
         )
         self.assertFalse((self.root / "SHA256SUMS.minisig").exists())
 
+    def test_install_instructions_stop_on_failed_verification(self):
+        guide = (release.ROOT / "docs/src/development/releases.md").read_text()
+        snippet = (
+            guide.split("## Verify and install", 1)[1]
+            .split("```sh\n", 1)[1]
+            .split("```", 1)[0]
+        )
+        tools = self.root / "bin"
+        tools.mkdir()
+        program = tools / "stub"
+        program.write_text("""#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+name = Path(sys.argv[0]).name
+if name == "install":
+    Path("installed").touch()
+sys.exit(1 if os.environ.get("REJECT") == name else 0)
+""")
+        program.chmod(0o755)
+        for name in ["curl", "minisign", "shasum", "gh", "tar", "mkdir", "install"]:
+            (tools / name).symlink_to(program)
+        (self.root / "SHA256SUMS").write_text(
+            "a" * 64 + "  postmaster-v0.1.0-aarch64-apple-darwin.tar.gz\n"
+        )
+        env = os.environ | {
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "POSTMASTER_RELEASE_PUBLIC_KEY": "fixture",
+        }
+        for failure in ["curl", "minisign", "shasum", "gh"]:
+            with self.subTest(failure=failure):
+                result = subprocess.run(
+                    ["sh", "-c", snippet],
+                    cwd=self.root,
+                    env=env | {"REJECT": failure},
+                    check=False,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "installed").exists())
+        subprocess.run(
+            ["sh", "-c", snippet],
+            cwd=self.root,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        self.assertTrue((self.root / "installed").exists())
+
     def test_complete_signed_release_and_manual_branch_guard(self):
         secret, public = self.keypair("release")
         directory = self.root / "dist"

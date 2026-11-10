@@ -66,8 +66,7 @@ or the workflow's source restrictions.
 Commit the version and changelog, merge to `main`, then tag that commit:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 To run manually for an existing tag:
@@ -90,32 +89,31 @@ for the release-tool tests.
 
 ## Verify and install
 
-Download the archive, `SHA256SUMS`, and `SHA256SUMS.minisig` for the chosen
-version. This example selects Apple Silicon:
+Set `POSTMASTER_RELEASE_PUBLIC_KEY` to the independently trusted public key.
+Then download, verify and install the selected archive. This example selects
+Apple Silicon. The subshell stops on the first failed command, before
+extraction or installation:
 
 ```sh
-version=v0.1.0
-archive="postmaster-${version}-aarch64-apple-darwin.tar.gz"
-base="https://github.com/beardedeagle/postmaster/releases/download/${version}"
-curl --fail --location --remote-name "$base/$archive"
-curl --fail --location --remote-name "$base/SHA256SUMS"
-curl --fail --location --remote-name "$base/SHA256SUMS.minisig"
-```
-
-Set `POSTMASTER_RELEASE_PUBLIC_KEY` to the independently trusted public key,
-then verify the manifest signature and the selected archive's checksum:
-
-```sh
-minisign -V -H -P "$POSTMASTER_RELEASE_PUBLIC_KEY" -m SHA256SUMS
-awk -v file="$archive" '$2 == file { print }' SHA256SUMS > selected.sha256
-test "$(wc -l < selected.sha256 | tr -d ' ')" = 1
-shasum -a 256 -c selected.sha256
-gh attestation verify "$archive" --repo beardedeagle/postmaster \
-  --signer-workflow beardedeagle/postmaster/.github/workflows/release.yml \
-  --deny-self-hosted-runners
-tar -xzf "$archive" postmaster LICENSE
-mkdir -p "$HOME/.local/bin"
-install -m 0755 postmaster "$HOME/.local/bin/postmaster"
+(
+  set -eu
+  version=v0.1.0
+  archive="postmaster-${version}-aarch64-apple-darwin.tar.gz"
+  base="https://github.com/beardedeagle/postmaster/releases/download/${version}"
+  curl --fail --location --remote-name "$base/$archive"
+  curl --fail --location --remote-name "$base/SHA256SUMS"
+  curl --fail --location --remote-name "$base/SHA256SUMS.minisig"
+  minisign -V -H -P "$POSTMASTER_RELEASE_PUBLIC_KEY" -m SHA256SUMS
+  awk -v file="$archive" '$2 == file { print }' SHA256SUMS > selected.sha256
+  test "$(wc -l < selected.sha256 | tr -d ' ')" = 1
+  shasum -a 256 -c selected.sha256
+  gh attestation verify "$archive" --repo beardedeagle/postmaster \
+    --signer-workflow beardedeagle/postmaster/.github/workflows/release.yml \
+    --deny-self-hosted-runners
+  tar -xzf "$archive" postmaster LICENSE
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 postmaster "$HOME/.local/bin/postmaster"
+)
 ```
 
 `release.json` records the tagged source commit and complete target set.
@@ -132,7 +130,10 @@ blocked. The workflow does not disable Gatekeeper or remove quarantine.
 To build locally instead:
 
 ```sh
-cargo build --locked --release
-mkdir -p "$HOME/.local/bin"
-install -m 0755 target/release/postmaster "$HOME/.local/bin/postmaster"
+(
+  set -eu
+  cargo build --locked --release
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 target/release/postmaster "$HOME/.local/bin/postmaster"
+)
 ```
