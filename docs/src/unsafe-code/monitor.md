@@ -13,10 +13,10 @@ sequenceDiagram
     participant M as Monitor (fork-child)
     participant S as Service (exec'd parent)
 
-    L->>L: block stop signals; materialize; wipe ring and resolved buffers
+    L->>L: block stop signals, materialize, wipe ring and resolved buffers
     L->>M: fork()
-    Note over M: scrub projected pairs; retain original environment; keep mask blocked
-    L->>S: restore mask; execvp becomes service
+    Note over M: scrub projected pairs, retain original environment, keep mask blocked
+    L->>S: restore mask, execvp becomes service
     loop poll tick
         M->>S: liveness (pidfd+poll / kqueue NOTE_EXIT)
         M->>M: stop signal pending? (sigpending then sigwait)
@@ -25,13 +25,13 @@ sequenceDiagram
         M->>S: forward the signal
         Note over M,S: bounded grace (250 ms)
         alt service exits within the grace
-            M->>M: cleanup plaintext files; exit 0
+            M->>M: cleanup plaintext files, exit 0
         else grace expires
             M->>S: SIGKILL
-            M->>M: cleanup plaintext files; exit 0
+            M->>M: cleanup plaintext files, exit 0
         end
     else service death (exit, crash, kill -9)
-        M->>M: cleanup plaintext files; exit 0
+        M->>M: cleanup plaintext files, exit 0
     end
 ```
 

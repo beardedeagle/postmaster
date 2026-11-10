@@ -15,25 +15,12 @@ depend on the deployment as well as the selected mode.
 | `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | Only when `passthrough` requests it | No environment copy by default; the app still reads plaintext files |
 | `credentials` | Apps that read credential files | No additional value copy | Systemd supplies the credentials directory, or Postmaster fetches values from local sockets |
 
-## Mode comparison
+## `mode = "env"`
 
 ```mermaid
-flowchart TB
-    subgraph env["mode: env"]
-        pm_env["postmaster"] -->|KEY=value\nin environ| child_env["your binary"]
-    end
-    subgraph files["mode: files"]
-        pm_files["postmaster"] -->|write 0600 file| tmpfs["tmpfs / ramdisk"]
-        tmpfs -->|KEY_FILE=/run/.../KEY| child_files["your binary"]
-    end
-    subgraph cred["mode: credentials"]
-        daemon["postmaster credential daemon"] -->|decrypted bytes over local socket| systemd["systemd"]
-        systemd -->|LoadCredential=| ramfs["ramfs\n$CREDENTIALS_DIRECTORY"]
-        ramfs -->|KEY_FILE=$CREDENTIALS_DIRECTORY/KEY| child_cred["your binary"]
-    end
+flowchart LR
+    pm_env["postmaster<br/>(decrypt + inject)"] -->|"KEY=value<br/>in environ"| child_env["your binary"]
 ```
-
-## `mode = "env"`
 
 Postmaster exports resolved values into the application environment and
 replaces the launcher with your binary.
@@ -52,6 +39,12 @@ variable substitution in unquoted and double-quoted values. Single quotes
 preserve `${VAR}` literally. `$(cmd)` does not execute a command.
 
 ## `mode = "files"`
+
+```mermaid
+flowchart LR
+    pm_files["postmaster<br/>(decrypt + inject)"] -->|"write 0600 file"| tmpfs["tmpfs / ramdisk<br/>(secrets_dir)"]
+    tmpfs -->|"KEY_FILE=/run/postmaster/KEY"| child_files["your binary"]
+```
 
 Deployments provide a namespace-private tmpfs for one-file-per-key output
 (`TemporaryFileSystem=/run/postmaster`; on macOS, a per-service directory
@@ -93,6 +86,13 @@ Keys in `passthrough` are also exported as real env vars (subject to NUL
 rejection, since they become environment variables).
 
 ## `mode = "credentials"`
+
+```mermaid
+flowchart LR
+    daemon["postmaster credential daemon<br/>(local socket)"] -->|"decrypted bytes<br/>over socket"| systemd["systemd<br/>(LoadCredential=)"]
+    systemd -->|"credential files"| ramfs["ramfs<br/>$CREDENTIALS_DIRECTORY"]
+    ramfs -->|"KEY_FILE=$CREDENTIALS_DIRECTORY/KEY"| child_cred["your binary"]
+```
 
 The launcher exports `<KEY>_FILE` pointers into credentials that systemd has
 already supplied. Systemd can obtain those credentials from Postmaster's

@@ -61,11 +61,11 @@ The ABI has five layers.
 
 ```mermaid
 flowchart TD
-    art["1. Artifact descriptors\nidentify encrypted local inputs"]
-    key["2. Key-source descriptors\nidentify local private key material"]
-    res["3. Resolution rules\nturn encrypted entries into plaintext"]
-    proj["4. Projection policy\ndecides where bytes appear"]
-    launch["5. Launch semantics\nexecvp replaces postmaster with target"]
+    art["(1) Artifact descriptors<br/>identify encrypted local inputs"]
+    key["(2) Key-source descriptors<br/>identify local private key material"]
+    res["(3) Resolution rules<br/>turn encrypted entries into plaintext"]
+    proj["(4) Projection policy<br/>decides where bytes appear"]
+    launch["(5) Launch semantics<br/>execvp replaces postmaster with target"]
 
     art --> res
     key --> res

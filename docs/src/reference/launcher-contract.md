@@ -51,13 +51,13 @@ service-manager wiring require separate validation.
 
 ```mermaid
 flowchart TD
-    cfg["exec.json\n(mode, keys, env_files, bundle_files)"]
-    check["--check\nconfig shape only"]
-    recheck["setup --recheck\nkey source accessible?"]
-    resolve["resolve_all + resolve_bundle\ndecrypt + resolve"]
-    verify["--verify-keys\nstale key check"]
-    inject["inject\n(env / files / credentials)"]
-    execvp["execvp\nchild = MainPID"]
+    cfg["exec.json<br/>(mode, keys, env_files, bundle_files)"]
+    check["--check<br/>config shape only"]
+    recheck["setup --recheck<br/>key source accessible?"]
+    resolve["resolve_all + resolve_bundle<br/>decrypt + resolve"]
+    verify["--verify-keys<br/>stale key check"]
+    inject["inject<br/>(env / files / credentials)"]
+    execvp["execvp<br/>child = MainPID"]
 
     cfg --> check
     cfg --> recheck

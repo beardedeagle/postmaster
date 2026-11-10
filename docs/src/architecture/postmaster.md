@@ -109,19 +109,19 @@ materialization and the process handoff.
 ```mermaid
 flowchart LR
     subgraph s1["1. Custody"]
-        vault["Vault / SSM /\n1Password / TPM2"]
+        vault["Vault / SSM /<br/>1Password / TPM2"]
     end
     subgraph s2["2. Rendering"]
-        nix["Nix / Terraform /\nCDK / Ansible"]
+        nix["Nix / Terraform /<br/>CDK / Ansible"]
     end
     subgraph s3["3. Delivery"]
-        cred["systemd cred /\nfile / keychain"]
+        cred["systemd cred /<br/>file / keychain"]
     end
     subgraph s4["4. Materialization"]
-        pm["postmaster\ndecrypt + inject"]
+        pm["postmaster<br/>decrypt + inject"]
     end
     subgraph s5["5. Launch"]
-        exec["execvp\nchild = MainPID"]
+        exec["execvp<br/>child = MainPID"]
     end
 
     vault --> nix

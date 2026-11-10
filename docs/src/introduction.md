@@ -76,15 +76,15 @@ protection. The application keeps access to the secrets it uses.
 
 ```mermaid
 flowchart LR
-    store["Encrypted .env file\n(nix store / git / artifact)"]
-    keys["Private key\n(systemd cred / file / keychain)"]
+    store["Encrypted .env file<br/>(nix store / git / artifact)"]
+    keys["Private key<br/>(systemd cred / file / keychain)"]
     pm["postmaster exec"]
-    child["Your binary\n(MainPID)"]
+    child["Your binary<br/>(MainPID)"]
 
     store --> pm
     keys --> pm
     pm -->|decrypt + inject| child
-    pm -.->|execvp replaces\npostmaster| child
+    pm -.->|execvp replaces<br/>postmaster| child
 ```
 
 The ciphertext is designed to be public. Every value is

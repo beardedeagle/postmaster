@@ -21,10 +21,10 @@ fetches from remote systems.
 ```mermaid
 flowchart TB
     subgraph sources["Key sources (local only)"]
-        cred["systemd credentials\n(LoadCredential=)"]
-        file["file\n(.env.keys on disk)"]
-        kc["keychain\n(macOS only)"]
-        env["environment\n(DOTENV_PRIVATE_KEY*)"]
+        cred["systemd credentials<br/>(LoadCredential=)"]
+        file["file<br/>(.env.keys on disk)"]
+        kc["keychain<br/>(macOS only)"]
+        env["environment<br/>(DOTENV_PRIVATE_KEY*)"]
     end
 
     pm["postmaster"]
@@ -135,10 +135,10 @@ no per-environment suffix — follows the same convention):
 
 ```mermaid
 flowchart TD
-    step1["Step 1: Author new keypair locally\nDecrypt env, delete old pub key, re-encrypt with fresh keypair"]
-    step2["Step 2: Set DOTENV_PRIVATE_KEY=new,old\nBoth keys accepted; restarts decrypt either generation"]
-    step3["Step 3: Deploy new ciphertext\nnixos-rebuild switch — new units decrypt with new key\nOld units still running on old key"]
-    step4["Step 4: Drop old key (after rollback horizon)\nSet DOTENV_PRIVATE_KEY=new only\nOld generations + new-only key = broken restarts"]
+    step1["Step 1: Author new keypair locally<br/>Decrypt env, delete old pub key, re-encrypt with fresh keypair"]
+    step2["Step 2: Set DOTENV_PRIVATE_KEY=new,old<br/>Both keys accepted; restarts decrypt either generation"]
+    step3["Step 3: Deploy new ciphertext<br/>nixos-rebuild switch — new units decrypt with new key<br/>Old units still running on old key"]
+    step4["Step 4: Drop old key (after rollback horizon)<br/>Set DOTENV_PRIVATE_KEY=new only<br/>Old generations + new-only key = broken restarts"]
 
     step1 --> step2
     step2 --> step3

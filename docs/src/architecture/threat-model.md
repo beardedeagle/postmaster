@@ -116,12 +116,12 @@ fetch them remotely.
 ```mermaid
 flowchart TB
     subgraph trusted["Trusted zone"]
-        keys["Private key material\n(systemd cred / file / keychain)"]
-        pm["postmaster\n(decrypt + inject)"]
-        child["Child process\n(your binary)"]
+        keys["Private key material<br/>(systemd cred / file / keychain)"]
+        pm["postmaster<br/>(decrypt + inject)"]
+        child["Child process<br/>(your binary)"]
     end
     subgraph untrusted["Public zone"]
-        ciphertext["Encrypted .env\n(git / Nix store / artifact)"]
+        ciphertext["Encrypted .env<br/>(git / Nix store / artifact)"]
     end
     subgraph outside["Outside trust boundary"]
         root["Root on host"]

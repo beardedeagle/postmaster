@@ -29,6 +29,8 @@
     // Verbatim upstream Contributor Covenant — not house prose.
     ".github/CODE_OF_CONDUCT.md",
     // PR templates intentionally start with "## Summary" — MD041 is wrong for them.
-    ".github/pull_request_template.md"
+    ".github/pull_request_template.md",
+    // Local aider tool history (gitignored) — not repo content.
+    ".aider-desk/"
   ]
 }
