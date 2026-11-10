@@ -143,6 +143,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and helper tools use pinned versions. Nix installer temporary files
   work with GNU and macOS `mktemp`.
   Nix setup extends existing feature settings with `nix-command` and `flakes`.
+  Nix checks authenticate GitHub input fetches with their read-only job
+  token.
   Cargo tool installation honors `CARGO_INSTALL_ROOT` and `CARGO_HOME` and
   verifies the selected executables before adding their directory to `PATH`.
 - Runs formatting, Clippy, and Markdown lint from pre-commit hooks.
