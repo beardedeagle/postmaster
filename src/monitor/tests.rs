@@ -14,6 +14,31 @@ use rustix::process::{WaitOptions, waitpid};
 use crate::launcher::TerminationGuard;
 use crate::secret_files::open_secrets_dir;
 
+/// Keep fork callbacks separate from native-library initialization in other tests.
+/// Return true when the current test completed in the isolated child process.
+fn run_isolated() -> bool {
+    let thread = std::thread::current();
+    let name = thread.name().unwrap();
+    let args = ["--exact", name, "--nocapture"];
+    if std::env::args_os()
+        .skip(1)
+        .eq(args.map(std::ffi::OsString::from))
+    {
+        return false;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated {name}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    true
+}
+
 fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
     crate::test_util::temp_dir::TestDir::new(tag)
 }
@@ -142,6 +167,9 @@ fn fork_term_ignoring_service() -> Pid {
 /// stand-in) must still trigger cleanup and monitor exit.
 #[test]
 fn natural_service_death_triggers_cleanup_and_monitor_exit() {
+    if run_isolated() {
+        return;
+    }
     let dir = tdir("natural");
     let names = write_dummies(&dir);
     let mut service = Command::new("sleep").arg("30").spawn().unwrap();
@@ -175,6 +203,9 @@ fn natural_service_death_triggers_cleanup_and_monitor_exit() {
 /// no settle sleep is needed.
 #[test]
 fn stop_signal_is_forwarded_then_grace_then_cleanup() {
+    if run_isolated() {
+        return;
+    }
     let dir = tdir("forward");
     let names = write_dummies(&dir);
     let mut service = Command::new("sleep").arg("30").spawn().unwrap();
@@ -208,6 +239,9 @@ fn stop_signal_is_forwarded_then_grace_then_cleanup() {
 /// elapses; cleanup still runs and the monitor exits 0.
 #[test]
 fn term_ignoring_service_is_sigkilled_after_grace() {
+    if run_isolated() {
+        return;
+    }
     let dir = tdir("grace");
     let names = write_dummies(&dir);
     let service_pid = fork_term_ignoring_service();
@@ -261,6 +295,9 @@ fn wipe_pair_scrubs_both_buffers() {
 /// still exits when the service dies.
 #[test]
 fn env_mode_monitor_with_no_files_exits_on_service_death() {
+    if run_isolated() {
+        return;
+    }
     let mut service = Command::new("sleep").arg("30").spawn().unwrap();
     let service_pid = Pid::from_child(&service);
     let _reap = ReapOnDrop(service_pid);
@@ -285,6 +322,9 @@ fn env_mode_monitor_with_no_files_exits_on_service_death() {
 /// process that died before it began watching.
 #[test]
 fn pre_dead_service_triggers_immediate_cleanup_and_exit() {
+    if run_isolated() {
+        return;
+    }
     let dir = tdir("predead");
     let names = write_dummies(&dir);
     let mut service = Command::new("sleep").arg("30").spawn().unwrap();

@@ -100,7 +100,7 @@ used_underscore_binding = "warn"
 # Wire-compatible with eciesjs (dotenvx's crypto): secp256k1 + HKDF-SHA256 +
 # AES-256-GCM with the ecies family's 16-byte nonce default. `pure` selects
 # the RustCrypto AES backend — no openssl in the closure.
-ecies = { version = "0.2.13", default-features = false, features = ["pure", "secp256k1", "std"] }
+ecies = { version = "0.2.14", default-features = false, features = ["pure", "secp256k1", "std"] }
 # The bundle adapter owns its AAD envelope; RustCrypto performs AES-GCM.
 aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "zeroize"] }
 dotenvy = "0.15"

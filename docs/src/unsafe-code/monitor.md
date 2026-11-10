@@ -135,7 +135,9 @@ The launcher and monitor import it as `runtime`.
 
 ## Tests
 
-`monitor::tests` fork the REAL monitor loop in a real fork-child against
+Each fork-based `monitor::tests` case runs in an isolated test process so
+other tests cannot race native-library initialization with fork callbacks.
+The tests fork the real monitor loop in a real fork-child against
 real service processes (deterministic; grace/poll injectable; no env
 mutation): natural `kill -9` death → cleanup + exit; TERM to the monitor
 → forwarded (service dies by TERM, proving no escalation) → cleanup +

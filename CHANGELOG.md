@@ -67,6 +67,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dotenv parsing rules, including variable substitution.
 - Zeroizes the key ring and resolved value buffers before launch.
   `KeyRing` and `Resolution` debug output redacts secret material.
+  ECIES secret-key debug output also redacts key bytes, and secret-key
+  comparisons use constant-time equality.
 - Keeps the application as the service's main PID. A sibling monitor
   forwards stop signals, allows a 250 ms grace period before SIGKILL, and
   tracks service exit with Linux pidfds or macOS kqueue. It attempts file
@@ -121,9 +123,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Provides `postmaster cleanup --config <exec.json>` for managed
   plaintext-file cleanup and `fetch` for local credential retrieval.
 - Separates key handling, CLI parsing, and adapters into focused modules.
-  Monitor tests live beside the monitor module, adapter mapping tests live
-  with the adapters, and binary conformance tests cover each launch mode.
-- Uses registry dependencies including base64 0.23.1, ecies 0.2.13,
+  Monitor tests live beside the monitor module and run fork-based cases in
+  isolated processes. Adapter mapping tests live with the adapters, and
+  binary conformance tests cover each launch mode.
+- Uses registry dependencies including base64 0.23.1, ecies 0.2.14,
   serde 1.0.229, serde_json 1.0.154, zeroize 1.9.1, rustix 1.1.6, and
   libc 0.2.191. AES-GCM 0.11.1 handles bundle authentication.
 - Requires Rust 1.99.1 or newer. Release builds use LTO, stripped symbols,
