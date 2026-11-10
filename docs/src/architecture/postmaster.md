@@ -263,14 +263,16 @@ Source builds require Rust 1.99.1 or newer. The flake exports packages and
 an overlay, not NixOS or nix-darwin service modules. Deployment integrations
 own the service units, RAM-backed storage, and hardening described above.
 
-Postmaster has 11 direct dependencies (9 portable, 2 platform-gated):
+The runtime dependencies are:
 
 - `ecies` — crypto (secp256k1 + AES-256-GCM)
 - `aes-gcm` — bundle-envelope authentication with entry-name AAD
-- `dotenvy` — `.env` file parser
+- `dotenvy` — private-key file parsing
 - `serde` + `serde_json` — JSON config deserialization
 - `base64` — ciphertext decoding
 - `hex` — key parsing
+- `sha2` — SHA-256 authorization of daemon source bytes
+- `getrandom` — random names for private temporary files
 - `rustix` — syscalls (raw syscalls via `linux_raw` on Linux, incl. the
   monitor's pidfd/poll and the experimental `runtime` signal-mask API;
   the only libc FFI on Linux is `fork(2)` — see the unsafe registry)
