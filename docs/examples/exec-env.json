@@ -2,12 +2,12 @@
   "mode": "env",
   "keys": [
     {
-      "credential": "dotenvx-myapp"
+      "credential": "postmaster-myapp"
     },
     "environment"
   ],
   "env_files": [
-    "/nix/store/example-dotenvx-env-myapp/.env.production"
+    "/nix/store/example-postmaster-env-myapp/.env.production"
   ],
   "strict": true,
   "overload": false

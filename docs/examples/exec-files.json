@@ -2,15 +2,15 @@
   "mode": "files",
   "keys": [
     {
-      "file": "/run/envelope/myapp.env.keys"
+      "file": "/var/lib/postmaster/myapp.env.keys"
     }
   ],
   "env_files": [
-    "/nix/store/example-dotenvx-env-myapp/.env.production"
+    "/nix/store/example-postmaster-env-myapp/.env.production"
   ],
   "strict": true,
   "overload": false,
-  "secrets_dir": "/run/dotenvx/myapp",
+  "secrets_dir": "/run/postmaster/myapp",
   "passthrough": [
     "RUST_LOG"
   ]

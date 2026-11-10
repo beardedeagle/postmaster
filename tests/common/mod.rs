@@ -4,6 +4,11 @@
 //! fixture verification (README); these helpers guard OUR semantics.
 #![allow(dead_code, clippy::unwrap_used, clippy::panic, missing_docs)]
 
+#[path = "../../src/test_util/aad_fixture.rs"]
+pub mod aad_fixture;
+#[path = "../../src/test_util/temp_dir.rs"]
+pub mod temp_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,15 +33,8 @@ pub fn enc(value: &str) -> String {
     format!("encrypted:{}", BASE64.encode(ct))
 }
 
-pub fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "postmaster-exec-{tag}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
-    d
+pub fn tmpdir(tag: &str) -> temp_dir::TestDir {
+    temp_dir::TestDir::new(tag)
 }
 
 pub fn write_env_file(dir: &Path, name: &str, lines: &[String]) -> PathBuf {
@@ -57,8 +55,7 @@ pub fn write_keys_file(dir: &Path, env_suffix: &str, sk_hexes: &[&str]) -> PathB
     };
     let p = dir.join(".env.keys");
     fs::write(&p, format!("{var}=\"{}\"\n", sk_hexes.join(","))).unwrap();
-    // KeyRing::load now enforces 0600-or-stricter permissions and euid
-    // ownership (audit finding #1). The temp file must pass that check.
+    // Match the owner-only permissions required by KeyRing::load.
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
     p
 }

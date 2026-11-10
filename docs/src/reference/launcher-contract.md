@@ -1,10 +1,9 @@
 # Launcher contract (exec.json)
 
-## Audience Quickstart (Plain Language)
+## Audience quickstart
 
-**What this is:** the complete specification of `exec.json` — every
-field, every mode, every validation rule. This is the contract a
-binding (Nix, Terraform, CDK, Ansible) must produce.
+This reference defines the fields, modes, and validation rules for `exec.json`.
+Deployment integrations must generate this format.
 
 ### Who this is for
 
@@ -19,18 +18,17 @@ binding (Nix, Terraform, CDK, Ansible) must produce.
 
 | Term | Plain meaning |
 | ------ | --------------- |
-| **exec.json** | JSON config that tells postmaster what to decrypt and how to launch |
+| **exec.json** | JSON config that selects inputs, key sources, and projection mode. The launch command follows `--` separately. |
 | **Projection mode** | How secrets reach the child: env, files, or credentials |
 | **Key source** | Where the decryption key comes from (file, credential, keychain, env) |
-| **Strict** | If true (default), any decryption failure aborts the launch |
+| **Strict** | If true, dotenv decryption failures abort launch. Bundle authentication failures abort under either setting. |
 | **Passthrough** | In files mode, specific keys also exported as env vars |
 
 `postmaster exec` is the concrete instance of the
 [materialization ABI](../architecture/materialization-abi.md).
-The current config shape is
-the `.env` adapter: encrypted inputs are `env_files`, private key material uses
-the `.env.keys` / `DOTENV_PRIVATE_KEY*` convention, and output projection is
-selected with `mode`. This page documents the committed parser and launcher
+The config accepts dotenv inputs through `env_files` and JSON bundles through
+`bundle_files`. They use `DOTENV_PRIVATE_KEY*` and `POSTMASTER_KEY` respectively;
+`mode` selects output projection. This page documents the parser and launcher
 behavior; the ABI page records how this contract fits into the broader
 format-neutral architecture.
 
@@ -43,25 +41,23 @@ hand-rolled process supervisors, or nix-darwin's launchd — get the
 same decrypt-and-inject semantics as the Linux daemon path, without
 templating shell or re-implementing the crypto.
 
-This page is **the** cross-binding contract. The Nix module is the first
-binding to emit `exec.json`; it is not privileged over any other binding.
-**A binding is correct if and only if the `exec.json` it emits is
-described by this document and passes the conformance suite.**
-Nothing here documents intent or a roadmap; every claim below is true
-of the committed parser and launcher (`src/config.rs`,
-`src/launcher.rs`, `src/keys.rs`) as of this writing.
+This is the cross-binding contract. Nix and other deployment integrations
+emit the same `exec.json` format.
+Bindings must emit configs accepted by the parser and check their behavior
+against the conformance suite. Host permissions, key availability, and
+service-manager wiring require separate validation.
 
 ### Config to launch flow
 
 ```mermaid
 flowchart TD
-    cfg["exec.json\n(mode, keys, env_files)"]
-    check["--check\nconfig shape only"]
-    recheck["setup --recheck\nkey source accessible?"]
-    resolve["resolve_all\ndecrypt + resolve"]
-    verify["--verify-keys\nstale key check"]
-    inject["inject\n(env / files / credentials)"]
-    execvp["execvp\nchild = MainPID"]
+    cfg["exec.json<br/>(mode, keys, env_files, bundle_files)"]
+    check["--check<br/>config shape only"]
+    recheck["setup --recheck<br/>key source accessible?"]
+    resolve["resolve_all + resolve_bundle<br/>decrypt + resolve"]
+    verify["--verify-keys<br/>stale key check"]
+    inject["inject<br/>(env / files / credentials)"]
+    execvp["execvp<br/>child = MainPID"]
 
     cfg --> check
     cfg --> recheck
@@ -77,11 +73,9 @@ The `.env` semantics this contract mirrors — encrypted-value format,
 `.env.keys` rotation via comma-separated candidates, `DOTENV_PRIVATE_KEY*`
 naming, `--strict`/`--overload` precedence — are wire-compatible with
 [dotenvx](https://github.com/dotenvx/dotenvx)-encrypted `.env` files.
-`postmaster exec` does not shell out to any external CLI at all — it
-implements the decrypt path natively in Rust (same `ecies` crate the
-daemon uses) — but wherever this document describes a precedence or
-filtering rule, it describes the wire-compatible behavior, not a
-postmaster-only invention.
+`postmaster exec` decrypts natively in Rust, using the same dotenv ECIES
+path as the daemon. It does not invoke an external encryption CLI.
+Platform checks can invoke verified system tools, as described below.
 
 ## Invocation
 
@@ -100,18 +94,21 @@ $ postmaster cleanup --config <exec.json>
   reading key material, checking the filesystem, fetching sockets, or
   launching the child command. It does not accept a command after `--`.
 - `--verify-keys` performs a preflight check: after loading and decrypting,
-  if the resolved values are empty but the env files contain `encrypted:`
-  values, the keys are stale (from a previous rotation cycle) and the exec
-  aborts with a clear error. This catches the `strict: false` case where
-  stale keys would silently skip undecryptable values and launch the child
-  with no secrets.
+  if any value was skipped because the key ring could not decrypt it
+  (stale keys from a previous rotation cycle), the exec aborts with a
+  clear error naming the key. This catches the `strict: false` case where
+  stale keys would otherwise silently skip undecryptable values and
+  launch the child with a partial or empty secret set. Bundle files need
+  no such check: bundle resolution is all-or-nothing, so a stale bundle
+  key already aborts the exec regardless of `strict`.
 - `setup` verifies platform prerequisites, creates keys directory with
   0700, verifies/creates keys files with 0600, optionally seeds keychain
   items (macOS), and validates the environment. Idempotent. `--recheck`
   is verification-only. `--unattended` fails closed without prompting.
   `--force` re-creates/re-seeds even if correct. `--keys-dir` overrides
   the default path (`/var/lib/postmaster` on Linux,
-  `~/Library/Application Support/postmaster` on macOS).
+  `~/Library/Application Support/postmaster` on macOS — falling back to
+  `/var/lib/postmaster` when `HOME` is unset).
   **`--check` validates config shape only, not key source accessibility:**
   a config can pass `--check` in CI but fail at runtime because the key
   file is missing, the keychain item is absent, or the credential source
@@ -126,7 +123,7 @@ $ postmaster cleanup --config <exec.json>
 
 ## `ExecConfig` fields
 
-`exec.json` deserializes into this struct (`src/config.rs`).
+`exec.json` deserializes into this struct (`src/exec_config.rs`).
 Unknown root fields are rejected. ABI fields such as `version` or
 `adapter` must not be emitted until the parser and schema explicitly define
 them. A machine-readable JSON Schema for this current shape is kept at
@@ -138,16 +135,16 @@ Every field except `mode` has a default, so a minimal config is just
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `mode` | `"env" \| "files" \| "credentials"` | — (required) | Injection mode; see below. |
-| `keys` | array of key-source specs | `[]` | Ordered list of where to obtain `DOTENV_PRIVATE_KEY*` material. Unused in `credentials` mode. |
-| `env_files` | array of paths | `[]` | Encrypted `.env[.<environment>]` files, in precedence order (first file wins unless `overload`). Required (non-empty) for `env`/`files` modes. |
-| `bundle_files` | array of paths | `[]` | Encrypted `postmaster_bundle` JSON containers, in precedence order. Entries are merged with `env_files`; bundle keys use the same identifier rule and injection modes. |
-| `strict` | bool | **`true`** | Any value that fails to decrypt aborts the whole exec before the child runs. |
+| `keys` | array of key-source specs | `[]` | Ordered list of where to obtain `DOTENV_PRIVATE_KEY*` / `POSTMASTER_KEY` material. Unused in `credentials` mode. |
+| `env_files` | array of paths | `[]` | Encrypted `.env[.<environment>]` files, in precedence order (first file wins unless `overload`). `env`/`files` modes require at least one of `env_files` or `bundle_files` non-empty. |
+| `bundle_files` | array of paths | `[]` | Encrypted `postmaster_bundle` JSON containers, resolved after `env_files`. The first definition wins unless `overload` selects the last; bundle keys use the same identifier rule and injection modes. |
+| `strict` | bool | **`true`** | Undecryptable dotenv values abort launch when true and are omitted when false. Bundle authentication failures always abort. |
 | `overload` | bool | `false` | File-derived values override the process environment; later files override earlier ones. |
-| `secrets_dir` | path or `null` | `null` | `files` mode, and `credentials` mode on the launchd/fetch path: directory plaintext files are written into. |
+| `secrets_dir` | path or `null` | `null` | `files` mode, and `credentials` mode on the socket-fetch path: directory plaintext files are written into. |
 | `passthrough` | array of strings | `[]` | `files` mode only: these keys are *also* exported as real env vars, in addition to their `_FILE` pointer. |
 | `credential_keys` | array of strings | `[]` | `credentials` mode: keys to expose as `$CREDENTIALS_DIRECTORY/<KEY>`. Required (non-empty) for that mode. |
-| `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects the darwin/launchd fetch path; empty means systemd already materialized the credentials via `LoadCredential=`. |
-| `verify_ramdisk` | path or `null` | `null` | darwin only: refuse to write plaintext unless this mount point is the HFS ramdisk and `secrets_dir` is a directory owned by the current euid. |
+| `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects local socket fetching on either OS; empty means systemd already materialized the credentials via `LoadCredential=`. |
+| `verify_ramdisk` | path or `null` | `null` | darwin only: require a RAM-backed HFS mount and a service-owned `secrets_dir` on that device. The verified directory handle is retained for plaintext I/O. |
 
 Note the field name is `verify_ramdisk`, not `ramdisk` or `ramdisk_mount` —
 match it exactly.
@@ -155,12 +152,21 @@ match it exactly.
 Mode-required fields are enforced by `postmaster exec --check` and again
 before a real launch:
 
-- `env` requires non-empty `keys` and non-empty `env_files`.
-- `files` requires non-empty `keys`, non-empty `env_files`, and
-  `secrets_dir`.
+- `env` requires non-empty `keys` and at least one of `env_files` or
+  `bundle_files` non-empty.
+- `files` requires non-empty `keys`, at least one of `env_files` or
+  `bundle_files` non-empty, and `secrets_dir`.
 - `credentials` requires non-empty `credential_keys`. If `sockets` is
   non-empty, it also requires `secrets_dir` and a socket mapping for every
   credential key.
+
+**One `secrets_dir` per service.** postmaster treats `secrets_dir` as
+single-tenant: `prune_stale` at launch and cleanup on every death path
+delete files there based on one service's key set, so two services
+sharing a directory lets one service's lifecycle delete the other's live
+files (an availability failure — plaintext never crosses services). The
+integration must separate services, for example with a namespace-private
+tmpfs per Linux unit or per-service directories on a macOS RAM disk.
 
 `--check` also validates env-file basenames, rejects private-key
 `file` sources under `/nix/store`, rejects path-like `credential` source
@@ -179,7 +185,7 @@ serde fills those in even when the generator omits the field.
 |---|---|
 | `env` | `secrets_dir`, `credential_keys`, `sockets`, `verify_ramdisk`, `passthrough` |
 | `files` | `credential_keys`, `sockets` |
-| `credentials` | `keys`, `env_files`, `overload`, `passthrough` |
+| `credentials` | `keys`, `env_files`, `bundle_files`, `overload`, `passthrough` |
 
 ## Key-source list (`keys`)
 
@@ -189,8 +195,24 @@ Each entry in `keys` is one externally-tagged JSON shape:
 |---|---|
 | `{"credential": "<name>"}` | `$CREDENTIALS_DIRECTORY/<name>` (the launcher's *own* `LoadCredential`, i.e. `.env.keys` handed to it the same way postmaster's daemon receives its own). `<name>` must be a single relative path component, not `.`, `..`, an absolute path, or a slash-containing path. |
 | `{"file": "<path>"}` | An out-of-store `.env.keys`-format file read directly. Rejected outright if the path starts with `/nix/store` — private keys must never live in the world-readable store. |
-| `{"keychain": "<service>"}` | macOS System keychain; one generic-password item per `DOTENV_PRIVATE_KEY[_<ENV>]` account, service name as given. Only the variables actually needed (derived from `env_files`) are fetched. Any other target: error, "only available on macOS". |
-| `"environment"` | The unit-variant source — note it is a bare JSON string, not an object, because it carries no data. Reads `DOTENV_PRIVATE_KEY*` straight from postmaster's own process environment. |
+| `{"keychain": "<service>"}` | macOS keychain (the default keychain search list); one generic-password item per `DOTENV_PRIVATE_KEY[_<ENV>]` account, service name as given. Only the variables actually needed (derived from `env_files` and `bundle_files`) are fetched. Any other target: error, "only available on macOS". |
+| `"environment"` | The unit-variant source — note it is a bare JSON string, not an object, because it carries no data. Reads `DOTENV_PRIVATE_KEY*` (and `POSTMASTER_KEY` when `bundle_files` are configured) straight from postmaster's own process environment. |
+
+**Bundle key variable.** With `bundle_files` configured, the ring admits
+`POSTMASTER_KEY` material in the same sources: comma-separated rotation
+candidates are admitted, and `POSTMASTER_KEY_<suffix>` variants match by
+the same predicate as `DOTENV_PRIVATE_KEY_*`. There is no
+per-environment filename mapping — every bundle file resolves against
+the one `POSTMASTER_KEY` variable. `profile` and `recipients` are public
+metadata; they do not select keys. Bindings select the bundle paths.
+
+**Application environment.** In every projection mode, the launched command
+does not receive `DOTENV_PRIVATE_KEY`, `POSTMASTER_KEY`, or their
+`_<nonempty suffix>` variants. This applies regardless of the selected key
+source and after all projected values are added. Other inherited variables,
+including `PATH` and `HOME`, are preserved. Bundle entries using these
+reserved private-key names are rejected before launch, even with
+`strict: false`.
 
 **Selection contract**, evaluated in list order:
 
@@ -212,13 +234,13 @@ decryption happens in that mode; see below.
 
 ## Precedence contract
 
-This is the contract `resolve_all` (`src/keys.rs`) implements,
-verbatim:
+The launcher resolves `env_files` first, followed by `bundle_files`.
+Both adapters follow this contract:
 
 - **Within one file, the last assignment wins** — ordinary dotenv
   semantics. `A=1` followed later in the same file by `A=2` yields `2`.
 - **Across files, the first file that defines a key wins**, in the order
-  `env_files` lists them — *unless* `overload` is `true`, in which case
+  the lists specify — *unless* `overload` is `true`, in which case
   the **last** file defining the key wins. Note: which file wins does not
   change the *position* a key is emitted in; a key's slot is fixed by
   the first file that introduces it, `overload` only changes which
@@ -227,9 +249,23 @@ verbatim:
   but only when `overload` is `false`: if the variable is already set
   in postmaster's process environment, it is dropped from the resolved
   set entirely (the child inherits the parent's existing value
-  unmodified, since `exec()` only *adds* the resolved pairs on top of an
-  inherited environment). When `overload` is `true`, process environment
+  unmodified, except for reserved private-key variables). When `overload`
+  is `true`, process environment
   is not consulted at all — file values always win.
+
+## Dotenv input limits
+
+Dotenv sources must be regular files; final symlinks and special files fail
+before parsing. Each file is limited to 16 MiB. A resolution pass allows at
+most 64 MiB of source bytes, 65,536 assignments, and 64 MiB of parsed names and
+values across all dotenv files. Each expanded value is limited to 16 MiB.
+Duplicate assignments and metadata count toward these limits before filtering.
+
+Expansion checks run before appending or retaining substituted values, so a
+small substitution chain cannot allocate an unbounded result. Quoting,
+multiline values, environment-first substitution, and precedence stay the
+same. Syntax errors name the file and error category without including its
+contents. Resource-limit failures abort even with `strict: false`.
 
 ## `DOTENV_` filtering and identifier validation
 
@@ -252,31 +288,38 @@ verbatim:
 
 ## Encrypted-value format
 
-A raw value that does not start with `encrypted:` is passed through
-verbatim as opaque bytes (this is how plaintext values reach the child —
-no decryption attempted). A value that does start with `encrypted:` has the
+Values are first parsed with dotenvy-compatible quoting and variable
+substitution rules. A parsed value without `encrypted:` needs no decryption
+and is passed through as bytes. A value that starts with `encrypted:` has the
 following payload base64-decoded and decrypted with `ecies` against each
 candidate key under the matching `DOTENV_PRIVATE_KEY*` name
 (comma-separated rotation candidates in `.env.keys` are tried in order;
 first one that decrypts wins).
+
+Decrypted plaintext and bundle entries are not interpolated. For a plaintext
+dotenv value, single quotes preserve `${VAR}` literally; unquoted and
+double-quoted values can substitute variables. No value is evaluated as shell
+code, and `$(cmd)` does not run a command.
 
 **Lenient base64 decoding:** the payload after `encrypted:` may contain
 ASCII whitespace (spaces, tabs, newlines, carriage returns). If any is
 present, it is stripped before decoding, so a value that has been
 line-wrapped decodes identically to the same value on one line. This
 matches the wire-compatible behavior for line-wrapped encrypted values and
-is exercised directly in `tests/exec_conformance.rs`
+is exercised directly in `tests/exec_conformance/main.rs`
 (`wrapped_base64_ciphertext_decrypts`).
 
 `key_var_for` maps an env-file name to the private-key variable it needs:
 `.env` → `DOTENV_PRIVATE_KEY`; `.env.production` →
-`DOTENV_PRIVATE_KEY_PRODUCTION`; non-alphanumeric characters in the
-environment suffix become `_` and the whole suffix is upper-cased. A file
-name that doesn't start with `.env` is a hard parse error.
+`DOTENV_PRIVATE_KEY_PRODUCTION`. The environment suffix must be non-empty
+and contain only `[A-Za-z0-9_]` after upper-casing — anything else is a
+hard parse error (no lossy mapping: `.env..x` and `.env._x` must never
+alias). A file name that doesn't start with `.env` is a hard parse error.
 
 ## Per-mode injected variables
 
-**`mode: "env"`.** Decrypts `env_files` through the key ring in `keys`,
+**`mode: "env"`.** Decrypts `env_files` and `bundle_files` through the key ring
+in `keys`,
 then exports every resolved `KEY=value` pair directly into the child's
 environment. No pointer files, no `secrets_dir`. A resolved value
 containing a NUL byte is a hard error
@@ -285,12 +328,14 @@ containing a NUL byte is a hard error
 closed rather than silently truncating.
 
 **`mode: "files"`.** Requires `secrets_dir`. If `verify_ramdisk` is set,
-the ramdisk guard (below) runs first; otherwise `secrets_dir` merely has
-to exist and be a directory. Each resolved value is written to
-`<secrets_dir>/<KEY>` with permissions forced to `0600` (via `fchmod` on
-the file descriptor after `O_NOFOLLOW | O_CREAT | O_TRUNC` open, so the
-permission is set atomically without a TOCTOU window) — unlike `env` mode,
-values here may contain NUL; the file is written byte-exact. For each key
+the ramdisk guard (below) runs first. The directory must exist and its complete
+pathname must be protected from less-trusted replacement. Root and the
+effective user are trusted owners; sticky shared parents and trusted symlink
+aliases remain supported. The launcher exports the verified canonical path.
+Each value is written byte-exact to a fresh exclusive 0600 inode and published
+atomically as `<secrets_dir>/<KEY>`. Existing handles keep the old contents;
+foreign, hardlinked, symlinked, and special existing entries fail closed.
+Values may contain NUL. For each key
 the launcher exports `<KEY>_FILE` pointing at that path; if the key is
 also listed in `passthrough`, it is *additionally* exported as a real
 `<KEY>=value` env var (and *that* copy is subject to the same NUL-rejection
@@ -308,24 +353,26 @@ this mode — it dispatches on whether `sockets` is empty:
   against running this mode outside systemd). For each key, exports
   `<KEY>_FILE=$CREDENTIALS_DIRECTORY/<KEY>` — no reading, no
   permission changes; systemd already owns that file.
-- **`sockets` non-empty (darwin/launchd fetch path):** requires
+- **`sockets` non-empty (local fetch path):** requires
   `secrets_dir`; runs the ramdisk guard if `verify_ramdisk` is set. For
   each key, looks up its socket in `sockets` (missing entry is an error),
   connects and reads to EOF via the same client path `postmaster fetch`
   uses, writes the bytes to `<secrets_dir>/<KEY>` at `0600`, and exports
-  `<KEY>_FILE`. After all keys, exports **both**
+  `<KEY>_FILE`. After all keys, also exports
   `CREDENTIALS_DIRECTORY` set to `secrets_dir`
-  — unlike the systemd branch, there is no real `LoadCredential`
-  mechanism on darwin, so the launcher has to tell the consumer that
-  `secrets_dir` *is* its credentials directory.
+  so the application can use the same credential-directory convention.
+  This path is normally used with launchd, but `sockets` selects it on
+  either supported operating system.
 
 ## Fail-closed rules
 
-- **`strict` (default `true`).** In `env`/`files` modes, if any value
-  fails to decrypt (bad key, wrong key, malformed ciphertext), the whole
+- **`strict` (default `true`).** In `env`/`files` modes, if a selected dotenv
+  value fails to decrypt (bad key, wrong key, malformed ciphertext), the whole
   exec aborts before the child runs — nothing partial is injected. With
-  `strict: false`, an undecryptable value is logged and simply omitted
+  `strict: false`, an undecryptable value is logged and omitted
   from the resolved set (never served as an error string or empty value).
+  Bundle entries must authenticate regardless of `strict`. `--verify-keys`
+  also rejects skipped dotenv values when `strict` is false.
 - **NUL in an environment value** is refused in `env` mode and for
   `passthrough` values in `files` mode (see above); in `files` mode's
   primary write path (the pointer-file contents), NUL is not restricted
@@ -335,6 +382,10 @@ this mode — it dispatches on whether `sockets` is empty:
   serve, and fails closed with `"<path>: server sent zero bytes (refused
   to serve); failing closed"` rather than writing an empty credential
   file.
+- **16 MiB read cap.** Config JSON, bundle JSON, and credential fetch payloads
+  are capped at 16 MiB by `read_capped`; oversized payloads fail. Dotenv
+  sources have the separate byte, assignment, and expansion limits described
+  above. Private-key files use the `dotenvy` streaming parser without that cap.
 - **Missing `$CREDENTIALS_DIRECTORY`** in `credentials` mode's systemd
   branch fails closed rather than silently exporting nothing.
 - **Private keys never come from the Nix store.** A `{"file": …}` key
@@ -344,21 +395,29 @@ this mode — it dispatches on whether `sockets` is empty:
 - **Keys file permissions and ownership.** `KeyRing::load` opens the
   keys file with `O_NOFOLLOW` and `fstat`s the fd to verify: no
   group/world access (`mode & 0o077 == 0`), and owned by the current
-  euid. A world-readable or symlinked keys file fails closed.
-- **External binary verification.** On macOS, `from_keychain` verifies
-  the code signature of `/usr/bin/security` via `codesign -v` before
-  invoking it. On Linux, external binaries are verified as regular files
-  owned by root (uid 0) and not world-writable.
+  euid. A world-readable or symlinked keys file fails closed. On macOS,
+  runtime loading and file-source setup rechecks also reject ACL grants that let
+  principals other than root or the effective user read or modify the file.
+  These checks do not change the source file's ACL.
+- **External binary verification.** Keychain access uses the
+  Security.framework API in-process — no external binary is invoked for
+  it. The external binaries postmaster does invoke (`/usr/bin/id`,
+  `/sbin/mount`, `/usr/bin/hdiutil` on macOS) are verified first:
+  `codesign -v` on macOS; on Linux, verified as regular files owned by
+  root (uid 0) with no group or other write permissions. Linux `id` lookup
+  resolves system aliases, verifies the target and its directory ancestry,
+  then invokes that resolved target. This includes the NixOS system profile.
 - **`verify_ramdisk` (darwin ramdisk guard).** When set, before any
   plaintext is written the launcher runs two checks: it shells out to
   `/sbin/mount` and requires the configured mount point to appear as an
   `hfs` filesystem, then runs `hdiutil info` and requires the device's
   `image-path` to start with `ram://` (confirming RAM backing, not a
-  file-backed image). It then `stat`s `secrets_dir` and requires it to
-  exist, be a directory, and be owned by the launcher's own effective
-  uid. Either check failing refuses to write plaintext to what might be
-  persistent disk, with an error pointing at `postmaster-ramdisk`
-  health.
+  file-backed image). It opens `secrets_dir` without following a
+  final-component symlink and checks the pinned inode's ownership and
+  backing device. The directory must be lexically beneath the mount point
+  and use the verified RAM device, so an intermediate symlink cannot
+  redirect plaintext onto persistent storage. Pruning, writes, cleanup,
+  and the monitor retain that same directory handle.
 
 ## Extensibility boundary
 
@@ -407,16 +466,15 @@ with external secret-management tooling that materializes a
   `{"credential": "postmaster-myapp"}`. AWS tooling owns IAM, network I/O,
   and retrieval; postmaster inherits systemd's local credential access
   control.
-- **macOS Keychain → `{"keychain": "<service>"}`.** No external tooling
-  needed beyond what's already documented for `key.keychainService`
-  (Operational notes) — this is the existing source, not a new
-  composition, but the one to reach for on darwin when a file or
-  `LoadCredential` isn't a fit.
+- **macOS Keychain → `{"keychain": "<service>"}`.** Use
+  `postmaster setup` to seed the required accounts under that service name.
+  Postmaster reads those items through Security.framework. See
+  [Key provisioning](../getting-started/key-provisioning.md#strategy-d-macos-keychain).
 
 ## Conformance
 
-`tests/exec_conformance.rs` is the executable form of this document:
-metacharacter-laden values stay inert across all three modes,
+`tests/exec_conformance/main.rs` is the executable form of this document:
+metacharacter-laden values stay inert in `env` mode,
 process-env-wins-without-overload and overload-reverses-it, rotation with
 a bogus first key, strict failure refuses to exec, `0600` pointer files
 and `passthrough`, both `credentials` branches (systemd pointer-only and

@@ -4,39 +4,26 @@ Postmaster supports three ways to deliver decrypted secrets to the child
 process. Each mode makes a different tradeoff between convenience and
 security.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** choosing how secrets reach your application — as
-environment variables, as files, or as systemd credentials.
+Choose how secrets reach your application. Storage and process isolation
+depend on the deployment as well as the selected mode.
 
-| Mode | Best for | Secrets in environ? | Hygiene |
+| Mode | Use | Secrets in environ? | Storage and access |
 | --- | --- | --- | --- |
-| `env` (default) | 12-factor apps, simple services | Yes | Lowest — same-UID processes can read `/proc/PID/environ` |
-| `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | No — only `_FILE` pointers | Medium — secrets absent from environ, `ps`, crash dumps |
-| `credentials` | systemd services wanting strongest isolation | No — reads `$CREDENTIALS_DIRECTORY` | Highest — unit-private unswappable ramfs |
+| `env` | Apps that read environment variables | Yes | Environment copies can reach process listings, diagnostics, and child processes |
+| `files` | Apps that read `KEY_FILE` pointers (Docker secrets convention) | Only when `passthrough` requests it | No environment copy by default; the app still reads plaintext files |
+| `credentials` | Apps that read credential files | No additional value copy | Systemd supplies the credentials directory, or Postmaster fetches values from local sockets |
 
-## Mode comparison
+## `mode = "env"`
 
 ```mermaid
-flowchart TB
-    subgraph env["mode: env"]
-        pm_env["postmaster"] -->|KEY=value\nin environ| child_env["your binary"]
-    end
-    subgraph files["mode: files"]
-        pm_files["postmaster"] -->|write 0600 file| tmpfs["tmpfs / ramdisk"]
-        tmpfs -->|KEY_FILE=/run/.../KEY| child_files["your binary"]
-    end
-    subgraph cred["mode: credentials"]
-        systemd["systemd"] -->|LoadCredential=| ramfs["ramfs\n$CREDENTIALS_DIR"]
-        pm_cred["postmaster"] -->|decrypt + write| ramfs
-        ramfs -->|KEY_FILE=$CREDENTIALS_DIR/KEY| child_cred["your binary"]
-    end
+flowchart LR
+    pm_env["postmaster<br/>(decrypt + inject)"] -->|"KEY=value<br/>in environ"| child_env["your binary"]
 ```
 
-## `mode = "env"` (default)
-
-Decrypted values are exported into the process environment and the
-wrapper `exec`s your binary. Correct for 12-factor apps.
+Postmaster exports resolved values into the application environment and
+replaces the launcher with your binary.
 
 **Exposure:** environment variables are readable via
 `/proc/<pid>/environ` by root and the same UID, inherited by every child,
@@ -46,14 +33,20 @@ and prone to appearing in crash dumps and debug output.
 means "this service only"), `ProtectProc` hardening (hides other
 processes' `/proc` entries), and ultimately switching to `files` mode.
 
-**No shell expansion:** postmaster performs no `${VAR}`/`$(…)` expansion
-anywhere in the decrypt-and-inject path, in any mode. A repo contributor
-who commits `KEY=$(cmd)` gets the literal string, never a command
-execution at service start.
+**No shell execution:** decrypted values are injected without shell
+evaluation. Plaintext dotenv entries follow `dotenvy` parsing rules, including
+variable substitution in unquoted and double-quoted values. Single quotes
+preserve `${VAR}` literally. `$(cmd)` does not execute a command.
 
 ## `mode = "files"`
 
-Values are written one-file-per-key onto a namespace-private tmpfs
+```mermaid
+flowchart LR
+    pm_files["postmaster<br/>(decrypt + inject)"] -->|"write 0600 file"| tmpfs["tmpfs / ramdisk<br/>(secrets_dir)"]
+    tmpfs -->|"KEY_FILE=/run/postmaster/KEY"| child_files["your binary"]
+```
+
+Deployments provide a namespace-private tmpfs for one-file-per-key output
 (`TemporaryFileSystem=/run/postmaster`; on macOS, a per-service directory
 on an HFS RAM disk) and only `<KEY>_FILE` pointer variables are exported
 — the Docker-secrets convention
@@ -66,16 +59,24 @@ mount namespace on Linux (root needs `nsenter`) and is destroyed with
 the unit. On macOS, the RAM disk is protected by ownership (`0700`), not
 invisibility — macOS has no mount namespaces.
 
-Each secret file is written with `O_NOFOLLOW | O_CREAT | O_TRUNC` and
-`fchmod`'d to `0600` on the file descriptor (no TOCTOU window between
-open and chmod).
+This describes file-only projection. `passthrough` adds environment copies,
+and ordinary inherited variables remain present. The application can also
+copy file contents into its own memory. A hand-written config must provide
+RAM-backed storage; setting `secrets_dir` alone does not verify it.
 
-For a mostly-file-capable app with a straggler that needs an env var:
+Each secret refresh publishes a fresh 0600 inode beneath the pinned directory.
+Old read handles keep the old contents. Foreign, linked, and special entries
+fail closed, and exported paths require protected ancestry. Trusted symlink
+aliases and sticky shared parents remain supported.
+
+If the application reads most values from files but needs one in its
+environment, list that key in `passthrough`:
 
 ```json
 {
   "mode": "files",
   "env_files": ["secrets/.env.production"],
+  "keys": [{"file": "/var/lib/postmaster/.env.keys"}],
   "secrets_dir": "/run/postmaster",
   "passthrough": ["RUST_LOG"]
 }
@@ -86,25 +87,36 @@ rejection, since they become environment variables).
 
 ## `mode = "credentials"`
 
-Real systemd credentials, served on demand by the postmaster daemon.
-The consumer's unit gets
+```mermaid
+flowchart LR
+    daemon["postmaster credential daemon<br/>(local socket)"] -->|"decrypted bytes<br/>over socket"| systemd["systemd<br/>(LoadCredential=)"]
+    systemd -->|"credential files"| ramfs["ramfs<br/>$CREDENTIALS_DIRECTORY"]
+    ramfs -->|"KEY_FILE=$CREDENTIALS_DIRECTORY/KEY"| child_cred["your binary"]
+```
+
+The launcher exports `<KEY>_FILE` pointers into credentials that systemd has
+already supplied. Systemd can obtain those credentials from Postmaster's
+daemon. In that deployment, the consumer's unit gets
 `LoadCredential=<KEY>:/run/postmaster-credd/<svc>/<KEY>.sock` per key and
 the app reads `$CREDENTIALS_DIRECTORY/<KEY>` from unit-private,
 **unswappable** ramfs.
 
-No Node, no jq, no shell anywhere in the consumer's start path. The
-optional wrapper only exports non-secret `<KEY>_FILE` pointers.
-Strongest hygiene of the three.
+The launcher exports file pointers without reading the credential values.
+Systemd owns their storage and access controls.
 
-On macOS, postmaster runs `--bind` (owns its sockets), the wrapper
-`postmaster fetch`es each key onto the RAM disk, and exports
-`$CREDENTIALS_DIRECTORY` set to `secrets_dir` — same path convention as
-systemd credentials, so app code is unchanged.
+For local socket delivery, normally used with launchd on macOS, the daemon
+runs with `--bind`. The launcher fetches each configured key, writes it beneath
+`secrets_dir`, and exports `CREDENTIALS_DIRECTORY` along with `<KEY>_FILE`
+pointers. The file naming convention matches systemd credentials. The fetch
+branch is selected by `sockets`, not by the operating system.
 
 ## Fail-closed rules
 
 - **`strict` (default `true`):** if any value fails to decrypt, the
   entire exec aborts before the child runs. Nothing partial is injected.
+- **`strict: false`:** undecryptable dotenv values are logged and omitted.
+  `--verify-keys` makes those omissions fatal. Bundle entries must authenticate
+  under either setting.
 - **NUL in env values:** rejected in `env` mode and for `passthrough`
   values in `files` mode. In `files` mode's primary write path, NUL is
   not restricted — the exact bytes reach the file.

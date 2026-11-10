@@ -1,0 +1,817 @@
+//! Key loading, variable name resolution, and ciphertext decryption.
+//!
+//! The key ring and resolved values use zeroizing buffers. Decryption tries
+//! rotation candidates in order; the source environment is not zeroized.
+//! Plaintext values (from `dotenvx set --plain`) are passed through.
+//!
+//! The `KeyNaming` enum in `adapter/mod.rs` defines the dotenv and bundle
+//! namespaces used by loading and resolution.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use zeroize::{Zeroize, Zeroizing};
+
+use crate::adapter::KeyNaming;
+use crate::config::Entry;
+
+mod dotenv;
+mod env;
+#[cfg(target_os = "macos")]
+mod keychain;
+mod load;
+pub mod provisioning;
+pub mod source;
+mod verify;
+
+/// Shared external-helper verification.
+pub use verify::verify_external_binary;
+
+/// Key-variable predicates shared by loading, setup and launch validation.
+pub(crate) use env::{is_key_var_name, is_private_key_var_name};
+
+/// Full variable name (adapter-specific, e.g. `DOTENV_PRIVATE_KEY[_<ENV>]`)
+/// → candidate secret keys. Multiple candidates per name come from
+/// comma-separated rotation convention; decryption tries each in order.
+pub struct KeyRing(HashMap<String, Vec<Zeroizing<[u8; 32]>>>);
+
+// Zeroizing forwards Debug to its inner value; derive would expose every private key.
+impl std::fmt::Debug for KeyRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyRing")
+            .field("vars", &self.0.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl KeyRing {
+    /// Look up candidate keys for a given key variable name.
+    /// Returns `None` if the variable has no candidates in the ring.
+    pub fn candidates(&self, var: &str) -> Option<&[Zeroizing<[u8; 32]>]> {
+        self.0.get(var).map(|v| v.as_slice())
+    }
+
+    /// Load a `.env.keys` file from `path` and build a key ring.
+    ///
+    /// Checks apply to the opened inode, so path replacement cannot change
+    /// which file is validated and read:
+    ///   - `O_NOFOLLOW`: reject a symlink at `path` (defense-in-depth; also
+    ///     closes the credential-source symlink attack leg).
+    ///   - `mode & 0o077 == 0`: no group or world read/write/exec. A keys
+    ///     file accidentally `chmod 0644` would expose private keys to every
+    ///     process on the host; fail closed instead.
+    ///   - `st_uid == euid`: the file must be owned by the service user.
+    ///   - macOS ACLs: reject read or mutation grants to principals other
+    ///     than root or the effective user without changing the source ACL.
+    ///
+    /// `namings` is the required adapter set; entries under other
+    /// prefixes are dropped (and zeroized) at parse time.
+    pub fn load(path: &Path, namings: &[KeyNaming]) -> Result<Self, String> {
+        load::load(path, namings)
+    }
+
+    /// Parse key values shared by all local key sources.
+    ///
+    /// Keep names matching the required adapters' exact prefix or a prefix
+    /// followed by `_<nonempty suffix>`. Split comma-separated rotation
+    /// candidates and decode each into a zeroizing 32-byte key.
+    /// `namings` comes from `ExecConfig::required_namings`; other namespaces
+    /// are discarded. Input values use `Zeroizing<String>` so discarded
+    /// material is wiped on drop.
+    ///
+    /// # Errors
+    ///
+    /// Return an error for invalid key material or an empty required ring.
+    pub fn from_pairs(
+        pairs: impl IntoIterator<Item = (String, Zeroizing<String>)>,
+        namings: &[KeyNaming],
+    ) -> Result<Self, String> {
+        let mut map: HashMap<String, Vec<Zeroizing<[u8; 32]>>> = HashMap::new();
+        for (name, mut value) in pairs {
+            if !namings
+                .iter()
+                .any(|n| is_key_var_name(n.key_prefix(), &name))
+            {
+                value.zeroize();
+                continue;
+            }
+            let mut keys = Vec::new();
+            for part in value.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let mut raw =
+                    hex::decode(part).map_err(|_| format!("{name}: entry is not valid hex"))?;
+                if raw.len() != 32 {
+                    raw.zeroize();
+                    return Err(format!("{name}: expected a 32-byte key"));
+                }
+                let mut arr = [0_u8; 32];
+                arr.copy_from_slice(&raw);
+                raw.zeroize();
+                keys.push(Zeroizing::new(arr));
+            }
+            value.zeroize();
+            if keys.is_empty() {
+                return Err(format!("{name}: no usable keys"));
+            }
+            map.insert(name, keys);
+        }
+        if map.is_empty() {
+            return Err(empty_error(namings));
+        }
+        Ok(KeyRing(map))
+    }
+
+    /// Read private-key variables matching the required adapter namespaces
+    /// from the process environment.
+    pub fn from_env(namings: &[KeyNaming]) -> Result<Self, String> {
+        env::from_env(namings)
+    }
+
+    /// Read macOS Keychain through the default search list. Each variable uses
+    /// one generic-password item:
+    /// service = `service`, account = the adapter's key variable name.
+    /// Only the vars actually needed (derived from artifact names) are
+    /// fetched.
+    #[cfg(target_os = "macos")]
+    pub fn from_keychain(
+        service: &str,
+        vars: &[String],
+        namings: &[KeyNaming],
+    ) -> Result<Self, String> {
+        keychain::from_keychain(service, vars, namings)
+    }
+}
+
+/// Human-readable empty-ring error for a naming set: a single naming
+/// keeps its adapter-specific message; multiple namings join them.
+fn empty_error(namings: &[KeyNaming]) -> String {
+    match namings {
+        [] => "no key material admitted (empty naming set)".to_string(),
+        [single] => single.empty_error(),
+        many => format!(
+            "no {}",
+            many.iter()
+                .map(|n| n.empty_error().trim_start_matches("no ").to_string())
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+    }
+}
+
+/// Check an ASCII identifier used for environment names and secret filenames.
+pub fn is_ident(k: &str) -> bool {
+    let mut cs = k.chars();
+    matches!(cs.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Decrypt one raw value: `encrypted:<b64>` via the ring (rotation-aware),
+/// anything else passed through as opaque bytes (plaintext passthrough).
+/// Base64 payload may contain ASCII whitespace (spaces, newlines, tabs, CR),
+/// matching the lenient decoding for line-wrapped values.
+pub fn decrypt_value(
+    env_file: &Path,
+    key: &str,
+    raw: &str,
+    ring: &KeyRing,
+    naming: KeyNaming,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let Some(b64) = raw.strip_prefix("encrypted:") else {
+        return Ok(Zeroizing::new(raw.as_bytes().to_vec()));
+    };
+    let ciphertext: Zeroizing<Vec<u8>> = {
+        if b64.chars().any(|c| c.is_ascii_whitespace()) {
+            // Zeroizing: b64_clean holds derived ciphertext material (base64
+            // of the encrypted blob). Zeroize on drop for defense-in-depth,
+            // matching the crate's hygiene posture on key and plaintext buffers.
+            let b64_clean = Zeroizing::new(
+                b64.chars()
+                    .filter(|c| !c.is_ascii_whitespace())
+                    .collect::<String>(),
+            );
+            Zeroizing::new(
+                BASE64
+                    .decode(&*b64_clean)
+                    .map_err(|_| format!("{}: {key} is not valid base64", env_file.display()))?,
+            )
+        } else {
+            Zeroizing::new(
+                BASE64
+                    .decode(b64)
+                    .map_err(|_| format!("{}: {key} is not valid base64", env_file.display()))?,
+            )
+        }
+    };
+    let var = naming.key_var_for(env_file)?;
+    let candidates = ring
+        .0
+        .get(&var)
+        .ok_or_else(|| format!("key ring has no {var} entry"))?;
+    for sk in candidates {
+        if let Ok(pt) = ecies::decrypt(&sk[..], &ciphertext) {
+            return Ok(Zeroizing::new(pt));
+        }
+    }
+    // No candidate count in the error text — the rotation-set size is not something
+    // errors should leak.
+    Err(format!(
+        "{}: no key under {var} decrypts {key}",
+        env_file.display()
+    ))
+}
+
+/// Resolve a single entry using the key ring.
+/// Supports both encrypted values and plaintext passthrough.
+pub fn resolve(
+    entry: &Entry,
+    ring: &KeyRing,
+    naming: KeyNaming,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let mut budget = dotenv::Budget::default();
+    let iter = dotenv::read(&entry.env_file, &mut budget, Some(&entry.env_file_sha256))?;
+    // Last assignment wins, matching dotenv semantics within one file.
+    let mut found: Option<Zeroizing<String>> = None;
+    for item in iter {
+        let (k, v) = item;
+        if k == entry.key {
+            found = Some(v);
+        }
+    }
+    let raw =
+        found.ok_or_else(|| format!("{}: no key named {}", entry.env_file.display(), entry.key))?;
+
+    decrypt_value(&entry.env_file, &entry.key, &raw, ring, naming)
+}
+
+/// Resolved (name, secret-bytes) pairs, in injection order.
+pub type ResolvedVars = Vec<(String, Zeroizing<Vec<u8>>)>;
+
+/// Outcome of a [`resolve_all`] pass.
+pub struct Resolution {
+    /// Resolved (name, plaintext) pairs in injection order.
+    pub resolved: ResolvedVars,
+    /// `(name, error)` for each encrypted value that could not be
+    /// decrypted and was skipped under `strict: false`. Recorded so
+    /// `--verify-keys` can fail closed on a partial key rotation.
+    /// Always empty under `strict: true`, where
+    /// the first failure aborts the whole pass instead.
+    pub failed: Vec<(String, String)>,
+}
+
+// A derived Debug implementation would expose decrypted values; print names only.
+impl std::fmt::Debug for Resolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolution")
+            .field(
+                "resolved",
+                &self.resolved.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field(
+                "failed",
+                &self.failed.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+/// Resolve every key across `files` per the precedence contract
+/// (see `docs/src/reference/launcher-contract.md`): within one file the last
+/// assignment wins; across files the first file defining a key wins
+/// unless `overload`; keys already present in the process environment are
+/// skipped unless `overload`. Adapter metadata keys are dropped;
+/// non-identifier keys are a hard error (they become env names/filenames).
+/// Undecryptable values abort under `strict`; otherwise they are skipped
+/// and recorded in [`Resolution::failed`].
+pub fn resolve_all(
+    files: &[PathBuf],
+    ring: &KeyRing,
+    overload: bool,
+    strict: bool,
+    env_has: &dyn Fn(&str) -> bool,
+    naming: KeyNaming,
+) -> Result<Resolution, String> {
+    let metadata_prefix = naming.metadata_prefix();
+    let mut order: Vec<String> = Vec::new();
+    let mut merged: HashMap<String, (PathBuf, Zeroizing<String>)> = HashMap::new();
+    let mut budget = dotenv::Budget::default();
+    for f in files {
+        let iter = dotenv::read(f, &mut budget, None)?;
+        let mut file_vals: HashMap<String, Zeroizing<String>> = HashMap::new();
+        let mut file_order: Vec<String> = Vec::new();
+        for item in iter {
+            let (k, v) = item;
+            if let Some(prefix) = metadata_prefix
+                && k.starts_with(prefix)
+            {
+                continue;
+            }
+            if !is_ident(&k) {
+                return Err(format!(
+                    "{}: refusing non-identifier key {k:?}",
+                    f.display()
+                ));
+            }
+            if !file_vals.contains_key(&k) {
+                file_order.push(k.clone());
+            }
+            file_vals.insert(k, v); // last assignment within a file wins
+        }
+        for k in file_order {
+            // Unreachable invariant (file_order mirrors file_vals), but a clear error
+            // beats an abort under panic=abort.
+            let Some(v) = file_vals.remove(&k) else {
+                return Err(format!("internal: {k} in file_order but not file_vals"));
+            };
+            if let Some(slot) = merged.get_mut(&k) {
+                if overload {
+                    *slot = (f.clone(), v); // later file wins under overload
+                }
+            } else {
+                order.push(k.clone());
+                merged.insert(k, (f.clone(), v));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut failed = Vec::new();
+    for k in order {
+        if !overload && env_has(&k) {
+            continue; // process environment wins
+        }
+        // Unreachable invariant (order mirrors merged), but a clear error beats an
+        // abort under panic=abort.
+        let Some((file, raw)) = merged.remove(&k) else {
+            return Err(format!("internal: {k} in order but not merged"));
+        };
+        match decrypt_value(&file, &k, &raw, ring, naming) {
+            Ok(v) => out.push((k, v)),
+            Err(e) if strict => return Err(e),
+            Err(e) => {
+                crate::server::log(&format!("non-strict: skipping {k}: {e}"));
+                failed.push((k, e));
+            }
+        }
+    }
+    Ok(Resolution {
+        resolved: out,
+        failed,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
+/// Inline unit tests for key loading, resolution, and decryption.
+pub mod tests {
+    use super::*;
+    use crate::adapter::KeyNaming;
+
+    /// Test secret key hex — never use outside tests.
+    pub const TEST_SK_HEX: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+
+    /// Build a test key ring with the test secret key under
+    /// `POSTMASTER_KEY` (for bundle adapter tests).
+    pub fn make_test_ring() -> KeyRing {
+        let pairs = vec![(
+            "POSTMASTER_KEY".to_string(),
+            Zeroizing::new(TEST_SK_HEX.to_string()),
+        )];
+        KeyRing::from_pairs(pairs, &[KeyNaming::Bundle]).unwrap()
+    }
+    use std::io::Write;
+    use std::path::Path;
+
+    /// Shared with the `load` submodule's tests.
+    pub fn with_temp_keys(content: &str, f: impl FnOnce(&Path)) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_util::temp_dir::TestDir::new("mod");
+        let path = dir.join("fixture");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "{}", content).unwrap();
+        }
+        // Match the owner-only permissions required by KeyRing::load.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        f(&path);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Shared with the `load` submodule's tests.
+    pub fn tdir(tag: &str) -> crate::test_util::temp_dir::TestDir {
+        crate::test_util::temp_dir::TestDir::new(tag)
+    }
+
+    #[test]
+    fn malformed_dotenv_diagnostics_do_not_contain_values() {
+        use sha2::Digest as _;
+        let dir = tdir("redaction");
+        let path = dir.join(".env");
+        let ring = KeyRing(HashMap::new());
+        for value in [
+            "\"PRIVATE_SENTINEL",
+            "\"PRIVATE_SENTINEL\" trailing",
+            "\"PRIVATE_SENTINEL\\q\"",
+            "\"PRIVATE_SENTINEL\nsecond",
+        ] {
+            std::fs::write(&path, format!("SECRET={value}\n")).unwrap();
+            let entry = Entry {
+                env_file: path.clone(),
+                key: "SECRET".into(),
+                env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
+                peer_user: None,
+            };
+            let error = resolve(&entry, &ring, KeyNaming::Env).unwrap_err();
+            assert!(!error.contains("PRIVATE_SENTINEL"));
+            assert!(error.contains(path.to_str().unwrap()));
+            for strict in [false, true] {
+                let error = resolve_all(
+                    std::slice::from_ref(&path),
+                    &ring,
+                    false,
+                    strict,
+                    &|_| false,
+                    KeyNaming::Env,
+                )
+                .unwrap_err();
+                assert!(!error.contains("PRIVATE_SENTINEL"));
+                assert!(error.contains(path.to_str().unwrap()));
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_authorizes_source_before_interpolation_or_decryption() {
+        use sha2::Digest as _;
+        let dir = tdir("authorized");
+        let path = dir.join(".env");
+        let (sk, pk) = ecies::utils::generate_keypair();
+        let ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".into(),
+                Zeroizing::new(format!(
+                    "{},{}",
+                    "11".repeat(32),
+                    hex::encode(sk.serialize())
+                )),
+            )],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        let allowed = ecies::encrypt(&pk.serialize(), b"allowed").unwrap();
+        let foreign = ecies::encrypt(&pk.serialize(), b"foreign").unwrap();
+        let encoded = BASE64.encode(&allowed);
+        let wrapped = encoded
+            .as_bytes()
+            .chunks(7)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(" \n");
+        std::fs::write(
+            &path,
+            format!("SECRET=discarded\nSOURCE='encrypted:{wrapped}'\nSECRET=${{SOURCE}}\n"),
+        )
+        .unwrap();
+        let mut entry = Entry {
+            env_file: path.clone(),
+            key: "SECRET".into(),
+            env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
+            peer_user: None,
+        };
+        assert_eq!(
+            &*resolve(&entry, &ring, KeyNaming::Env).unwrap(),
+            b"allowed"
+        );
+        // Both authentic foreign ciphertext and plaintext substitutions are unauthorized.
+        for raw in [
+            format!("SECRET='encrypted:{}'\n", BASE64.encode(&foreign)),
+            "SECRET=${PATH}\n".into(),
+            "SECRET=chosen\n".into(),
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(
+                resolve(&entry, &ring, KeyNaming::Env)
+                    .unwrap_err()
+                    .contains("not authorized")
+            );
+        }
+        entry
+            .env_file_sha256
+            .push(sha2::Sha256::digest(std::fs::read(&path).unwrap()).into());
+        assert_eq!(&*resolve(&entry, &ring, KeyNaming::Env).unwrap(), b"chosen");
+        entry.env_file_sha256.clear();
+        assert!(
+            resolve(&entry, &ring, KeyNaming::Env)
+                .unwrap_err()
+                .contains("not authorized")
+        );
+    }
+
+    #[test]
+    fn resolve_plaintext_passthrough_with_empty_ring() {
+        use sha2::Digest as _;
+        // Create a real .env file with a plaintext value (simulating --plain)
+        let env_dir = crate::test_util::temp_dir::TestDir::new("mod");
+        let env_path = env_dir.join("fixture");
+        {
+            let mut f = std::fs::File::create(&env_path).unwrap();
+            writeln!(f, "PLAIN=hello-world").unwrap();
+        }
+
+        let entry = Entry {
+            env_file: env_path.clone(),
+            key: "PLAIN".to_string(),
+            env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&env_path).unwrap()).into()],
+            peer_user: None,
+        };
+        // Ring can be empty for plaintext path
+        let ring = KeyRing(HashMap::new());
+        let result = resolve(&entry, &ring, KeyNaming::Env).unwrap();
+        assert_eq!(&*result, b"hello-world");
+
+        let _ = std::fs::remove_file(&env_path);
+    }
+
+    #[test]
+    fn from_pairs_filters_and_rotates() {
+        let ring = KeyRing::from_pairs(
+            [
+                ("UNRELATED".to_string(), Zeroizing::new("x".to_string())),
+                (
+                    "DOTENV_PRIVATE_KEY_PRODUCTION".to_string(),
+                    Zeroizing::new(format!("{},{}", "22".repeat(32), "33".repeat(32))),
+                ),
+            ],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        assert_eq!(ring.0.len(), 1);
+        assert_eq!(ring.0["DOTENV_PRIVATE_KEY_PRODUCTION"].len(), 2);
+    }
+
+    #[test]
+    fn from_pairs_admits_exactly_the_required_namings() {
+        // The bundle-ring gap fix: a config requiring both adapters must
+        // get both prefix families in the ring, and nothing else.
+        let pairs = || {
+            [
+                (
+                    "DOTENV_PRIVATE_KEY".to_string(),
+                    Zeroizing::new("22".repeat(32)),
+                ),
+                (
+                    "POSTMASTER_KEY".to_string(),
+                    Zeroizing::new("33".repeat(32)),
+                ),
+                ("UNRELATED".to_string(), Zeroizing::new("44".repeat(32))),
+            ]
+        };
+
+        let both = KeyRing::from_pairs(pairs(), &[KeyNaming::Env, KeyNaming::Bundle]).unwrap();
+        assert!(both.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(both.candidates("POSTMASTER_KEY").is_some());
+        assert_eq!(both.0.len(), 2, "UNRELATED must be dropped");
+
+        // Least privilege: a naming the config does not require is NOT
+        // admitted, even when the source provides it.
+        let env_only = KeyRing::from_pairs(pairs(), &[KeyNaming::Env]).unwrap();
+        assert!(env_only.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(env_only.candidates("POSTMASTER_KEY").is_none());
+
+        // A bundle-only requirement with only Env material present fails
+        // closed with the adapter's own empty message.
+        let err = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                Zeroizing::new("22".repeat(32)),
+            )],
+            &[KeyNaming::Bundle],
+        )
+        .unwrap_err();
+        assert_eq!(err, KeyNaming::Bundle.empty_error());
+    }
+
+    #[test]
+    fn from_pairs_empty_is_error() {
+        assert!(
+            KeyRing::from_pairs(
+                [("A".to_string(), Zeroizing::new("b".to_string()))],
+                &[KeyNaming::Env]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn is_ident_rules() {
+        assert!(is_ident("DATABASE_URL") && is_ident("_x9"));
+        assert!(!is_ident("9x") && !is_ident("a-b") && !is_ident("") && !is_ident("a b"));
+    }
+
+    #[test]
+    fn resolve_all_precedence() {
+        let d = tdir("prec");
+        std::fs::write(
+            d.join(".env"),
+            "A=first\nB=one\nB=two\nDOTENV_PUBLIC_KEY=zz\n",
+        )
+        .unwrap();
+        std::fs::write(d.join(".env.local"), "A=second\nC=three\n").unwrap();
+        let files = [d.join(".env"), d.join(".env.local")];
+        let ring = KeyRing(HashMap::new());
+
+        // default: first file wins; within a file last assignment wins;
+        // process-env presence suppresses; DOTENV_* filtered.
+        let out = resolve_all(&files, &ring, false, true, &|k| k == "C", KeyNaming::Env).unwrap();
+        let got: Vec<(&str, &[u8])> = out
+            .resolved
+            .iter()
+            .map(|(k, v)| (k.as_str(), &v[..]))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("A", b"first".as_slice()), ("B", b"two".as_slice())]
+        );
+
+        // overload: later file wins, env presence ignored.
+        let out = resolve_all(&files, &ring, true, true, &|k| k == "C", KeyNaming::Env).unwrap();
+        let got: Vec<(&str, &[u8])> = out
+            .resolved
+            .iter()
+            .map(|(k, v)| (k.as_str(), &v[..]))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("A", b"second".as_slice()),
+                ("B", b"two".as_slice()),
+                ("C", b"three".as_slice())
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_all_rejects_non_identifier() {
+        // dotenvy rejects keys starting with `-` or digit during parsing, but accepts `.`
+        // in subsequent characters (e.g., BAD.KEY=x parses fine). Our is_ident check rejects
+        // `.` in all positions, so a dotted key exercises the rejection branch in resolve_all.
+        let d = tdir("ident");
+        std::fs::write(d.join(".env"), "BAD.KEY=x\n").unwrap();
+        let ring = KeyRing(HashMap::new());
+        let e = resolve_all(
+            &[d.join(".env")],
+            &ring,
+            false,
+            true,
+            &|_| false,
+            KeyNaming::Env,
+        )
+        .unwrap_err();
+        assert!(e.contains("non-identifier"), "{e}");
+    }
+
+    #[test]
+    fn resolve_all_strict_fails_on_undecryptable() {
+        let d = tdir("strict");
+        std::fs::write(d.join(".env"), "A=encrypted:!!!notbase64\n").unwrap();
+        let ring = KeyRing(HashMap::new());
+        assert!(
+            resolve_all(
+                &[d.join(".env")],
+                &ring,
+                false,
+                true,
+                &|_| false,
+                KeyNaming::Env
+            )
+            .is_err()
+        );
+        // Non-strict: skipped, not served wrong — and the skip is recorded so
+        // --verify-keys can fail closed on it.
+        let out = resolve_all(
+            &[d.join(".env")],
+            &ring,
+            false,
+            false,
+            &|_| false,
+            KeyNaming::Env,
+        )
+        .unwrap();
+        assert!(out.resolved.is_empty());
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(out.failed[0].0, "A");
+    }
+
+    #[test]
+    fn keyring_debug_redacts_key_material() {
+        // A derived Debug would print every 32-byte key verbatim (Zeroizing's Debug
+        // passes through to the inner value). Names only.
+        let ring = KeyRing::from_pairs(
+            [(
+                "DOTENV_PRIVATE_KEY".to_string(),
+                Zeroizing::new("11".repeat(32)),
+            )],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        let dbg = format!("{ring:?}");
+        assert!(dbg.contains("DOTENV_PRIVATE_KEY"));
+        assert!(
+            !dbg.contains("17, 17"),
+            "debug output must not contain raw key bytes: {dbg}"
+        );
+    }
+
+    #[test]
+    fn resolution_debug_redacts_plaintext() {
+        // Debug output must expose names without decrypted values.
+        let r = Resolution {
+            resolved: vec![(
+                "MY_SECRET".to_string(),
+                Zeroizing::new(b"super-secret-plaintext".to_vec()),
+            )],
+            failed: vec![("OTHER".to_string(), "decrypt failed".to_string())],
+        };
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("MY_SECRET"));
+        assert!(dbg.contains("OTHER"));
+        assert!(
+            !dbg.contains("super-secret"),
+            "debug output must not contain plaintext: {dbg}"
+        );
+    }
+
+    #[test]
+    fn from_pairs_uses_the_exact_key_var_predicate() {
+        // Reject prefix lookalikes consistently across file and environment sources.
+        let ring = KeyRing::from_pairs(
+            [
+                (
+                    "DOTENV_PRIVATE_KEYFOO".to_string(),
+                    Zeroizing::new("22".repeat(32)),
+                ),
+                (
+                    "DOTENV_PRIVATE_KEY".to_string(),
+                    Zeroizing::new("33".repeat(32)),
+                ),
+            ],
+            &[KeyNaming::Env],
+        )
+        .unwrap();
+        assert!(ring.candidates("DOTENV_PRIVATE_KEY").is_some());
+        assert!(ring.candidates("DOTENV_PRIVATE_KEYFOO").is_none());
+    }
+
+    #[test]
+    fn resolve_all_refuses_symlinked_env_file() {
+        // A symlink at a configured .env path must fail before reading its target.
+        let d = tdir("symlink");
+        std::fs::write(d.join(".env.real"), "A=plain\n").unwrap();
+        std::os::unix::fs::symlink(d.join(".env.real"), d.join(".env")).unwrap();
+        let ring = KeyRing(HashMap::new());
+        let err = resolve_all(
+            &[d.join(".env")],
+            &ring,
+            false,
+            true,
+            &|_| false,
+            KeyNaming::Env,
+        )
+        .unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn decrypt_value_fails_closed_on_bad_base64_and_missing_ring_entry() {
+        // decrypt_value's two fail-closed legs, exercised directly (the resolve paths
+        // reach them only indirectly).
+        let env_file = Path::new(".env");
+        let ring = KeyRing(HashMap::new());
+
+        // Malformed base64 after the encrypted: prefix → parse error
+        // naming the file and key, never a decrypt attempt.
+        let err = decrypt_value(
+            env_file,
+            "KEY",
+            "encrypted:!!!not-base64",
+            &ring,
+            KeyNaming::Env,
+        )
+        .unwrap_err();
+        assert!(err.contains("KEY is not valid base64"), "{err}");
+
+        // Well-formed base64 but the ring lacks the file's mapped key
+        // variable → missing-entry error.
+        let b64 = BASE64.encode(b"well-formed");
+        let raw = format!("encrypted:{b64}");
+        let err = decrypt_value(env_file, "KEY", &raw, &ring, KeyNaming::Env).unwrap_err();
+        assert!(
+            err.contains("key ring has no DOTENV_PRIVATE_KEY entry"),
+            "{err}"
+        );
+    }
+}

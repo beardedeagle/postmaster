@@ -1,0 +1,113 @@
+name: Setup Rust and just
+description: Install the pinned Rust toolchain (from rust-toolchain.toml), just, and optional cargo tools.
+
+inputs:
+  targets:
+    description: Optional space-separated list of additional Rust targets to install.
+    required: false
+    default: ""
+  install-just:
+    description: Whether to install the pinned just command runner.
+    required: false
+    default: "true"
+  just-version:
+    description: just runner version to install (not the Rust compiler version).
+    required: false
+    default: "1.51.0"
+  install-cargo-deny:
+    description: Whether to install cargo-deny.
+    required: false
+    default: "false"
+  install-cargo-audit:
+    description: Whether to install cargo-audit.
+    required: false
+    default: "false"
+  cargo-deny-version:
+    description: cargo-deny version to install.
+    required: false
+    default: "0.20.2"
+  cargo-audit-version:
+    description: cargo-audit version to install.
+    required: false
+    default: "0.22.2"
+  install-mdbook:
+    description: Whether to install mdbook and the mdbook-mermaid preprocessor (docs builds).
+    required: false
+    default: "false"
+  mdbook-version:
+    description: mdbook version to install.
+    required: false
+    default: "0.5.4"
+  mdbook-mermaid-version:
+    description: mdbook-mermaid preprocessor version to install.
+    required: false
+    default: "0.17.0"
+  install-target-dir:
+    description: Cargo target directory for tool installation builds.
+    required: false
+    default: target/cargo-install
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust toolchain
+      shell: bash
+      env:
+        RUST_TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "rustup must be preinstalled; refusing to run an unpinned remote installer" >&2
+          exit 1
+        fi
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        fi
+        # Refresh stable before resolving the repository's components and targets.
+        rustup update stable --no-self-update
+        rustup show
+        if [[ -n "$RUST_TARGETS" ]]; then
+          rustup target add $RUST_TARGETS
+        fi
+
+    - name: Install just
+      if: ${{ inputs.install-just == 'true' }}
+      shell: bash
+      env:
+        JUST_VERSION: ${{ inputs.just-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" just "$JUST_VERSION" "$CARGO_INSTALL_TARGET_DIR"
+
+    - name: Install cargo-deny
+      if: ${{ inputs.install-cargo-deny == 'true' }}
+      shell: bash
+      env:
+        CARGO_DENY_VERSION: ${{ inputs.cargo-deny-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" cargo-deny "$CARGO_DENY_VERSION" "$CARGO_INSTALL_TARGET_DIR"
+
+    - name: Install cargo-audit
+      if: ${{ inputs.install-cargo-audit == 'true' }}
+      shell: bash
+      env:
+        CARGO_AUDIT_VERSION: ${{ inputs.cargo-audit-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" cargo-audit "$CARGO_AUDIT_VERSION" "$CARGO_INSTALL_TARGET_DIR"
+
+    - name: Install mdbook
+      if: ${{ inputs.install-mdbook == 'true' }}
+      shell: bash
+      env:
+        MDBOOK_VERSION: ${{ inputs.mdbook-version }}
+        MDBOOK_MERMAID_VERSION: ${{ inputs.mdbook-mermaid-version }}
+        CARGO_INSTALL_TARGET_DIR: ${{ inputs.install-target-dir }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" mdbook "$MDBOOK_VERSION" "$CARGO_INSTALL_TARGET_DIR"
+        bash "$GITHUB_ACTION_PATH/install-tool.sh" mdbook-mermaid "$MDBOOK_MERMAID_VERSION" "$CARGO_INSTALL_TARGET_DIR"

@@ -3,14 +3,13 @@
 This page covers how to get private keys onto hosts and how to rotate
 them without downtime.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** the operational side of postmaster — how the
-decryption key gets to the host, and how to rotate it safely.
+Provision a local private-key source and rotate it alongside encrypted inputs.
 
 | Reader | What to take |
 | -------- | ------------ |
-| Operator / SRE | All sections — this is your playbook |
+| Operator / SRE | Provisioning strategies and rotation |
 | Security engineer | The rotation window and fail-closed behavior |
 | New user | Skim strategies A and B, come back when you deploy |
 
@@ -22,10 +21,10 @@ fetches from remote systems.
 ```mermaid
 flowchart TB
     subgraph sources["Key sources (local only)"]
-        cred["systemd credentials\n(LoadCredential=)"]
-        file["file\n(.env.keys on disk)"]
-        kc["keychain\n(macOS only)"]
-        env["environment\n(DOTENV_PRIVATE_KEY*)"]
+        cred["systemd credentials<br/>(LoadCredential=)"]
+        file["file<br/>(.env.keys on disk)"]
+        kc["keychain<br/>(macOS only)"]
+        env["environment<br/>(DOTENV_PRIVATE_KEY*)"]
     end
 
     pm["postmaster"]
@@ -43,13 +42,19 @@ DOTENV_PRIVATE_KEY_PRODUCTION="<64-hex from your local .env.keys>"
 EOF
 ```
 
-systemd treats an absolute-path credential as mandatory: missing file
-means the unit fails to start. Fail-closed.
+Ownership matters: `KeyRing::load` requires the keys file to be owned
+by the effective uid of the loading process, so `chown` it to the
+service user (or run the file-owning step as that user) — a root-owned
+keys file fails closed for a service running as a normal user.
+
+On macOS, runtime loading and file-source `setup --recheck` also reject ACL
+grants that let anyone other than root or the effective user read or modify the
+key file. These checks leave the file and its ACL intact, including read-only
+files.
 
 ## Strategy B: TPM2 / host-sealed blob
 
-Fully declarative — the key is sealed to the host's TPM2 and can only
-be decrypted on that specific machine:
+Seal the key to the host's TPM2 so decryption requires that host:
 
 ```console
 # on the target host, once (--name MUST match postmaster-<service>)
@@ -60,15 +65,20 @@ EOF
 # copy myapp-myhost.cred back into the repo
 ```
 
-Reference the sealed blob in your config:
+Wire the sealed blob to the launcher's unit with
+`LoadCredentialEncrypted=postmaster-myapp:<path to blob>` and reference
+the credential name in your config:
 
 ```json
 {
   "keys": [
-    {"file": "/nix/store/...-myapp.cred"}
+    {"credential": "postmaster-myapp"}
   ]
 }
 ```
+
+systemd treats the credential as mandatory: a missing or undecryptable
+blob means the unit fails to start. Fail-closed.
 
 Blobs are per-host. Without a TPM, `--with-key=host` binds to
 `/var/lib/systemd/credential.secret`.
@@ -85,28 +95,50 @@ deployment.keys."myapp.env.keys" = {
 };
 ```
 
+As with any keys file, `user` must be the service's own user —
+`KeyRing::load` requires the file owner to match the loading process's
+effective uid, so `root` here only works for services that run as root.
+
 ## Strategy D: macOS Keychain
+
+Use `postmaster setup` to seed each required Keychain account once,
+in first-seen input order. By hand, use `security
+add-generic-password` *without* `-w` so it prompts for the value:
 
 ```console
 $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
-    -s postmaster -w "<64-hex>"
+    -s postmaster
 ```
 
-No file on disk — keys live as generic-password items in the System
-keychain. Postmaster reads them natively via `security(1)`.
+Avoid `-w "<hex>"`: it puts the private key in the process argv,
+visible to every process on the host via `ps`.
+
+This source stores keys as generic-password items in the default Keychain
+search list. Postmaster reads them through the
+Security.framework API (`security-framework` crate).
+
+`postmaster setup` hides terminal input for both key files and Keychain values.
+It restores terminal settings when input finishes, fails, or receives a
+catchable termination or suspend signal. Failed or interrupted terminal reads
+discard unread input before restoration, so a partial secret cannot reach the
+next terminal reader. Successful reads retain queued values. Redirected
+key-file input still accepts multiple lines through EOF. `--force` publishes
+a fresh 0600 key-file inode after confirmation and refuses a substituted,
+foreign, linked, or special file. Existing open handles keep the old contents.
 
 ## Rotation
 
 No `rotate` subcommand exists. The flow is manual, but
 `DOTENV_PRIVATE_KEY*` accepts **comma-separated keys** for a
-zero-downtime window:
+zero-downtime window (the bundle adapter's `POSTMASTER_KEY` variable —
+no per-environment suffix — follows the same convention):
 
 ```mermaid
 flowchart TD
-    step1["Step 1: Author new keypair locally\nDecrypt env, delete old pub key, re-encrypt with fresh keypair"]
-    step2["Step 2: Set DOTENV_PRIVATE_KEY=new,old\nBoth keys accepted; restarts decrypt either generation"]
-    step3["Step 3: Deploy new ciphertext\nnixos-rebuild switch — new units decrypt with new key\nOld units still running on old key"]
-    step4["Step 4: Drop old key (after rollback horizon)\nSet DOTENV_PRIVATE_KEY=new only\nOld generations + new-only key = broken restarts"]
+    step1["Step 1: Author new keypair locally<br/>Decrypt env, delete old pub key, re-encrypt with fresh keypair"]
+    step2["Step 2: Set DOTENV_PRIVATE_KEY=new,old<br/>Both keys accepted; restarts decrypt either generation"]
+    step3["Step 3: Deploy new ciphertext<br/>nixos-rebuild switch — new units decrypt with new key<br/>Old units still running on old key"]
+    step4["Step 4: Drop old key (after rollback horizon)<br/>Set DOTENV_PRIVATE_KEY=new only<br/>Old generations + new-only key = broken restarts"]
 
     step1 --> step2
     step2 --> step3
@@ -126,5 +158,12 @@ Use `--verify-keys` to catch stale keys before they cause a silent
 failure:
 
 ```console
-$ postmaster exec --config exec.json --verify-keys -- /bin/true
+$ postmaster exec --config exec.json --verify-keys -- /usr/bin/true
 ```
+
+For daemon mode, authorize the new dotenv file's SHA-256 in each entry's
+`env_file_sha256` list before deploying it. Keep both old and new hashes during
+the rotation window, then remove the old hash. Hashes cover the complete file,
+including plaintext, comments, and line endings. Compute them from the trusted
+artifact; do not derive authorization from a runtime copy that can be changed.
+Exec configurations continue to select application inputs through `env_files`.

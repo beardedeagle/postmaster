@@ -1,25 +1,19 @@
 //! Adapter enum for key-naming conventions.
 //!
-//! Different input adapters (`.env` files, `postmaster_bundle`, etc.) have
-//! different conventions for how private keys are named, how metadata keys
-//! are filtered, and how artifact filenames map to key variable names. This
-//! enum encapsulates those conventions so the core key-loading and
-//! resolution logic is adapter-neutral.
+//! Dotenv and bundle inputs have different key names, metadata filters, and
+//! filename mappings. `KeyNaming` keeps those rules together for loading and
+//! resolution.
 //!
-//! An enum (not a trait) is used deliberately: the set of adapters is small
-//! and security-critical. Exhaustive match ensures every call site handles
-//! every adapter at compile time — adding a variant is a deliberate act
-//! that forces all code paths to acknowledge it.
+//! Exhaustive matches make new adapter variants a compile-time obligation
+//! for each dispatch site.
 
-#![allow(missing_docs, missing_debug_implementations)]
+pub mod bundle;
 
 use std::path::Path;
 
 /// The key-naming convention for a secret input adapter.
 ///
-/// Adding a variant is a deliberate act: every match on this enum must
-/// handle the new variant or the code will not compile. This is the
-/// security boundary — no adapter can silently slip through unhandled.
+/// Each dispatch match must handle every adapter variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyNaming {
     /// The `.env` file adapter. Uses `DOTENV_PRIVATE_KEY[_<ENV>]` as its
@@ -27,8 +21,7 @@ pub enum KeyNaming {
     /// `.env.production` → `DOTENV_PRIVATE_KEY_PRODUCTION`.
     Env,
     /// The `postmaster_bundle` adapter. Uses `POSTMASTER_KEY` as its
-    /// key variable naming (no per-environment suffix — the bundle's
-    /// `profile` field handles environment selection). No metadata
+    /// key variable naming, regardless of filename or `profile`. No metadata
     /// prefix (the bundle format is structured JSON, not flat key-value).
     Bundle,
 }
@@ -56,8 +49,7 @@ impl KeyNaming {
     /// Map an artifact filename to the key variable name it needs.
     /// `.env` → `DOTENV_PRIVATE_KEY`, `.env.production` →
     /// `DOTENV_PRIVATE_KEY_PRODUCTION`. Bundle files map to a single
-    /// key variable regardless of filename (the `profile` field inside
-    /// the bundle handles environment selection).
+    /// key variable regardless of filename. `profile` does not select a key.
     pub fn key_var_for(self, artifact_path: &Path) -> Result<String, String> {
         match self {
             KeyNaming::Env => {
@@ -74,16 +66,16 @@ impl KeyNaming {
                 let env = rest.strip_prefix('.').ok_or_else(|| {
                     format!("{base}: env files must follow the `.env[.<environment>]` convention")
                 })?;
-                let suffix: String = env
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() {
-                            c.to_ascii_uppercase()
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
+                // Reject anything outside [A-Za-z0-9_]: such characters would sanitize
+                // to '_', making distinct filenames collide on the same key variable
+                // (`.env..x` ≡ `.env._x`). Letters fold to upper case, the dotenvx
+                // convention.
+                if env.is_empty() || !env.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    return Err(format!(
+                        "{base}: environment name must be non-empty [A-Za-z0-9_] only"
+                    ));
+                }
+                let suffix: String = env.chars().map(|c| c.to_ascii_uppercase()).collect();
                 Ok(format!("{}_{}", self.key_prefix(), suffix))
             }
             KeyNaming::Bundle => Ok(self.key_prefix().into()),
@@ -96,5 +88,59 @@ impl KeyNaming {
             KeyNaming::Env => format!("no {}* entries", self.key_prefix()),
             KeyNaming::Bundle => format!("no {} entries", self.key_prefix()),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_var_for_env_mapping() {
+        assert_eq!(
+            KeyNaming::Env.key_var_for(Path::new("/x/.env")).unwrap(),
+            "DOTENV_PRIVATE_KEY"
+        );
+        assert_eq!(
+            KeyNaming::Env
+                .key_var_for(Path::new("/x/.env.production"))
+                .unwrap(),
+            "DOTENV_PRIVATE_KEY_PRODUCTION"
+        );
+        assert_eq!(
+            KeyNaming::Env
+                .key_var_for(Path::new("/x/.env.staging_v2"))
+                .unwrap(),
+            "DOTENV_PRIVATE_KEY_STAGING_V2"
+        );
+    }
+
+    #[test]
+    fn key_var_for_requires_the_dot_env_convention() {
+        // Dotenv inputs must follow the .env[.<environment>] naming convention.
+        assert!(KeyNaming::Env.key_var_for(Path::new("no-dot-env")).is_err());
+    }
+
+    #[test]
+    fn key_var_for_rejects_aliasing_names() {
+        // Reject lossy names that could alias another file's key variable.
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env..x")).is_err());
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.-x")).is_err());
+        assert!(KeyNaming::Env.key_var_for(Path::new("/x/.env.")).is_err());
+        assert_eq!(
+            KeyNaming::Env.key_var_for(Path::new("/x/.env._x")).unwrap(),
+            "DOTENV_PRIVATE_KEY__X"
+        );
+    }
+
+    #[test]
+    fn key_var_for_bundle_is_constant() {
+        assert_eq!(
+            KeyNaming::Bundle
+                .key_var_for(Path::new("/x/anything.json"))
+                .unwrap(),
+            "POSTMASTER_KEY"
+        );
     }
 }

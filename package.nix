@@ -3,8 +3,8 @@
 let
   cargoToml = lib.importTOML ./Cargo.toml;
   # Build a rustPlatform from the latest stable rust-overlay toolchain.
-  # nixos-25.05's rustPlatform ships rustc 1.86.0, too old for edition 2024
-  # + let-chains (requires >= 1.96.1). rust-overlay provides newer toolchains
+  # nixos-25.05's rustPlatform ships rustc 1.86.0, below Cargo.toml's
+  # Rust 1.99.1 minimum. rust-overlay provides newer toolchains
   # independent of the nixpkgs channel.
   rustPlatform = makeRustPlatform {
     rustc = rust-bin.stable.latest.rust;
@@ -21,6 +21,7 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ./Cargo.toml
       ./Cargo.lock
+      ./licenses
       ./src
     ];
   };
@@ -29,15 +30,14 @@ rustPlatform.buildRustPackage {
   meta = {
     description = cargoToml.package.description;
     longDescription = ''
-      postmaster is a dependency-lean Rust daemon (edition 2024; pure-Rust
-      crypto with no openssl, no async runtime) that serves decrypted
-      values as systemd LoadCredential AF_UNIX sources (with equivalent
-      support under nix-darwin). It enables encrypted .env files to be
-      treated as ordinary, world-readable Nix store artifacts while
-      guaranteeing that plaintext secrets only ever appear inside
-      unit-private unswappable credential ramfs.
+      Postmaster decrypts local dotenv and bundle inputs and delivers values
+      through environment variables, files, or systemd credentials before
+      replacing the launcher with the application. It also serves credentials
+      over local Unix sockets. Deployments provide storage, access controls,
+      and service-manager hardening. Encrypted artifacts can be public;
+      private keys and plaintext entries need separate protection.
     '';
-    homepage = "https://github.com/beardedeagle/envelope";
+    homepage = "https://github.com/beardedeagle/postmaster";
     license = lib.licenses.mit;
     mainProgram = "postmaster";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;

@@ -1,8 +1,6 @@
 # CLI reference
 
-All postmaster commands, flags, and exit codes. The CLI is hand-rolled
-with no external parsing library — every flag below is the complete
-set, directly from the argument parser in `config.rs`.
+Commands, flags, and exit codes accepted by `src/cli/mod.rs`.
 
 ## Synopsis
 
@@ -26,9 +24,10 @@ $ postmaster --help
 
 ## Default mode (serve)
 
-When no subcommand is given, postmaster enters daemon (serve) mode. This
-is the credential server used in credentials injection mode —
-socket-activated on Linux, self-binding on macOS.
+Serve mode has no subcommand keyword — invoke it with the serve flags
+directly. This is the credential server used in credentials injection
+mode — socket-activated on Linux, self-binding on macOS. (Bare
+`postmaster` with no arguments prints the top-level help and exits 1.)
 
 ```console
 $ postmaster --config <file.json> [--bind] [--allow-nonroot]
@@ -38,12 +37,35 @@ $ postmaster --config <file.json> [--bind] [--allow-nonroot]
 | --- | --- |
 | `--config <path>` | Configuration file (required) |
 | `--bind` | Bind listener sockets even if not socket-activated (macOS) |
-| `--allow-nonroot` | Allow non-root connections (dangerous) |
+| `--allow-nonroot` | Allow non-root connections (dev escape hatch; never overrides a configured `peer_user` ACL) |
 
 On Linux, postmaster is socket-activated: the `postmaster-credd.socket`
 unit owns the sockets and the daemon inherits them via
 `sd_listen_fds`. On macOS, `--bind` causes postmaster to create its own
 listener sockets.
+
+### Daemon configuration
+
+Each socket maps to an entry with `env_file`, `key`, `env_file_sha256`, and
+optional `peer_user`. `env_file_sha256` is a list of SHA-256 hashes, encoded
+as 64 hex digits, for the exact dotenv file bytes authorized for that entry.
+Postmaster checks the hash before parsing, interpolation, or decryption, both
+at startup and on every fetch. An empty list authorizes nothing. This applies
+to plaintext assignments too.
+
+Keep this configuration under trusted ownership. Compute hashes from the
+trusted artifact before deployment, rather than from the writable runtime
+copy. On Linux, use `sha256sum <file>`; on macOS, use `shasum -a 256 <file>`.
+Line endings, whitespace, and metadata count toward the hash. Multiple hashes
+allow old and new files during staged rotation; remove the old hash when that
+window ends. The dotenvx ciphertext format and private-key rotation candidates
+stay the same.
+
+When binding as root, sockets for different unprivileged peers need separate
+parent directories. One peer's parent cannot contain another peer's socket
+parent. Postmaster resolves aliases and checks these ownership domains before
+changing directories or binding sockets. Sockets for the same user can share
+a parent; root-only entries and `peer_user` resolving to uid 0 share a domain.
 
 ## exec
 
@@ -64,25 +86,26 @@ $ postmaster exec --config <exec.json> [--check] [--verify-keys] -- <command> [a
   returns.
 - On failure the error is logged and the process exits non-zero.
 - `--check` does not accept a command after `--`.
+- `--check` combined with `--verify-keys` silently ignores verification —
+  check validates the config shape and never decrypts.
 - `--verify-keys` performs a preflight check: after loading and
-  decrypting, if the resolved values are empty but the env files
-  contain `encrypted:` values, the keys are stale and the exec
-  aborts. This catches the `strict: false` case where stale keys
-  would silently skip undecryptable values.
+  decrypting, if any value was skipped because the key ring could not
+  decrypt it, the keys are stale and the exec aborts naming the key.
+  This catches the `strict: false` case where stale keys would
+  otherwise silently skip undecryptable values (partial or empty set).
 
 Exit codes:
 
 | Code | Meaning |
 | --- | --- |
 | 0 | `--check` passed (or exec succeeded — but exec replaces the process) |
-| 1 | Config error, parse failure, decryption failure |
-| 2 | Missing arguments, bad usage |
+| 1 | Any failure — usage errors, config errors, parse failure, decryption failure |
 
 ## setup
 
-Create keys directory, verify permissions, optionally seed keychain
-(macOS), validate environment. Idempotent — skips steps that are
-already correct.
+Create the keys directory, check key sources, and optionally seed macOS
+Keychain accounts. Setup skips steps that are already satisfied. It derives
+one required-account list in first-seen input order, without duplicate prompts.
 
 ```console
 $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--keys-dir <path>]
@@ -99,7 +122,21 @@ $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--
 Default keys directory:
 
 - Linux: `/var/lib/postmaster`
-- macOS: `~/Library/Application Support/postmaster`
+- macOS: `~/Library/Application Support/postmaster` (falls back to
+  `/var/lib/postmaster` when `HOME` is unset)
+
+Secret terminal input has echo disabled until the read finishes. Postmaster
+restores terminal settings before delivering a pending termination or suspend
+signal. Key files accept multiline input through EOF; Keychain values use one
+trimmed line. Failed or interrupted terminal reads discard unread input before
+restoration. Successful reads retain queued values. Redirected input keeps the
+same format and buffering.
+
+Forced key-file replacement verifies ownership, regular-file type, and single
+link count before changing permissions. It pins the parent, checks that the
+original inode still occupies the name after input, and publishes a fresh
+0600 inode. Existing read handles keep the old contents. A declined replacement
+keeps the existing contents; unattended replacement fails without prompting.
 
 ## cleanup
 
@@ -114,14 +151,22 @@ $ postmaster cleanup --config <exec.json>
 | --- | --- |
 | `--config <path>` | Path to `exec.json` (reads `secrets_dir` from config) |
 
-Wired to `ExecStopPost` in systemd by the Nix module. On macOS, the
+Cleanup refuses to bulk-delete a non-empty directory without the
+`.postmaster-managed` sentinel. The marker identifies a managed directory,
+not individual files, so keep one `secrets_dir` per service. Empty or missing
+directories need no cleanup. If a secret-file stat or removal fails, the command
+retains the sentinel and returns an error so cleanup can be retried. Removing
+the sentinel after successful cleanup is best effort.
+
+Integrations can wire this to `ExecStopPost` in systemd. On macOS, the
 ramdisk destruction handles cleanup automatically when the launchd job
 stops.
 
 ## fetch
 
-macOS credential fetch client — connects to a postmaster socket and
-reads the decrypted value to EOF.
+Connect to a local Postmaster socket and write its decrypted value to stdout.
+Reads stop at EOF and are capped at 16 MiB; an oversized stream fails without
+truncating the value. This command is available on Linux and macOS.
 
 ```console
 $ postmaster fetch /run/postmaster-credd/myapp/DATABASE_URL.sock
@@ -132,7 +177,9 @@ typically called directly.
 
 ## help
 
-Print help text for a subcommand or the top-level help.
+Print help text for a subcommand or the top-level help. Every
+subcommand also accepts `--help`/`-h` directly (`postmaster exec
+--help`).
 
 ```console
 $ postmaster help           # top-level help

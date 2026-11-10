@@ -1,4 +1,4 @@
-# cargo-deny configuration for envelope / postmaster.
+# cargo-deny configuration for postmaster.
 # https://embarkstudios.github.io/cargo-deny/
 
 [graph]
@@ -39,3 +39,20 @@ confidence-threshold = 0.93
 # The postmaster crate is the only member today.
 [licenses.private]
 ignore = true
+
+[sources]
+unknown-git = "deny"
+
+[bans]
+# Warn on duplicate crate versions — companion to clippy's
+# multiple_crate_versions (crate-level; allowed at the crate root for
+# exactly the case skipped below, since that lint has no per-package
+# scoping). New duplicates should fail review, not land quietly.
+multiple-versions = "warn"
+
+# syn 2 + syn 3 coexist ONLY because wasm-bindgen (target-gated to
+# wasm32-unknown-unknown inside the ecies dep, never compiled for
+# postmaster's real targets) pins syn 2 while serde_derive uses syn 3 —
+# uncontrollable until upstream wasm-bindgen moves. Remove this skip, and
+# the crate-root allow in src/lib.rs, when the tree converges.
+skip = [{ name = "syn" }]

@@ -8,8 +8,14 @@ pre-commit:
       run: just fmt-check
     lint:
       run: just clippy
+    lint-md:
+      run: just lint-md
 
 pre-push:
   commands:
     ci-rust:
       run: just ci-rust
+    deny:
+      run: just deny
+    audit:
+      run: just audit

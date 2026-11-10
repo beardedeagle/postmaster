@@ -1,7 +1,5 @@
 name: CI
 
-# Disabled: GitHub Actions budget exhausted.
-# Remove the `if: false` on each job to re-enable.
 on:
   push:
     branches: [main]
@@ -22,7 +20,6 @@ jobs:
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: false
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -32,42 +29,14 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Quality gate (fmt, clippy, build, test)
+        run: just ci-rust
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --locked
-
-      - name: Test
-        run: cargo test --locked
-
-  deny:
-    name: Dependency policy
-    runs-on: ubuntu-latest
-    if: false
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      - name: Dependency policy (cargo-deny)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: Cargo.toml
+# The dependency-policy (cargo deny) job lives in security.yml.

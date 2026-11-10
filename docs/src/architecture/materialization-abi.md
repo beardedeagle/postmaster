@@ -4,20 +4,18 @@
 contract between public deployment artifacts, local private key material,
 and the process that receives plaintext at runtime.
 
-## Audience Quickstart (Plain Language)
+## Audience quickstart
 
-**What this is:** the contract that every integration (Nix, Terraform,
-CDK, Ansible, etc.) must follow when wiring postmaster. If you're writing
-a binding or evaluating whether a generated config is correct, this is
-your page.
+Deployment integrations generate local inputs for Postmaster. This contract
+defines those inputs, key sources, resolution rules, and output projections.
 
 ### Who this is for
 
 | Reader | What to take |
 | -------- | ------------ |
 | Integration author | The entire page — this is your contract |
-| Security engineer | "Non-goals" and "Resolution" — what postmaster will never do |
-| New user | "Current ABI instance" and the exec.json example — the 60-second tour |
+| Security engineer | "Non-goals" and "Resolution" |
+| New user | "Current ABI instance" and the exec.json example |
 | Platform / SRE | "Key sources" and "Validation" — what the host needs |
 
 ### Quick glossary
@@ -25,7 +23,7 @@ your page.
 | Term | Plain meaning |
 | ------ | --------------- |
 | **ABI** | Application Binary Interface — the contract between config files, key material, and the launcher |
-| **exec.json** | A JSON file that tells postmaster what to decrypt, how to inject, and what to launch |
+| **exec.json** | A JSON file that selects inputs, key sources, and projection mode. The launch command is supplied separately after `--`. |
 | **Projection** | Where decrypted secrets go — env vars, files, or systemd credentials |
 | **Adapter** | An input format (.env, postmaster_bundle) — postmaster supports multiple, not just one |
 
@@ -35,11 +33,11 @@ The ABI is deliberately local:
 - private key material arrives through local terminal sources
 - `postmaster` decrypts and projects plaintext on the host
 - plaintext is handed to the target process through one selected projection
-- failure happens before `exec`, not after a partially configured launch
+- required validation and decryption checks finish before `exec`
 
 This page describes the ABI and how `exec.json` fits inside it. It is a
-contract for bindings and documentation recipes, not an invitation to put
-provider clients into `postmaster`.
+contract for bindings and documentation recipes. Remote provider clients
+belong in the delivery tooling, outside `postmaster`.
 
 ## Non-goals
 
@@ -63,11 +61,11 @@ The ABI has five layers.
 
 ```mermaid
 flowchart TD
-    art["1. Artifact descriptors\nidentify encrypted local inputs"]
-    key["2. Key-source descriptors\nidentify local private key material"]
-    res["3. Resolution rules\nturn encrypted entries into plaintext"]
-    proj["4. Projection policy\ndecides where bytes appear"]
-    launch["5. Launch semantics\nexecvp replaces postmaster with target"]
+    art["(1) Artifact descriptors<br/>identify encrypted local inputs"]
+    key["(2) Key-source descriptors<br/>identify local private key material"]
+    res["(3) Resolution rules<br/>turn encrypted entries into plaintext"]
+    proj["(4) Projection policy<br/>decides where bytes appear"]
+    launch["(5) Launch semantics<br/>execvp replaces postmaster with target"]
 
     art --> res
     key --> res
@@ -91,9 +89,9 @@ private keys are never config fields.
 `exec.json` is the first ABI instance. It is implicitly:
 
 - ABI version: `0`
-- input adapter: `.env` (wire-compatible with dotenvx-encrypted files)
-- artifact shape: `env_files`
-- key material shape: `.env.keys` / `DOTENV_PRIVATE_KEY*`
+- input adapters: `.env` and `postmaster_bundle`
+- artifact fields: `env_files` and `bundle_files`
+- key variables: `DOTENV_PRIVATE_KEY*` for dotenv, `POSTMASTER_KEY` for bundles
 - projection modes: `env`, `files`, and `credentials`
 
 The current parser does not accept explicit `version` or `adapter` fields.
@@ -120,15 +118,17 @@ filename selects the private key variable:
 
 - `.env` maps to `DOTENV_PRIVATE_KEY`
 - `.env.production` maps to `DOTENV_PRIVATE_KEY_PRODUCTION`
-- non-alphanumeric environment suffix bytes normalize to `_`
+- environment names must be non-empty `[A-Za-z0-9_]` (letters fold to
+  upper case); anything else is rejected
 
-The `.env` adapter is the first adapter, not the ceiling of the system.
+The bundle adapter below provides another input format under the same
+projection contract.
 
 ## Neutral bundle adapter
 
-The `postmaster_bundle` adapter is a second input format, not a replacement
-for `.env`. Its job is to let non-`.env` ecosystems produce a public
-encrypted artifact without pretending their native model is an `.env` file.
+The `postmaster_bundle` adapter reads structured JSON artifacts alongside
+dotenv inputs. Producers can represent binary and UTF-8 entries without
+encoding their native data model as a dotenv file.
 
 The on-disk format is a JSON container. JSON keeps generated artifacts easy
 for Terraform, OpenTofu, CDK, Ansible, Salt, Puppet, and Nix to render and
@@ -139,7 +139,7 @@ diff, while encrypted values remain opaque base64 strings.
   "format": "postmaster.bundle",
   "version": 1,
   "profile": "production",
-  "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm",
+  "suite": "ecies-secp256k1-hkdf-sha256-aes-256-gcm-entry-aad",
   "recipients": [
     {
       "id": "host:api-01",
@@ -160,10 +160,21 @@ diff, while encrypted values remain opaque base64 strings.
 ```
 
 All fields above are public metadata except `ciphertext`, which is encrypted
-and authenticated. The metadata that affects interpretation must be covered
-by authentication so a store or repo adversary cannot rename a key, change a
-profile, change a recipient id, switch an encoding, or replay a value between
-profiles without detection.
+and authenticated. Each entry's ciphertext is additionally bound to its key
+name as AES-GCM additional authenticated data (the `-entry-aad` suite): a
+store or repo adversary who cuts a ciphertext from one entry and pastes it
+under another key name gets an authentication failure at decryption, not a
+mislabeled secret.
+
+The decoded envelope is a 65-byte uncompressed secp256k1 ephemeral public key,
+a 16-byte nonce, a 16-byte authentication tag, then ciphertext. HKDF-SHA256
+uses the uncompressed ephemeral and shared points, matching `ecies` defaults.
+The entry name's exact UTF-8 bytes are the AAD; plaintext is returned only
+after AES-256-GCM authentication succeeds.
+
+The remaining metadata, including profile, recipient IDs, and encodings, is
+not cryptographically bound. A format that authenticates those fields would
+need canonical serialized bytes for reproducible builds and stable vectors.
 
 The design constraints are:
 
@@ -171,17 +182,19 @@ The design constraints are:
   values.
 - `suite` is mandatory so cryptographic suites can be explicit rather
   than inferred from payload length.
-- `profile` is optional public selection metadata; it is not a secret.
-- `recipients[*].id` is public routing metadata used to select local private
-  key material.
+- `profile` and `recipients` are public metadata. They are parsed but do not
+  select local private keys or filter entries.
+- Private key material comes from the `POSTMASTER_KEY` variable:
+  comma-separated rotation candidates are admitted, and
+  `POSTMASTER_KEY_<suffix>` variants match by the same predicate as
+  `DOTENV_PRIVATE_KEY_*`. There is no per-environment filename mapping —
+  bindings select bundle paths through `bundle_files`.
 - `entries` keys must use the same identifier rule as `.env`-derived keys:
   `[A-Za-z_][A-Za-z0-9_]*`.
-- `encoding` is either `utf8` or `bytes`. `env` projection rejects bytes that
-  cannot become a POSIX environment value; `files` and `credentials` preserve
-  byte-exact values.
-- The canonical serialized bytes for authenticated metadata must be specified
-  before implementation. Generated artifacts need deterministic bytes for
-  reproducible builds and stable test vectors.
+- `encoding` is either `utf8` or `bytes`. A `utf8` entry must decrypt to valid
+  UTF-8. Env projection rejects NUL bytes; files preserve byte-exact values.
+- Bundles are accepted in `env` and `files` modes. The credential daemon
+  resolves dotenv entries; `credentials` mode does not accept `bundle_files`.
 - A bundle can contain many entries for one projection, but it does not
   encode service-manager policy. Projection remains in the `postmaster`
   config, not inside the encrypted artifact.
@@ -193,13 +206,11 @@ launch, and the same output projection semantics as `.env` values.
 The implementation ships with conformance vectors for:
 
 - minimal valid bundle
-- multiple recipients
-- binary value projected to files
 - invalid key name
 - unknown version
-- tampered authenticated metadata
+- tampered `format`/`version`/`suite` values (fail-closed parsing)
 - wrong local private key
-- replayed ciphertext under a different entry name or profile
+- replayed ciphertext under a different entry name
 
 ## Key sources
 
@@ -211,8 +222,8 @@ Implemented launcher key sources are local and terminal:
 - `{"file": "/path/to/.env.keys"}` reads a local file and fails closed if the
   file is unavailable or under `/nix/store`.
 - `{"keychain": "<service>"}` reads from macOS Keychain and is terminal.
-- `"environment"` reads `DOTENV_PRIVATE_KEY*` from the process environment
-  and is terminal.
+- `"environment"` reads the required adapters' private-key variables from the
+  process environment and is terminal.
 
 Provider names such as `aws_ssm` and `vault` are reserved contract language,
 but they are not implemented key sources. A Vault Agent, cloud-init step,
@@ -225,7 +236,7 @@ local sources.
 Resolution must:
 
 - parse every configured encrypted artifact before launching the target
-- build the wanted private-key set from artifact metadata
+- build the wanted private-key set from configured artifact names and formats
 - load key material from the ordered local sources
 - decrypt with the selected adapter
 - reject malformed key names
@@ -236,6 +247,10 @@ Resolution must:
 
 For the `.env` adapter, this is implemented by `resolve_all` and the same
 native ECIES path used by the credential daemon.
+
+`strict: false` permits undecryptable dotenv values to be logged and omitted.
+`--verify-keys` rejects those omissions. Bundle authentication always fails
+closed, independent of `strict`.
 
 ## Diagnostics and redaction
 
@@ -265,9 +280,12 @@ because POSIX environment variables cannot carry them safely.
 Each resolved value is written as a `0600` file under `secrets_dir`.
 `postmaster` exports `<KEY>_FILE` pointers for each secret.
 
+The deployment must supply RAM-backed storage. The launcher does not establish
+RAM backing when `verify_ramdisk` is absent.
+
 The launcher refuses to follow symlinks when writing secret files. On macOS,
-when `verify_ramdisk` is set, it verifies the configured mount before writing
-plaintext.
+when `verify_ramdisk` is set, it verifies the configured mount and the opened
+directory's device and ownership before writing plaintext.
 
 `passthrough` may additionally export selected keys as real environment
 variables. Passthrough values containing NUL bytes are rejected.
@@ -277,9 +295,10 @@ variables. Passthrough values containing NUL bytes are rejected.
 On systemd, PID 1 has already materialized credentials and the launcher only
 exports `<KEY>_FILE` pointers into `$CREDENTIALS_DIRECTORY`.
 
-On launchd, the launcher can fetch configured keys from local postmaster
-sockets, write them into the verified RAM disk directory, and export
-credential-style pointers.
+When `sockets` is configured, the launcher fetches values from local
+Postmaster sockets, writes them beneath `secrets_dir`, and exports
+credential-style pointers. This path is normally used with launchd. RAM
+backing is verified only when `verify_ramdisk` is set on macOS.
 
 Every `credential_keys` entry must be a valid identifier before any fetch or
 write occurs.
@@ -310,19 +329,20 @@ the key file is missing, the keychain item is absent, or the credential
 source is not provisioned. The launcher's fail-closed behavior is the
 runtime guarantee; `--check` cannot substitute for it.
 
-`postmaster setup --config <exec.json> --recheck` provides runtime
-environment verification — it probes the filesystem and keychain to
-confirm that key material is actually accessible at the configured paths,
-without decrypting any secrets. It complements `--check`: run `--check`
-in CI for config correctness, run `setup --recheck` on the host for
-environment readiness.
+`postmaster setup --config <exec.json> --recheck` checks local provisioning
+without decrypting secrets. File sources receive descriptor-based ownership,
+permission, and macOS ACL checks. Credential sources receive path-presence and
+regular-file checks. Keychain checks look for the required items; environment
+checks look for required variables. These checks do not prove that the keys
+can decrypt the configured inputs. Run `--check` in CI for config shape and
+`setup --recheck` on the host for provisioning checks.
 
 The full `postmaster setup` command goes beyond verification: it
 creates the keys directory with 0700 permissions, verifies or creates
-keys files with 0600, optionally seeds keychain items (macOS, interactive),
-and validates platform prerequisites. It is idempotent — each step checks
-whether the target state is already present and correct, and skips if it
-is. Flags: `--recheck` (verification only), `--unattended` (non-interactive,
+key files with owner-only permissions, and optionally seeds macOS Keychain
+items interactively. It derives a unique required-account list in first-seen
+input order. Steps already satisfied are skipped.
+Flags: `--recheck` (verification only), `--unattended` (non-interactive,
 fail closed), `--force` (re-create/re-seed), `--keys-dir <path>` (override
 default path).
 

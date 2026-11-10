@@ -1,7 +1,5 @@
 name: Nix
 
-# Disabled: GitHub Actions budget exhausted.
-# Remove the `if: false` on each job to re-enable.
 on:
   push:
     branches: [main]
@@ -19,7 +17,6 @@ jobs:
   flake-check:
     name: flake check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: false
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -29,18 +26,21 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
+        uses: ./.github/actions/setup-nix
+
+      - name: Install just
+        uses: ./.github/actions/setup-rust
         with:
-          extra-conf: |
-            experimental-features = nix-command flakes
+          install-cargo-deny: "false"
+          install-cargo-audit: "false"
 
       - name: nix flake check
-        run: nix flake check
+        run: just flake-check
 
       - name: nix flake check (eval-only, all systems)
-        run: nix flake check --all-systems --no-build
+        run: just flake-check-eval-all

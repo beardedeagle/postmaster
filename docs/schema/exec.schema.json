@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/beardedeagle/envelope/docs/schema/exec.schema.json",
+  "$id": "https://github.com/beardedeagle/postmaster/docs/schema/exec.schema.json",
   "title": "postmaster exec.json",
-  "description": "Public launcher configuration for the current dotenvx-shaped postmaster materialization ABI instance.",
+  "description": "Public Postmaster launch configuration: local inputs, key sources, and projection settings.",
   "type": "object",
   "additionalProperties": false,
   "required": ["mode"],
@@ -19,6 +19,13 @@
       }
     },
     "env_files": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "bundle_files": {
       "type": "array",
       "default": [],
       "items": {
@@ -73,16 +80,25 @@
         "required": ["mode"]
       },
       "then": {
-        "required": ["keys", "env_files"],
+        "required": ["keys"],
         "properties": {
           "keys": { "minItems": 1 },
-          "env_files": { "minItems": 1 },
           "secrets_dir": { "const": null },
           "credential_keys": { "maxItems": 0 },
           "sockets": { "maxProperties": 0 },
           "verify_ramdisk": { "const": null },
           "passthrough": { "maxItems": 0 }
-        }
+        },
+        "anyOf": [
+          {
+            "required": ["env_files"],
+            "properties": { "env_files": { "minItems": 1 } }
+          },
+          {
+            "required": ["bundle_files"],
+            "properties": { "bundle_files": { "minItems": 1 } }
+          }
+        ]
       }
     },
     {
@@ -91,14 +107,23 @@
         "required": ["mode"]
       },
       "then": {
-        "required": ["keys", "env_files", "secrets_dir"],
+        "required": ["keys", "secrets_dir"],
         "properties": {
           "keys": { "minItems": 1 },
-          "env_files": { "minItems": 1 },
           "secrets_dir": { "type": "string" },
           "credential_keys": { "maxItems": 0 },
           "sockets": { "maxProperties": 0 }
-        }
+        },
+        "anyOf": [
+          {
+            "required": ["env_files"],
+            "properties": { "env_files": { "minItems": 1 } }
+          },
+          {
+            "required": ["bundle_files"],
+            "properties": { "bundle_files": { "minItems": 1 } }
+          }
+        ]
       }
     },
     {
@@ -112,6 +137,7 @@
           "credential_keys": { "minItems": 1 },
           "keys": { "maxItems": 0 },
           "env_files": { "maxItems": 0 },
+          "bundle_files": { "maxItems": 0 },
           "overload": { "const": false },
           "passthrough": { "maxItems": 0 }
         }

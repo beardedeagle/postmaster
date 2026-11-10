@@ -1,0 +1,36 @@
+{
+  // Keep Markdown rules and ignored paths together in the CLI configuration.
+  "config": {
+    // Prose is wrapped at 80; tables and code blocks legitimately exceed any fixed
+    // width (a multi-column row or a CLI line can't be 80 chars) and render fine.
+    "MD013": { "line_length": 80, "tables": false, "code_blocks": false },
+    // Keep a Changelog repeats `### Added`/`### Changed` etc. under each release;
+    // allow same-named headings that are not siblings.
+    "MD024": { "siblings_only": true },
+    // CLI blocks with `$` prompts that show expected output are fine.
+    "MD014": false,
+    // Mermaid blocks don't have a language tag.
+    "MD040": { "allowed_languages": ["mermaid", "", "text", "json", "nix", "console", "ini", "sh", "bash"] },
+    // SUMMARY.md uses multiple `#` section headers for mdBook navigation.
+    "MD025": false,
+    // Table column style — reference docs use compact tables.
+    "MD060": false
+  },
+  "ignores": [
+    // Cargo and Rustdoc build output.
+    "target/",
+    // mdBook build output.
+    "docs/book/",
+    // Generated at docs-build time from the root CHANGELOG.md.
+    "docs/src/changelog.md",
+    // SUMMARY.md uses mdBook-required syntax (multiple `#` section headers and
+    // 4-space-nested entries) that MD025/MD007 flag but mdBook needs.
+    "docs/src/SUMMARY.md",
+    // Verbatim upstream Contributor Covenant — not house prose.
+    ".github/CODE_OF_CONDUCT.md",
+    // PR templates intentionally start with "## Summary" — MD041 is wrong for them.
+    ".github/pull_request_template.md",
+    // Local aider tool history (gitignored) — not repo content.
+    ".aider-desk/"
+  ]
+}

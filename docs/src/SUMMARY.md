@@ -2,6 +2,8 @@
 
 [Introduction](./introduction.md)
 
+[Executive overview](./executive-overview.md)
+
 # Getting Started
 
 - [Quick start](./getting-started/quick-start.md)
@@ -13,6 +15,15 @@
 - [postmaster](./architecture/postmaster.md)
 - [Materialization ABI](./architecture/materialization-abi.md)
 - [Threat model](./architecture/threat-model.md)
+
+# Unsafe Code
+
+- [Overview](./unsafe-code/index.md)
+- [Signal deferral](./unsafe-code/signal-deferral.md)
+- [Sibling launch monitor](./unsafe-code/monitor.md)
+- [macOS libc boundary](./unsafe-code/macos-libc-boundary.md)
+- [systemd fd ownership (Linux)](./unsafe-code/systemd-fd-ownership.md)
+- [Test-only env mutation](./unsafe-code/test-env-mutation.md)
 
 # Reference
 

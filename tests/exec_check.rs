@@ -1,9 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::panic, missing_docs)]
 
+#[path = "../src/test_util/temp_dir.rs"]
+mod temp_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use postmaster::config::ExecConfig;
+use postmaster::exec_config::ExecConfig;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -13,11 +16,8 @@ fn fixture(path: &str) -> PathBuf {
     repo_root().join(path)
 }
 
-fn tmpdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pm-exec-check-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmpdir(tag: &str) -> temp_dir::TestDir {
+    temp_dir::TestDir::new(tag)
 }
 
 fn run_check(config: &Path) -> std::process::Output {
@@ -44,6 +44,7 @@ fn docs_exec_schema_is_valid_json() {
 fn docs_exec_examples_parse_and_validate() {
     for rel in [
         "docs/examples/exec-env.json",
+        "docs/examples/exec-bundle.json",
         "docs/examples/exec-files.json",
         "docs/examples/exec-credentials-systemd.json",
         "docs/examples/exec-credentials-darwin.json",
@@ -151,4 +152,38 @@ fn exec_check_rejects_path_like_credential_source_names() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("credential source"), "stderr: {stderr}");
+}
+
+#[test]
+fn docs_exec_schema_covers_every_exec_config_field() {
+    let raw = std::fs::read(fixture("docs/schema/exec.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    let properties = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .unwrap();
+    // Keep this list in sync with the fields on `ExecConfig` in
+    // src/exec_config.rs to catch schema/parser drift.
+    for field in [
+        "mode",
+        "keys",
+        "env_files",
+        "bundle_files",
+        "strict",
+        "overload",
+        "secrets_dir",
+        "passthrough",
+        "credential_keys",
+        "sockets",
+        "verify_ramdisk",
+    ] {
+        assert!(
+            properties.contains_key(field),
+            "schema properties missing {field}"
+        );
+    }
+    assert_eq!(
+        schema.get("additionalProperties"),
+        Some(&serde_json::Value::Bool(false))
+    );
 }

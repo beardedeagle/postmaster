@@ -1,17 +1,15 @@
 # Quick start
 
-This page shows how to get postmaster running with an encrypted `.env`
-file in under 10 minutes.
+This page launches a command with values from an encrypted `.env` file.
 
-## Audience Quickstart
+## Audience quickstart
 
-**What this is:** a hands-on walkthrough of the simplest path —
-encrypting secrets, provisioning keys, and launching a service with
-postmaster.
+Encrypt a dotenv file, provision its private key, and launch a command with
+Postmaster.
 
 ## Prerequisites
 
-- A Rust toolchain (`rustup`, stable)
+- Rust 1.99.1 or newer (`rustup`, stable)
 - [dotenvx CLI](https://github.com/dotenvx/dotenvx) (or any tool producing
   the same ECIES format) for encrypting secrets
 - postmaster built from source (or from the Nix flake)
@@ -21,6 +19,7 @@ postmaster.
 Create a `.env` file and encrypt it:
 
 ```console
+$ mkdir -p secrets
 $ dotenvx set DATABASE_URL 'postgres://user:pass@localhost:5432/myapp' \
     -f secrets/.env.production
 $ dotenvx set API_TOKEN 'secret-token-here' \
@@ -39,13 +38,20 @@ API_TOKEN="encrypted:BGAAAAAADWyy..."
 
 ## Step 2: Provision keys
 
-Postmaster needs the private key to decrypt the values. The key lives in
-a `.env.keys` file:
+Postmaster needs the private key to decrypt the values. `dotenvx set`
+above wrote it to a `.env.keys` file alongside your env file:
 
 ```console
-$ dotenvx keys -f secrets/.env.production
-DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
+$ cat secrets/.env.keys
+DOTENV_PRIVATE_KEY_PRODUCTION=a1b2c3d4e5f6...
 ```
+
+> **dotenvx version note:** the CLI changes across releases. Older
+> versions exposed the private key through a `dotenvx keys` subcommand
+> (since removed); current versions write it to the `.env.keys` file
+> next to your env file, and the value may be quoted or unquoted
+> depending on version. Treat the `.env.keys` file as the durable
+> source — copy the `DOTENV_PRIVATE_KEY_*` value from it.
 
 Place the keys file on the host (Linux):
 
@@ -56,17 +62,28 @@ DOTENV_PRIVATE_KEY_PRODUCTION="a1b2c3d4e5f6..."
 EOF
 ```
 
-On macOS, you can also use the keychain:
+Ownership matters: `KeyRing::load` requires the keys file to be owned
+by the effective uid of the loading process, so `chown` it to the
+service user (or run the file-owning step as that user) — a root-owned
+keys file fails closed for a service running as a normal user.
+
+On macOS, you can also use the keychain. The recommended path is
+`postmaster setup`, which seeds keychain items interactively; the
+equivalent by hand is `security add-generic-password` *without* `-w`,
+which prompts for the value:
 
 ```console
 $ security add-generic-password -a DOTENV_PRIVATE_KEY_PRODUCTION \
-    -s postmaster -w "a1b2c3d4e5f6..."
+    -s postmaster
 ```
+
+Avoid `-w "<hex>"`: it puts the private key in the process argv,
+visible to every process on the host via `ps`.
 
 ## Step 3: Create exec.json
 
-Postmaster reads an `exec.json` config that specifies what to decrypt,
-how to inject, and what binary to launch:
+The `exec.json` config selects inputs, key sources, and projection mode.
+You supply the command to launch separately after `--`:
 
 ```json
 {
@@ -104,10 +121,9 @@ DATABASE_URL=postgres://user:pass@localhost:5432/myapp
 API_TOKEN=secret-token-here
 ```
 
-Postmaster decrypted the values, injected them as environment variables,
-and `execvp`'d `/usr/bin/env` — which printed them. In a real deployment,
-the service manager (systemd or launchd) runs postmaster, which
-replaces itself with your binary.
+Postmaster decrypts the values, exports them as environment variables, and
+replaces the launcher with `/usr/bin/env`, which prints them. In a deployment,
+systemd or launchd runs Postmaster with your service command instead.
 
 ```mermaid
 flowchart TB

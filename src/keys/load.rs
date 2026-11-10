@@ -1,0 +1,260 @@
+//! `.env.keys` loading with type, ownership, and access checks on the opened inode.
+
+use std::path::Path;
+
+use zeroize::Zeroizing;
+
+use super::KeyRing;
+use crate::adapter::KeyNaming;
+
+/// Implementation of [`KeyRing::load`]; the contract is documented on the
+/// method.
+pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
+    // NONBLOCK is inert on regular files; on a FIFO it turns the otherwise blocking
+    // open into an immediate success that the file-type check below rejects — a FIFO
+    // here must never hang the launcher at open.
+    let oflags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC
+        | rustix::fs::OFlags::NONBLOCK;
+    let fd = rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
+        format!(
+            "keys file {}: {e} (refusing to follow a symlink)",
+            path.display()
+        )
+    })?;
+    let stat =
+        rustix::fs::fstat(&fd).map_err(|e| format!("keys file {}: fstat: {e}", path.display()))?;
+    // Regular files only: Mode carries no S_IFMT bits, so a directory would pass the
+    // permission mask below and fail later with an opaque parse error.
+    if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
+        return Err(format!(
+            "keys file {}: not a regular file (fail closed)",
+            path.display()
+        ));
+    }
+    let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
+    // Reject group or world accessibility. 0o077 masks both RWXG and RWXO.
+    if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
+        return Err(format!(
+            "keys file {}: permissions {:#o} are group/world accessible; expected 0400 or 0600 (fail closed)",
+            path.display(),
+            stat.st_mode
+        ));
+    }
+    let euid = rustix::process::geteuid().as_raw();
+    if stat.st_uid != euid {
+        return Err(format!(
+            "keys file {}: owned by uid {} but postmaster euid is {euid} (fail closed)",
+            path.display(),
+            stat.st_uid
+        ));
+    }
+    crate::secret_files::validate_private_file_acl(&fd)
+        .map_err(|e| format!("keys file {}: {e}", path.display()))?;
+    let file = std::fs::File::from(fd);
+    let iter = dotenvy::from_read_iter(file);
+    let mut pairs = Vec::new();
+    for item in iter {
+        // Parser diagnostics include input that may contain a private key.
+        let (k, v) =
+            item.map_err(|_| format!("keys file {}: cannot read or parse dotenv", path.display()))?;
+        pairs.push((k, Zeroizing::new(v)));
+    }
+    KeyRing::from_pairs(pairs, namings).map_err(|e| format!("keys file {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
+mod tests {
+    use super::*;
+    use crate::keys::tests::{tdir, with_temp_keys};
+    use std::io::Write;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn runtime_load_rejects_untrusted_acls_without_mutating_read_only_keys() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let identity = std::process::Command::new("/usr/bin/id")
+            .arg("-un")
+            .output()
+            .unwrap();
+        assert!(identity.status.success());
+        let username = String::from_utf8(identity.stdout).unwrap();
+        for mode in [0o400, 0o600] {
+            with_temp_keys(
+                &format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32)),
+                |path| {
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+                    for grant in ["everyone allow read", "everyone allow write"] {
+                        assert!(
+                            std::process::Command::new("/bin/chmod")
+                                .args(["+a", grant])
+                                .arg(path)
+                                .status()
+                                .unwrap()
+                                .success()
+                        );
+                        for _ in 0..2 {
+                            assert!(
+                                KeyRing::load(path, &[KeyNaming::Env])
+                                    .unwrap_err()
+                                    .contains("ACL")
+                            );
+                        }
+                        let config = path.with_extension("json");
+                        std::fs::write(
+                            &config,
+                            serde_json::json!({
+                                "mode": "env", "keys": [{"file": path}],
+                                "env_files": [path.parent().unwrap().join(".env")]
+                            })
+                            .to_string(),
+                        )
+                        .unwrap();
+                        assert!(
+                            crate::keys::provisioning::setup(&config, true, true, false, None)
+                                .unwrap_err()
+                                .contains("ACL")
+                        );
+                        assert_eq!(
+                            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                            mode
+                        );
+                        assert!(
+                            std::process::Command::new("/bin/chmod")
+                                .arg("-N")
+                                .arg(path)
+                                .status()
+                                .unwrap()
+                                .success()
+                        );
+                    }
+                    let trusted = format!("user:{} allow read,write", username.trim());
+                    assert!(
+                        std::process::Command::new("/bin/chmod")
+                            .args(["+a", &trusted])
+                            .arg(path)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                    KeyRing::load(path, &[KeyNaming::Env]).unwrap();
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn load_rejects_bad_hex() {
+        let content = "DOTENV_PRIVATE_KEY=not-hex\n";
+        with_temp_keys(content, |p| match KeyRing::load(p, &[KeyNaming::Env]) {
+            Err(e) if e.contains("not valid hex") => {}
+            other => panic!("expected bad hex error, got {other:?}"),
+        });
+    }
+
+    #[test]
+    fn load_redacts_malformed_private_key_assignments() {
+        let key = "11".repeat(32);
+        for value in [format!("\"{key}"), format!("\"{key}\" trailing")] {
+            with_temp_keys(&format!("DOTENV_PRIVATE_KEY={value}\n"), |p| {
+                let error = KeyRing::load(p, &[KeyNaming::Env]).unwrap_err();
+                assert!(
+                    !error.contains(&key),
+                    "parser error must not expose the key"
+                );
+                assert!(error.contains(p.to_str().unwrap()));
+                assert!(error.contains("cannot read or parse dotenv"));
+            });
+        }
+    }
+
+    #[test]
+    fn load_rejects_directory_keys_file() {
+        // Mode carries no S_IFMT bits, so a directory would pass the permission mask —
+        // reject by file type.
+        let dir = tdir("dir-as-keys");
+        match KeyRing::load(&dir, &[KeyNaming::Env]) {
+            Err(e) if e.contains("not a regular file") => {}
+            other => panic!("expected not-a-regular-file error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_rejects_world_readable_keys_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
+        }
+        // 0644: world-readable — must be rejected.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        match KeyRing::load(&path, &[KeyNaming::Env]) {
+            Err(e) if e.contains("group/world accessible") => {}
+            other => panic!("expected group/world permission error, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_rejects_group_readable_keys_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
+        }
+        // 0640: group-readable — must be rejected.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        match KeyRing::load(&path, &[KeyNaming::Env]) {
+            Err(e) if e.contains("group/world accessible") => {}
+            other => panic!("expected group permission error, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_rejects_symlink_keys_file() {
+        let dir = tdir("symlink-keys");
+        let real = dir.join("real-keys");
+        std::fs::write(&real, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join(".env.keys");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        match KeyRing::load(&link, &[KeyNaming::Env]) {
+            Err(e) if e.contains("symlink") => {}
+            other => panic!("expected symlink rejection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_accepts_0600_keys_file() {
+        // Sanity: a properly locked-down keys file (0600, owned by euid)
+        // loads normally. This guards against false positives from the
+        // permission and ownership checks.
+        let content = format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32));
+        with_temp_keys(&content, |p| {
+            KeyRing::load(p, &[KeyNaming::Env]).expect("0600 keys file owned by euid should load");
+        });
+    }
+
+    #[test]
+    fn load_accepts_0400_keys_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_util::temp_dir::TestDir::new("load");
+        let path = dir.join("fixture");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "DOTENV_PRIVATE_KEY={}", "11".repeat(32)).unwrap();
+        }
+        // 0400: read-only by owner — stricter than 0600, must pass.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        KeyRing::load(&path, &[KeyNaming::Env]).expect("0400 keys file owned by euid should load");
+        let _ = std::fs::remove_file(&path);
+    }
+}
