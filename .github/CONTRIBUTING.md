@@ -47,8 +47,9 @@ just ci          # ci-rust + nix flake check
 just docs        # mdBook build
 ```
 
-The GitHub workflow jobs currently use `if: false`, so hosted checks are
-skipped. Run the recipes locally and report that distinction in the PR.
+GitHub workflows call the same recipes. The Docs workflow builds pull
+requests and `main`, then uploads the book as a Pages artifact. Only pushes
+and manual runs on `main` publish it through the `github-pages` environment.
 
 For dependency policy checks:
 

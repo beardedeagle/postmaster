@@ -149,6 +149,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Pre-push hooks run the Rust gate, dependency policy, and advisory checks.
   The Rust gate includes native, release, and Linux-target Clippy; the
   toolchain configuration includes `x86_64-unknown-linux-gnu`.
+- Builds documentation on pull requests and publishes `main` through
+  GitHub Pages. Deployment uses official actions pinned to full commits
+  and a `main`-restricted `github-pages` environment.
 - Keeps Markdown lint rules in `.markdownlint-cli2.jsonc` and excludes
   generated Cargo and mdBook output. Dependency policy checks duplicate
   crate versions, sources, licenses, and advisories, with a documented
