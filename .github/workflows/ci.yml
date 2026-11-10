@@ -1,7 +1,5 @@
 name: CI
 
-# Disabled: GitHub Actions budget exhausted.
-# Remove the `if: false` on each job to re-enable.
 on:
   push:
     branches: [main]
@@ -22,7 +20,6 @@ jobs:
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: false
     timeout-minutes: 30
     strategy:
       fail-fast: false

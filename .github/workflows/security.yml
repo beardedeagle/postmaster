@@ -1,7 +1,5 @@
 name: Security
 
-# Disabled: GitHub Actions budget exhausted.
-# Remove the `if: false` on each job to re-enable.
 on:
   schedule:
     # Run daily at 9am UTC
@@ -28,7 +26,6 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    if: false
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -47,7 +44,6 @@ jobs:
   deny:
     name: Dependency Check
     runs-on: ubuntu-latest
-    if: false
     timeout-minutes: 15
     steps:
       - name: Checkout
