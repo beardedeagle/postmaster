@@ -40,7 +40,11 @@ jobs:
           install-cargo-audit: "false"
 
       - name: nix flake check
+        env:
+          NIX_CONFIG: "access-tokens = github.com=${{ github.token }}"
         run: just flake-check
 
       - name: nix flake check (eval-only, all systems)
+        env:
+          NIX_CONFIG: "access-tokens = github.com=${{ github.token }}"
         run: just flake-check-eval-all
