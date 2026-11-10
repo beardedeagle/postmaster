@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/release/**"
+      - ".github/actions/setup-rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+      - "Justfile"
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  JUST_NO_DOTENV: "true"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+      - name: Install Minisign
+        run: bash .github/release/install-minisign.sh
+      - name: Test release tooling
+        run: just release-test
+      - name: Resolve source
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: just release-plan >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl linker
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Build, test and package release binary
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: just release-build "$RELEASE_TARGET"
+      - name: Attest the built archive
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: target/release-artifacts/*.tar.gz
+          create-storage-record: false
+      - name: Upload release archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: target/release-artifacts/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Sign, verify and publish
+    if: github.event_name != 'pull_request'
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+      MINISIGN_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+      - name: Install Minisign
+        run: bash .github/release/install-minisign.sh
+      - name: Download built archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: target/release-artifacts
+      - name: Check tag and build attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          just release-plan > "$RUNNER_TEMP/release-source"
+          grep -Fx "commit=$RELEASE_COMMIT" "$RUNNER_TEMP/release-source"
+          for archive in target/release-artifacts/*.tar.gz; do
+            gh attestation verify "$archive" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+              --deny-self-hosted-runners
+          done
+          just release-manifest "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Sign the manifest
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: just release-sign "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Verify signed release files
+        run: just release-verify "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Attest signed release metadata
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            target/release-artifacts/SHA256SUMS
+            target/release-artifacts/SHA256SUMS.minisig
+            target/release-artifacts/release.json
+          create-storage-record: false
+      - name: Verify downloaded release before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: just release-publish "$RELEASE_TAG" "$RELEASE_COMMIT"

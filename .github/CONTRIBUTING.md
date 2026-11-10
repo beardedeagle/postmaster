@@ -59,6 +59,17 @@ just audit       # advisory database check, warnings fail
 
 ## Submitting a change
 
+Release tooling has its own focused checks:
+
+```sh
+just release-test
+just release-build aarch64-apple-darwin # select the native target
+```
+
+These require Python 3.11 or newer; the tooling tests also require Minisign.
+The [release guide](../docs/src/development/releases.md) describes signing
+configuration, tag/manual publication, and consumer verification.
+
 1. Branch off `main` (`git switch -c fix/short-description`).
 2. Make the change and add tests where needed.
 3. Run the full `just ci`.
