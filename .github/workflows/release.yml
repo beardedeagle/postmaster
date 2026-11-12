@@ -14,6 +14,7 @@ on:
       - ".github/workflows/release.yml"
       - ".github/release/**"
       - ".github/actions/setup-rust/**"
+      - "docs/src/development/releases.md"
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
@@ -51,8 +52,6 @@ jobs:
           python-version: "3.14"
       - name: Setup Rust and just
         uses: ./.github/actions/setup-rust
-      - name: Install Minisign
-        run: bash .github/release/install-minisign.sh
       - name: Test release tooling
         run: just release-test
       - name: Resolve source
@@ -122,7 +121,7 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Sign, verify and publish
+    name: Verify and publish
     if: github.event_name != 'pull_request'
     needs: [plan, build]
     runs-on: ubuntu-24.04
@@ -135,7 +134,6 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.plan.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
-      MINISIGN_PUBLIC_KEY: ${{ vars.MINISIGN_PUBLIC_KEY }}
     steps:
       - name: Checkout validated source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,8 +147,6 @@ jobs:
           python-version: "3.14"
       - name: Setup Rust and just
         uses: ./.github/actions/setup-rust
-      - name: Install Minisign
-        run: bash .github/release/install-minisign.sh
       - name: Download built archives
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -171,18 +167,13 @@ jobs:
               --deny-self-hosted-runners
           done
           just release-manifest "$RELEASE_TAG" "$RELEASE_COMMIT"
-      - name: Sign the manifest
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: just release-sign "$RELEASE_TAG" "$RELEASE_COMMIT"
-      - name: Verify signed release files
+      - name: Verify release files
         run: just release-verify "$RELEASE_TAG" "$RELEASE_COMMIT"
-      - name: Attest signed release metadata
+      - name: Attest release metadata
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             target/release-artifacts/SHA256SUMS
-            target/release-artifacts/SHA256SUMS.minisig
             target/release-artifacts/release.json
           create-storage-record: false
       - name: Verify downloaded release before publication

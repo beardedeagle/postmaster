@@ -213,9 +213,7 @@ def release_files(directory: Path, tag: str, commit: str, verify: bool) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("release source must be an exact commit SHA")
     archives = archive_names(tag)
-    expected = archives | (
-        {"release.json", "SHA256SUMS", "SHA256SUMS.minisig"} if verify else set()
-    )
+    expected = archives | ({"release.json", "SHA256SUMS"} if verify else set())
     if {p.name for p in directory.iterdir()} != expected:
         raise ValueError("release files do not match the complete target set")
     if any(p.is_symlink() or not p.is_file() for p in directory.iterdir()):

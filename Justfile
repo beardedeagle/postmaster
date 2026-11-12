@@ -98,9 +98,6 @@ release-build target:
 release-manifest tag commit directory="target/release-artifacts":
     python3 .github/release/release.py manifest {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
 
-release-sign tag commit directory="target/release-artifacts":
-    bash .github/release/sign.sh {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
-
 release-verify tag commit directory="target/release-artifacts":
     python3 .github/release/release.py verify {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
 

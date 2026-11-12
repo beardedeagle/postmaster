@@ -1,8 +1,9 @@
-"""Exercise release source authorization, archive integrity and real signatures."""
+"""Exercise release source authorization, archive integrity and attestation policy."""
 
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -35,16 +36,6 @@ class ReleaseTests(unittest.TestCase):
     def files(self):
         for name in release.archive_names(self.tag):
             self.archive(self.root / name)
-
-    def keypair(self, name):
-        secret = self.root / f"{name}.key"
-        public = self.root / f"{name}.pub"
-        subprocess.run(
-            ["minisign", "-G", "-W", "-s", str(secret), "-p", str(public)],
-            check=True,
-            capture_output=True,
-        )
-        return secret.read_text(), public.read_text().splitlines()[-1]
 
     def test_tag_resolves_its_own_manifest_and_rejects_unmerged_commit(self):
         release.git(self.root, "init", "-b", "main")
@@ -113,7 +104,6 @@ class ReleaseTests(unittest.TestCase):
     def test_manifest_binds_source_and_rejects_changed_archive(self):
         self.files()
         release.release_files(self.root, self.tag, self.commit, False)
-        (self.root / "SHA256SUMS.minisig").write_text("signature checked separately")
         release.release_files(self.root, self.tag, self.commit, True)
         with self.assertRaisesRegex(ValueError, "source commit"):
             release.release_files(self.root, self.tag, "b" * 40, True)
@@ -122,56 +112,6 @@ class ReleaseTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "checksums"):
             release.release_files(self.root, self.tag, self.commit, True)
-
-    def test_real_signature_rejects_tampered_manifest_and_wrong_key(self):
-        secret, public = self.keypair("release")
-        _, other_public = self.keypair("other")
-        manifest = self.root / "SHA256SUMS"
-        manifest.write_text("original manifest\n")
-        env = os.environ | {
-            "MINISIGN_SECRET_KEY": secret,
-            "MINISIGN_PUBLIC_KEY": public,
-        }
-        command = [
-            "bash",
-            str(release.ROOT / ".github/release/sign.sh"),
-            self.tag,
-            self.commit,
-            str(self.root),
-        ]
-        subprocess.run(command, env=env, check=True, capture_output=True)
-        verify = ["minisign", "-V", "-H", "-P", public, "-m", str(manifest)]
-        self.assertEqual(
-            subprocess.run(verify, check=False, capture_output=True).returncode, 0
-        )
-        manifest.write_text("tampered manifest\n")
-        self.assertNotEqual(
-            subprocess.run(verify, check=False, capture_output=True).returncode, 0
-        )
-        manifest.write_text("original manifest\n")
-        verify[4] = other_public
-        self.assertNotEqual(
-            subprocess.run(verify, check=False, capture_output=True).returncode, 0
-        )
-
-    def test_signing_refuses_missing_configuration(self):
-        env = os.environ.copy()
-        env.pop("MINISIGN_SECRET_KEY", None)
-        env.pop("MINISIGN_PUBLIC_KEY", None)
-        command = [
-            "bash",
-            str(release.ROOT / ".github/release/sign.sh"),
-            self.tag,
-            self.commit,
-            str(self.root),
-        ]
-        self.assertNotEqual(
-            subprocess.run(
-                command, env=env, check=False, capture_output=True
-            ).returncode,
-            0,
-        )
-        self.assertFalse((self.root / "SHA256SUMS.minisig").exists())
 
     def test_install_instructions_stop_on_failed_verification(self):
         guide = (release.ROOT / "docs/src/development/releases.md").read_text()
@@ -184,34 +124,44 @@ class ReleaseTests(unittest.TestCase):
         tools.mkdir()
         program = tools / "stub"
         program.write_text("""#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 from pathlib import Path
 name = Path(sys.argv[0]).name
 if name == "install":
     Path("installed").touch()
+if name == "gh":
+    with Path("verified.jsonl").open("a") as log:
+        log.write(json.dumps(sys.argv[1:]) + "\\n")
+    if os.environ.get("REJECT_ARTIFACT") == sys.argv[3]:
+        sys.exit(1)
 sys.exit(1 if os.environ.get("REJECT") == name else 0)
 """)
         program.chmod(0o755)
-        for name in ["curl", "minisign", "shasum", "gh", "tar", "mkdir", "install"]:
+        for name in ["curl", "shasum", "gh", "tar", "mkdir", "install"]:
             (tools / name).symlink_to(program)
-        (self.root / "SHA256SUMS").write_text(
-            "a" * 64 + "  postmaster-v0.1.0-aarch64-apple-darwin.tar.gz\n"
-        )
+        archive = "postmaster-v0.1.0-aarch64-apple-darwin.tar.gz"
+        (self.root / "SHA256SUMS").write_text("a" * 64 + f"  {archive}\n")
         env = os.environ | {
             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
-            "POSTMASTER_RELEASE_PUBLIC_KEY": "fixture",
         }
-        for failure in ["curl", "minisign", "shasum", "gh"]:
+        for failure in [
+            {"REJECT": "curl"},
+            {"REJECT": "shasum"},
+            {"REJECT_ARTIFACT": "SHA256SUMS"},
+            {"REJECT_ARTIFACT": archive},
+        ]:
             with self.subTest(failure=failure):
                 result = subprocess.run(
                     ["sh", "-c", snippet],
                     cwd=self.root,
-                    env=env | {"REJECT": failure},
+                    env=env | failure,
                     check=False,
                     capture_output=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.root / "installed").exists())
+        log = self.root / "verified.jsonl"
+        log.write_text("")
         subprocess.run(
             ["sh", "-c", snippet],
             cwd=self.root,
@@ -220,31 +170,44 @@ sys.exit(1 if os.environ.get("REJECT") == name else 0)
             capture_output=True,
         )
         self.assertTrue((self.root / "installed").exists())
-
-    def test_complete_signed_release_and_manual_branch_guard(self):
-        secret, public = self.keypair("release")
-        directory = self.root / "dist"
-        directory.mkdir()
-        for name in release.archive_names(self.tag):
-            self.archive(directory / name)
-        release.release_files(directory, self.tag, self.commit, False)
-        env = os.environ | {
-            "MINISIGN_SECRET_KEY": secret,
-            "MINISIGN_PUBLIC_KEY": public,
-        }
-        subprocess.run(
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(
+            [call[:3] for call in calls],
             [
-                "bash",
-                str(release.ROOT / ".github/release/sign.sh"),
-                self.tag,
-                self.commit,
-                str(directory),
+                ["attestation", "verify", "SHA256SUMS"],
+                ["attestation", "verify", archive],
             ],
-            env=env,
-            check=True,
-            capture_output=True,
         )
-        release.release_files(directory, self.tag, self.commit, True)
+        identity = (
+            "https://github.com/beardedeagle/postmaster/.github/workflows/release.yml@"
+        )
+        for call in calls:
+            self.assertEqual(call[call.index("--repo") + 1], "beardedeagle/postmaster")
+            self.assertEqual(
+                call[call.index("--signer-workflow") + 1],
+                "beardedeagle/postmaster/.github/workflows/release.yml",
+            )
+            self.assertIn("--deny-self-hosted-runners", call)
+            pattern = call[call.index("--cert-identity-regex") + 1]
+            for ref in ["refs/heads/main", "refs/tags/v0.1.0", "refs/tags/v0.1.0-rc.1"]:
+                self.assertIsNotNone(re.fullmatch(pattern, identity + ref))
+            for ref in [
+                "refs/pull/15/merge",
+                "refs/heads/untrusted",
+                "refs/tags/untrusted",
+                "refs/tags/v0.1.0/untrusted",
+                "refs/heads/untrusted@refs/heads/main",
+                "refs/tags/v0.1.0@refs/heads/main",
+            ]:
+                self.assertIsNone(re.fullmatch(pattern, identity + ref))
+            self.assertIsNone(
+                re.fullmatch(
+                    pattern,
+                    identity.replace("postmaster/", "other/") + "refs/heads/main",
+                )
+            )
+
+    def test_manual_release_rejects_untrusted_branch(self):
         env = os.environ | {
             "GITHUB_EVENT_NAME": "workflow_dispatch",
             "GITHUB_REF": "refs/heads/untrusted",
@@ -263,28 +226,11 @@ sys.exit(1 if os.environ.get("REJECT") == name else 0)
     def test_publication_requires_verified_downloads_and_preserves_existing_release(
         self,
     ):
-        secret, public = self.keypair("release")
         directory = self.root / "dist"
         directory.mkdir()
         for name in release.archive_names(self.tag):
             self.archive(directory / name)
         release.release_files(directory, self.tag, self.commit, False)
-        env = os.environ | {
-            "MINISIGN_SECRET_KEY": secret,
-            "MINISIGN_PUBLIC_KEY": public,
-        }
-        subprocess.run(
-            [
-                "bash",
-                str(release.ROOT / ".github/release/sign.sh"),
-                self.tag,
-                self.commit,
-                str(directory),
-            ],
-            env=env,
-            check=True,
-            capture_output=True,
-        )
         tools = self.root / "bin"
         tools.mkdir()
         fake = tools / "gh"
@@ -302,7 +248,9 @@ if args[:2] == ["release", "download"]:
         shutil.copyfile(source, target / source.name)
     if os.environ.get("GH_TEST_CORRUPT"):
         (target / "release.json").write_text("{}")
-if args[:2] == ["attestation", "verify"] and os.environ.get("GH_TEST_BAD_ATTESTATION"):
+    if os.environ.get("GH_TEST_MISSING"):
+        (target / os.environ["GH_TEST_MISSING"]).unlink()
+if args[:2] == ["attestation", "verify"] and Path(args[2]).name == os.environ.get("GH_TEST_BAD_ATTESTATION"):
     sys.exit(1)
 """)
         fake.chmod(0o755)
@@ -314,7 +262,6 @@ if args[:2] == ["attestation", "verify"] and os.environ.get("GH_TEST_BAD_ATTESTA
             "GITHUB_REPOSITORY": "beardedeagle/postmaster",
             "GITHUB_SHA": self.commit,
             "GITHUB_REF": "refs/tags/" + self.tag,
-            "MINISIGN_PUBLIC_KEY": public,
             "JUST_NO_DOTENV": "true",
         }
         command = [
@@ -324,34 +271,58 @@ if args[:2] == ["attestation", "verify"] and os.environ.get("GH_TEST_BAD_ATTESTA
             self.commit,
             str(directory),
         ]
+        files = release.archive_names(self.tag) | {"SHA256SUMS", "release.json"}
         for failure in [
-            "GH_TEST_CORRUPT",
-            "GH_TEST_EXISTING",
-            "GH_TEST_BAD_ATTESTATION",
+            {"GH_TEST_CORRUPT": "1"},
+            {"GH_TEST_EXISTING": "1"},
+            {"GH_TEST_MISSING": min(files)},
+            *({"GH_TEST_BAD_ATTESTATION": name} for name in sorted(files)),
         ]:
             with self.subTest(failure=failure):
                 log.write_text("")
                 result = subprocess.run(
                     command,
                     cwd=release.ROOT,
-                    env=env | {failure: "1"},
+                    env=env | failure,
                     check=False,
                     capture_output=True,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn('"edit"', log.read_text())
-                if failure == "GH_TEST_EXISTING":
+                if "GH_TEST_EXISTING" in failure:
                     self.assertNotIn('"create"', log.read_text())
-        log.write_text("")
-        subprocess.run(
-            command, cwd=release.ROOT, env=env, check=True, capture_output=True
-        )
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(calls[-1][:2], ["release", "edit"])
-        self.assertIn("--draft=false", calls[-1])
-        self.assertEqual(
-            sum(call[:2] == ["attestation", "verify"] for call in calls), 8
-        )
+        for ref, digest in [
+            (env["GITHUB_REF"], self.commit),
+            ("refs/heads/main", "b" * 40),
+        ]:
+            with self.subTest(ref=ref):
+                log.write_text("")
+                subprocess.run(
+                    command,
+                    cwd=release.ROOT,
+                    env=env | {"GITHUB_REF": ref, "GITHUB_SHA": digest},
+                    check=True,
+                    capture_output=True,
+                )
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                self.assertEqual(calls[-1][:2], ["release", "edit"])
+                self.assertIn("--draft=false", calls[-1])
+                verified = [
+                    call for call in calls if call[:2] == ["attestation", "verify"]
+                ]
+                self.assertEqual({Path(call[2]).name for call in verified}, files)
+                self.assertEqual(len(verified), len(files))
+                for call in verified:
+                    self.assertEqual(
+                        call[call.index("--repo") + 1], "beardedeagle/postmaster"
+                    )
+                    self.assertEqual(
+                        call[call.index("--signer-workflow") + 1],
+                        "beardedeagle/postmaster/.github/workflows/release.yml",
+                    )
+                    self.assertEqual(call[call.index("--source-digest") + 1], digest)
+                    self.assertEqual(call[call.index("--source-ref") + 1], ref)
+                    self.assertIn("--deny-self-hosted-runners", call)
 
 
 if __name__ == "__main__":

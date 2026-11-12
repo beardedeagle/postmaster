@@ -145,8 +145,8 @@ $ just build-matrix max macos-arm  # optimized release
 Source builds require Rust 1.99.1 or newer. `just build-help` lists the
 optimization levels and cross-compilation targets.
 
-[Release instructions](docs/src/development/releases.md) cover signed
-checksums, GitHub attestations, binary installation, and tag or manual
+[Release instructions](docs/src/development/releases.md) cover attested
+checksums and archives, binary installation, and tag or manual
 publication.
 
 Cross builds use `cargo zigbuild` and require the Rust target, `cargo-zigbuild`,

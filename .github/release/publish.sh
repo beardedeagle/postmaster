@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Publish only after downloading and verifying every signed draft asset.
+# Publish only after checking every draft asset's integrity and GitHub attestation.
 # Args: tag (string), source commit (SHA), artifact directory (path).
-# Requires GH_TOKEN, MINISIGN_PUBLIC_KEY and the GitHub workflow identity variables.
+# Requires GH_TOKEN and the GitHub workflow identity variables.
 set -euo pipefail
 
 tag="$1"
@@ -22,7 +22,6 @@ download_dir="$(mktemp -d)"
 trap 'rm -rf "$download_dir"' EXIT
 gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$download_dir"
 just release-verify "$tag" "$commit" "$download_dir"
-minisign -V -H -P "$MINISIGN_PUBLIC_KEY" -m "$download_dir/SHA256SUMS"
 for artifact in "$download_dir"/*; do
   gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
     --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
