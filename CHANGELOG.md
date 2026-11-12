@@ -136,6 +136,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Provides native and cross builds through the Justfile build matrix.
   Cross builds use `cargo zigbuild`; builds preserve compiler flags and
   profile overrides, and `max` builds remap source paths.
+- Builds five Linux and macOS release targets from version tags or manual
+  runs. Runs release-profile tests and packaged-binary checks, and generates
+  GitHub attestations for archives, SHA-256 manifests, and source metadata.
+  Verifies downloaded draft assets before publication and refuses to
+  overwrite existing releases.
 - Uses Justfile recipes for local checks and GitHub workflow definitions.
   In-repo setup actions refresh stable before resolving the repository's
   components and targets. Nix installation verifies

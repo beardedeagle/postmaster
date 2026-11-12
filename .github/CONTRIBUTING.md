@@ -39,7 +39,10 @@ just --list          # see every available recipe
 ## The development loop
 
 Run the Rust gate before pushing. It includes native and release checks,
-Linux-target Clippy, a locked build, and tests:
+Linux-target Clippy, a locked build, and tests.
+
+The `Quality (ubuntu-latest)` and `Quality (macos-latest)` checks are required
+on `main`.
 
 ```sh
 just ci-rust     # fmt-check, native/release/Linux clippy, build, test
@@ -58,6 +61,17 @@ just audit       # advisory database check, warnings fail
 ```
 
 ## Submitting a change
+
+Release tooling has its own focused checks:
+
+```sh
+just release-test
+just release-build aarch64-apple-darwin # select the native target
+```
+
+These require Python 3.11 or newer.
+The [release guide](../docs/src/development/releases.md) describes GitHub
+attestations, tag/manual publication, and consumer verification.
 
 1. Branch off `main` (`git switch -c fix/short-description`).
 2. Make the change and add tests where needed.
