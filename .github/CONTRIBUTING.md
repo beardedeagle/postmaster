@@ -51,9 +51,12 @@ just docs        # mdBook build
 ```
 
 CI and Nix run the same recipes on pull requests and manual runs.
-Pages deployment keeps its `main` push trigger.
 The Rust gate also exercises the runner setup actions without installing tools.
 Report local and hosted results separately in the PR.
+
+The Docs workflow builds pull requests and `main`, then uploads the book as a
+Pages artifact. Only pushes and manual runs on `main` publish it through the
+`github-pages` environment.
 
 For dependency policy checks:
 
