@@ -617,10 +617,19 @@ mod tests {
         fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
 
         // New config only keeps KEY_A; KEY_B should be pruned.
-        prune_stale(&dir, &["KEY_A".to_string()]).unwrap();
+        let result = prune_stale(&dir, &["KEY_A".to_string()]);
+        let trusted_root = crate::test_util::root_has_trusted_owner();
+        if trusted_root {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "/: directory path is owned by an untrusted user"
+            );
+        }
 
         assert!(dir.join("KEY_A").exists(), "KEY_A should survive prune");
-        assert!(!dir.join("KEY_B").exists(), "KEY_B should be pruned");
+        assert_eq!(dir.join("KEY_B").exists(), !trusted_root);
         assert!(
             dir.join(MANAGED_SENTINEL).exists(),
             "sentinel is never pruned"
@@ -636,7 +645,11 @@ mod tests {
 
         let err = prune_stale(&dir, &[]).unwrap_err();
 
-        assert!(err.contains("sentinel"), "{err}");
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("sentinel"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
         assert!(dir.join("FOREIGN").exists(), "nothing may be deleted");
     }
 
@@ -649,12 +662,25 @@ mod tests {
         fs::hard_link(dir.join(MANAGED_SENTINEL), outside.join("sentinel")).unwrap();
 
         let err = prune_stale(&dir, &[]).unwrap_err();
-        assert!(err.contains("sentinel"), "{err}");
+        let trusted_root = crate::test_util::root_has_trusted_owner();
+        if trusted_root {
+            assert!(err.contains("sentinel"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
         assert!(dir.join("SECRET").exists());
 
         fs::remove_file(outside.join("sentinel")).unwrap();
         fs::hard_link(dir.join("SECRET"), outside.join("secret")).unwrap();
-        prune_stale(&dir, &[]).unwrap();
+        let result = prune_stale(&dir, &[]);
+        if trusted_root {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "/: directory path is owned by an untrusted user"
+            );
+        }
         assert_eq!(fs::read(dir.join("SECRET")).unwrap(), b"secret");
         assert_eq!(fs::read(outside.join("secret")).unwrap(), b"secret");
     }
@@ -681,7 +707,16 @@ mod tests {
         // First launch: the secrets dir exists but is empty — nothing to
         // prune, no sentinel required.
         let dir = tdir("prune-empty");
-        prune_stale(&dir, &[]).unwrap();
+        let result = prune_stale(&dir, &[]);
+        if crate::test_util::root_has_trusted_owner() {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "/: directory path is owned by an untrusted user"
+            );
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     }
 
     #[test]
@@ -696,7 +731,15 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("KEEP_ME"), dir.join("a-link")).unwrap();
         fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
 
-        prune_stale(&dir, &["KEEP_ME".to_string()]).unwrap();
+        let result = prune_stale(&dir, &["KEEP_ME".to_string()]);
+        if crate::test_util::root_has_trusted_owner() {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "/: directory path is owned by an untrusted user"
+            );
+        }
         assert!(dir.join("KEEP_ME").exists());
         assert!(dir.join("subdir").is_dir(), "subdir should not be removed");
         assert!(

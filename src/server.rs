@@ -1270,7 +1270,21 @@ mod tests {
         fs::create_dir(&parent).unwrap();
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
         std::os::unix::fs::symlink(&parent, dir.join("alias")).unwrap();
-        let opened = open_socket_parent(&dir.join("alias/new/../nested"), None).unwrap();
+        let path = dir.join("alias/new/../nested");
+        let opened = open_socket_parent(&path, None);
+        if !crate::test_util::root_has_trusted_owner() {
+            assert_eq!(
+                opened.unwrap_err(),
+                format!(
+                    "{}: socket ancestor is owned by an untrusted user",
+                    path.display()
+                )
+            );
+            assert!(!parent.join("new").exists());
+            assert!(!parent.join("nested").exists());
+            return;
+        }
+        let opened = opened.unwrap();
         assert_eq!(
             rustix::fs::fstat(&opened).unwrap().st_ino,
             fs::metadata(parent.join("nested")).unwrap().ino()
@@ -1307,7 +1321,19 @@ mod tests {
         let dir = crate::test_util::temp_dir::TestDir::new("socket-pin");
         let parent = dir.join("parent");
         fs::create_dir(&parent).unwrap();
-        let fd = open_socket_parent(&parent, None).unwrap();
+        let fd = open_socket_parent(&parent, None);
+        if !crate::test_util::root_has_trusted_owner() {
+            assert_eq!(
+                fd.unwrap_err(),
+                format!(
+                    "{}: socket ancestor is owned by an untrusted user",
+                    parent.display()
+                )
+            );
+            assert!(!parent.join("cred.sock").exists());
+            return;
+        }
+        let fd = fd.unwrap();
         fs::rename(&parent, dir.join("pinned")).unwrap();
         fs::create_dir(dir.join("unrelated")).unwrap();
         std::os::unix::fs::symlink(dir.join("unrelated"), &parent).unwrap();
