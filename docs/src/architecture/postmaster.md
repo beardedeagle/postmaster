@@ -228,7 +228,8 @@ monitor. The ramdisk is destroyed when the launchd job stops (macOS).
 ## Implementation
 
 Postmaster uses Rust edition 2024, RustCrypto, and no async runtime or OpenSSL.
-Linux uses rustix's `linux_raw` backend, with a libc call for `fork`.
+Linux uses rustix's `linux_raw` backend, with narrow libc calls for `fork`
+and inherited-socket validation before fd adoption.
 macOS uses libc for peer checks, signal handling, kqueue, and anti-debug
 hardening. Each unsafe site has a SAFETY comment and an entry in the
 [unsafe-code registry](../unsafe-code/index.md).
@@ -241,6 +242,10 @@ in the *path*: one socket per (service, key). A binding can generate a
 single `postmaster-credd.socket` unit carrying N `ListenStream=`
 entries; postmaster maps each inherited fd back to its path via
 `getsockname(2)`.
+
+Postmaster clients can select framed endpoints with a versioned length header
+and an expected listener UID. Raw endpoints keep the direct systemd format.
+Both use local Unix sockets and share the same secret resolution and peer ACLs.
 
 On Linux, postmaster is socket-activated: the `postmaster-credd.socket`
 unit owns the sockets and the daemon inherits them via `sd_listen_fds`.
@@ -275,10 +280,9 @@ The runtime dependencies are:
 - `getrandom` — random names for private temporary files
 - `rustix` — syscalls (raw syscalls via `linux_raw` on Linux, incl. the
   monitor's pidfd/poll and the experimental `runtime` signal-mask API;
-  the only libc FFI on Linux is `fork(2)` — see the unsafe registry)
+  narrow libc exceptions are listed in the unsafe registry)
 - `libc` — macOS (getpeereid, `PT_DENY_ATTACH`, the monitor's
-  kqueue/signal ops) plus Linux `fork(2)` only (rustix has no fork
-  wrapper)
+  kqueue/signal ops) plus Linux `fork(2)` and raw inherited-socket validation
 - `security-framework` — macOS only (Security.framework keychain reads)
 - `zeroize` — secret memory wiping
 

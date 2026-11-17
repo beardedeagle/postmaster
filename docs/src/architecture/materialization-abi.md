@@ -292,13 +292,19 @@ variables. Passthrough values containing NUL bytes are rejected.
 
 ### `credentials`
 
-On systemd, PID 1 has already materialized credentials and the launcher only
-exports `<KEY>_FILE` pointers into `$CREDENTIALS_DIRECTORY`.
+On systemd, PID 1 has already materialized credentials. The launcher verifies
+that the named credentials exist as regular files, then exports `<KEY>_FILE`
+pointers into `$CREDENTIALS_DIRECTORY` without reading values.
 
 When `sockets` is configured, the launcher fetches values from local
 Postmaster sockets, writes them beneath `secrets_dir`, and exports
 credential-style pointers. This path is normally used with launchd. RAM
 backing is verified only when `verify_ramdisk` is set on macOS.
+Each socket descriptor requires `path`, `protocol`, and `server_uid`. The
+client checks the expected listener UID before reading. Framed endpoints reject
+partial or extra response bytes; raw endpoints preserve systemd's direct socket
+format and retain its EOF truncation limitation. Connect and read share one
+five-second deadline. These are Unix sockets, local to the host.
 
 Every `credential_keys` entry must be a valid identifier before any fetch or
 write occurs.

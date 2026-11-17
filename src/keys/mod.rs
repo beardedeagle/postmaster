@@ -109,10 +109,10 @@ impl KeyRing {
                     raw.zeroize();
                     return Err(format!("{name}: expected a 32-byte key"));
                 }
-                let mut arr = [0_u8; 32];
+                let mut arr = Zeroizing::new([0_u8; 32]);
                 arr.copy_from_slice(&raw);
                 raw.zeroize();
-                keys.push(Zeroizing::new(arr));
+                keys.push(arr);
             }
             value.zeroize();
             if keys.is_empty() {
@@ -232,6 +232,17 @@ pub fn resolve(
     ring: &KeyRing,
     naming: KeyNaming,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
+    if is_private_key_var_name(&entry.key)
+        || naming
+            .metadata_prefix()
+            .is_some_and(|prefix| entry.key.starts_with(prefix))
+    {
+        return Err(format!(
+            "{}: reserved credential key {:?}",
+            entry.env_file.display(),
+            entry.key
+        ));
+    }
     let mut budget = dotenv::Budget::default();
     let iter = dotenv::read(&entry.env_file, &mut budget, Some(&entry.env_file_sha256))?;
     // Last assignment wins, matching dotenv semantics within one file.
@@ -305,6 +316,12 @@ pub fn resolve_all(
         let mut file_order: Vec<String> = Vec::new();
         for item in iter {
             let (k, v) = item;
+            if is_private_key_var_name(&k) {
+                return Err(format!(
+                    "{}: key {k:?} is reserved for private-key provisioning",
+                    f.display()
+                ));
+            }
             if let Some(prefix) = metadata_prefix
                 && k.starts_with(prefix)
             {
@@ -424,6 +441,7 @@ pub mod tests {
                 key: "SECRET".into(),
                 env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
                 peer_user: None,
+                protocol: crate::cli::SocketProtocol::Raw,
             };
             let error = resolve(&entry, &ring, KeyNaming::Env).unwrap_err();
             assert!(!error.contains("PRIVATE_SENTINEL"));
@@ -481,6 +499,7 @@ pub mod tests {
             key: "SECRET".into(),
             env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&path).unwrap()).into()],
             peer_user: None,
+            protocol: crate::cli::SocketProtocol::Raw,
         };
         assert_eq!(
             &*resolve(&entry, &ring, KeyNaming::Env).unwrap(),
@@ -527,6 +546,7 @@ pub mod tests {
             key: "PLAIN".to_string(),
             env_file_sha256: vec![sha2::Sha256::digest(std::fs::read(&env_path).unwrap()).into()],
             peer_user: None,
+            protocol: crate::cli::SocketProtocol::Raw,
         };
         // Ring can be empty for plaintext path
         let ring = KeyRing(HashMap::new());

@@ -5,6 +5,7 @@
 //! key-source names, and projection settings.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -34,6 +35,17 @@ pub enum KeysSource {
     File(PathBuf),
 }
 
+/// Protocol selected independently by a credential listener and its clients.
+#[derive(Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SocketProtocol {
+    /// Write the credential bytes unchanged, ending at EOF (including systemd clients).
+    #[default]
+    Raw,
+    /// Send a versioned length frame so clients can reject incomplete responses.
+    Framed,
+}
+
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 /// A single credential mapping served by postmaster. Unknown fields are
@@ -51,6 +63,9 @@ pub struct Entry {
     /// Enforced even when `--allow-nonroot` is set.
     #[serde(default)]
     pub peer_user: Option<String>,
+    /// Wire protocol for this listener; raw bytes remain the default for systemd.
+    #[serde(default)]
+    pub protocol: SocketProtocol,
 }
 
 fn deserialize_env_file_hashes<'de, D>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error>
@@ -87,9 +102,15 @@ pub enum Invocation {
     /// `postmaster --config <file.json> [--bind] [--allow-nonroot]`:
     /// run the credential daemon (socket-activated on Linux, bind on macOS).
     Serve(Args),
-    /// `postmaster fetch <socket-path>`: connect to a running daemon
-    /// socket and write the decrypted bytes to stdout.
-    Fetch(PathBuf),
+    /// Connect to a credential listener and write only the credential bytes to stdout.
+    Fetch {
+        /// Relative or absolute Unix socket path.
+        path: PathBuf,
+        /// Explicit wire protocol; defaults to unchanged raw bytes.
+        protocol: SocketProtocol,
+        /// Expected server UID; required for framed fetches.
+        server_uid: Option<u32>,
+    },
     /// `postmaster exec --config <exec.json> [--check] [--verify-keys]`
     /// `-- <argv…>`: decrypt + inject per the launcher contract, then
     /// execvp argv. See launcher.rs.
@@ -105,7 +126,7 @@ pub enum Invocation {
         /// the launch (fail-closed).
         verify_keys: bool,
         /// Child argv — everything after `--` on the command line.
-        argv: Vec<String>,
+        argv: Vec<OsString>,
     },
     /// `postmaster setup --config <exec.json> [--recheck] [--unattended]
     /// [--force] [--keys-dir <path>]`: verify platform prerequisites,
@@ -148,27 +169,30 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// the value: `--config --check` must not parse `"--check"` as the
 /// config path.
 fn option_value(
-    it: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+    it: &mut std::iter::Peekable<impl Iterator<Item = OsString>>,
     flag: &str,
-) -> Result<String, String> {
+) -> Result<OsString, String> {
     match it.next() {
-        None => Err(format!("error: {flag} requires a path")),
-        Some(v) if v.starts_with('-') => Err(format!(
-            "error: {flag} requires a path, got flag `{v}` (missing value?)"
+        None => Err(format!("error: {flag} requires a value")),
+        Some(v) if v.as_encoded_bytes().starts_with(b"-") => Err(format!(
+            "error: {flag} requires a value, got flag `{}` (missing value?)",
+            v.to_string_lossy()
         )),
         Some(v) => Ok(v),
     }
 }
 
-/// Parse command-line arguments from `std::env::args()`.
+/// Parse Unix paths and child arguments without requiring valid UTF-8.
 pub fn parse_args() -> Result<Invocation, String> {
-    parse_args_from(std::env::args().skip(1))
+    parse_args_from(std::env::args_os().skip(1))
 }
 
 /// Parse command-line arguments from a provided iterator. Kept simple
 /// with no external dependencies (no clap).
-pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocation, String> {
-    let mut it = args.into_iter().peekable();
+pub fn parse_args_from(
+    args: impl IntoIterator<Item = impl Into<OsString>>,
+) -> Result<Invocation, String> {
+    let mut it = args.into_iter().map(Into::into).peekable();
 
     // No args: print help and fail
     if it.peek().is_none() {
@@ -177,25 +201,31 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
         ));
     }
 
-    match it.peek().map(String::as_str) {
+    match it.peek().and_then(|arg| arg.to_str()).unwrap_or("") {
         // Global flags that work before any subcommand
-        Some("--help") | Some("-h") => {
+        "--help" | "-h" => {
             it.next();
             if it.next().is_some() {
                 return Err("error: --help does not take arguments".into());
             }
             Ok(Invocation::Help(None))
         }
-        Some("--version") | Some("-V") => {
+        "--version" | "-V" => {
             it.next();
             if it.next().is_some() {
                 return Err("error: --version does not take arguments".into());
             }
             Ok(Invocation::Version)
         }
-        Some("help") => {
+        "help" => {
             it.next();
-            let sub = it.next();
+            let sub = it
+                .next()
+                .map(|arg| {
+                    arg.into_string()
+                        .map_err(|_| "error: help requires a UTF-8 subcommand name")
+                })
+                .transpose()?;
             if it.next().is_some() {
                 return Err(
                     "error: `help` takes at most one argument (the subcommand name)".into(),
@@ -203,30 +233,66 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
             }
             Ok(Invocation::Help(sub))
         }
-        Some("fetch") => {
+        "fetch" => {
             it.next();
-            match it.next() {
-                // Every subcommand takes --help/-h.
-                Some(a) if a == "--help" || a == "-h" => Ok(Invocation::Help(Some("fetch".into()))),
-                Some(path) => {
-                    if it.next().is_some() {
+            let mut path = None;
+            let mut protocol = SocketProtocol::Raw;
+            let mut server_uid = None;
+            while let Some(arg) = it.next() {
+                match arg.to_str() {
+                    Some("--help" | "-h") => return Ok(Invocation::Help(Some("fetch".into()))),
+                    Some("--protocol") => {
+                        let value = option_value(&mut it, "--protocol")?;
+                        protocol = match value.to_str() {
+                            Some("raw") => SocketProtocol::Raw,
+                            Some("framed") => SocketProtocol::Framed,
+                            _ => return Err("error: --protocol must be raw or framed".into()),
+                        };
+                    }
+                    Some("--server-uid") => {
+                        let value = option_value(&mut it, "--server-uid")?;
+                        server_uid = Some(
+                            value
+                                .to_str()
+                                .and_then(|value| value.parse::<u32>().ok())
+                                .ok_or("error: --server-uid requires a numeric UID")?,
+                        );
+                    }
+                    Some("--") => {
+                        if path.is_some() {
+                            return Err("error: fetch takes exactly one socket path".into());
+                        }
+                        path = it.next().map(PathBuf::from);
+                        if it.next().is_some() {
+                            return Err("error: fetch takes exactly one socket path".into());
+                        }
+                        break;
+                    }
+                    _ if path.is_none() => path = Some(PathBuf::from(arg)),
+                    _ => {
                         return Err(
                             "error: fetch takes exactly one argument (the socket path)".into()
                         );
                     }
-                    Ok(Invocation::Fetch(PathBuf::from(path)))
                 }
-                None => Err("error: fetch requires a socket path".into()),
             }
+            if protocol == SocketProtocol::Framed && server_uid.is_none() {
+                return Err("error: framed fetch requires --server-uid".into());
+            }
+            Ok(Invocation::Fetch {
+                path: path.ok_or("error: fetch requires a socket path")?,
+                protocol,
+                server_uid,
+            })
         }
-        Some("exec") => {
+        "exec" => {
             it.next();
             let mut config = None;
             let mut check = false;
             let mut verify_keys = false;
-            let mut argv: Vec<String> = Vec::new();
+            let mut argv: Vec<OsString> = Vec::new();
             while let Some(a) = it.next() {
-                match a.as_str() {
+                match a.to_str().unwrap_or("") {
                     "--config" => {
                         config = Some(PathBuf::from(option_value(&mut it, "--config")?));
                     }
@@ -237,12 +303,16 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
                         argv = it.collect();
                         break;
                     }
-                    other => {
+                    _ => {
                         return Err(format!(
-                            "error: exec: unknown option `{other}`\n\n{HELP_EXEC}"
+                            "error: exec: unknown option `{}`\n\n{HELP_EXEC}",
+                            a.to_string_lossy()
                         ));
                     }
                 }
+            }
+            if check && verify_keys {
+                return Err("error: exec: --check conflicts with --verify-keys".into());
             }
             if check {
                 if !argv.is_empty() {
@@ -260,7 +330,7 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
                 argv,
             })
         }
-        Some("setup") => {
+        "setup" => {
             it.next();
             let mut config = None;
             let mut recheck = false;
@@ -268,7 +338,7 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
             let mut force = false;
             let mut keys_dir = None;
             while let Some(a) = it.next() {
-                match a.as_str() {
+                match a.to_str().unwrap_or("") {
                     "--config" => {
                         config = Some(PathBuf::from(option_value(&mut it, "--config")?));
                     }
@@ -279,12 +349,16 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
                         keys_dir = Some(PathBuf::from(option_value(&mut it, "--keys-dir")?));
                     }
                     "--help" | "-h" => return Ok(Invocation::Help(Some("setup".into()))),
-                    other => {
+                    _ => {
                         return Err(format!(
-                            "error: setup: unknown option `{other}`\n\n{HELP_SETUP}"
+                            "error: setup: unknown option `{}`\n\n{HELP_SETUP}",
+                            a.to_string_lossy()
                         ));
                     }
                 }
+            }
+            if recheck && force {
+                return Err("error: setup: --recheck conflicts with --force".into());
             }
             let config = config.ok_or("error: setup: missing required --config <exec.json>")?;
             Ok(Invocation::Setup {
@@ -295,18 +369,19 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
                 keys_dir,
             })
         }
-        Some("cleanup") => {
+        "cleanup" => {
             it.next();
             let mut config = None;
             while let Some(a) = it.next() {
-                match a.as_str() {
+                match a.to_str().unwrap_or("") {
                     "--config" => {
                         config = Some(PathBuf::from(option_value(&mut it, "--config")?));
                     }
                     "--help" | "-h" => return Ok(Invocation::Help(Some("cleanup".into()))),
-                    other => {
+                    _ => {
                         return Err(format!(
-                            "error: cleanup: unknown option `{other}`\n\n{HELP_CLEANUP}"
+                            "error: cleanup: unknown option `{}`\n\n{HELP_CLEANUP}",
+                            a.to_string_lossy()
                         ));
                     }
                 }
@@ -316,20 +391,23 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
             })
         }
         // Serve mode (default, no subcommand keyword)
-        Some("--config") | Some("--bind") | Some("--allow-nonroot") => {
+        "--config" | "--bind" | "--allow-nonroot" => {
             let mut config = None;
             let mut bind = false;
             let mut allow_nonroot = false;
             while let Some(a) = it.next() {
-                match a.as_str() {
+                match a.to_str().unwrap_or("") {
                     "--config" => {
                         config = Some(PathBuf::from(option_value(&mut it, "--config")?));
                     }
                     "--bind" => bind = true,
                     "--allow-nonroot" => allow_nonroot = true,
                     "--help" | "-h" => return Ok(Invocation::Help(None)),
-                    other => {
-                        return Err(format!("error: unknown option `{other}`\n\n{HELP_TOP}"));
+                    _ => {
+                        return Err(format!(
+                            "error: unknown option `{}`\n\n{HELP_TOP}",
+                            a.to_string_lossy()
+                        ));
                     }
                 }
             }
@@ -339,10 +417,10 @@ pub fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Invocat
                 allow_nonroot,
             }))
         }
-        Some(other) => Err(format!(
-            "error: unknown subcommand `{other}`\n\nTry `postmaster help` for usage.\n"
+        _ => Err(format!(
+            "error: unknown subcommand `{}`\n\nTry `postmaster help` for usage.\n",
+            it.next().unwrap_or_default().to_string_lossy()
         )),
-        None => unreachable!("empty args handled above"),
     }
 }
 
@@ -426,14 +504,95 @@ mod tests {
     }
 
     #[test]
+    fn contradictory_verification_and_mutation_flags_are_rejected() {
+        assert!(
+            parse(&["exec", "--config", "/e.json", "--check", "--verify-keys"])
+                .unwrap_err()
+                .contains("conflicts")
+        );
+        assert!(
+            parse(&["setup", "--config", "/e.json", "--recheck", "--force"])
+                .unwrap_err()
+                .contains("conflicts")
+        );
+    }
+
+    #[test]
+    fn paths_and_child_arguments_preserve_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let path = OsString::from_vec(b"/tmp/config-\xff".to_vec());
+        let child_arg = OsString::from_vec(b"arg-\xfe".to_vec());
+        let invocation = parse_args_from([
+            OsString::from("exec"),
+            OsString::from("--config"),
+            path.clone(),
+            OsString::from("--"),
+            OsString::from("/bin/app"),
+            child_arg.clone(),
+        ])
+        .unwrap();
+        match invocation {
+            Invocation::Exec { config, argv, .. } => {
+                assert_eq!(config.as_os_str(), path);
+                assert_eq!(argv[1], child_arg);
+            }
+            other => panic!("expected Exec, got {other:?}"),
+        }
+        assert!(matches!(
+            parse_args_from([OsString::from("fetch"), path.clone()]).unwrap(),
+            Invocation::Fetch { path: parsed, .. } if parsed.as_os_str() == path
+        ));
+        assert!(parse_args_from([child_arg]).is_err());
+    }
+
+    #[test]
     fn parse_fetch_and_serve_still_work() {
         assert!(matches!(
             parse(&["fetch", "/s.sock"]),
-            Ok(Invocation::Fetch(_))
+            Ok(Invocation::Fetch { .. })
         ));
         assert!(matches!(
             parse(&["--config", "/c.json", "--bind"]),
             Ok(Invocation::Serve(Args { bind: true, .. }))
+        ));
+    }
+
+    #[test]
+    fn fetch_protocol_and_server_identity_are_explicit() {
+        assert!(matches!(
+            parse(&["fetch", "socket"]),
+            Ok(Invocation::Fetch {
+                protocol: SocketProtocol::Raw,
+                server_uid: None,
+                ..
+            })
+        ));
+        for protocol in ["raw", "framed"] {
+            assert!(matches!(
+                parse(&["fetch", "--protocol", protocol, "socket", "--server-uid", "42"]),
+                Ok(Invocation::Fetch { protocol: parsed, server_uid: Some(42), .. })
+                    if parsed == if protocol == "raw" { SocketProtocol::Raw } else { SocketProtocol::Framed }
+            ));
+        }
+        for args in [
+            vec!["fetch", "--protocol", "framed", "socket"],
+            vec!["fetch", "--protocol", "auto", "socket"],
+            vec!["fetch", "--protocol"],
+            vec!["fetch", "--server-uid", "user", "socket"],
+            vec!["fetch", "--server-uid", "4294967296", "socket"],
+            vec!["fetch", "--server-uid", "-1", "socket"],
+            vec!["fetch", "--server-uid"],
+            vec!["fetch", "first", "second"],
+        ] {
+            assert!(
+                parse(&args).is_err(),
+                "accepted invalid arguments: {args:?}"
+            );
+        }
+        assert!(matches!(
+            parse(&["fetch", "--", "--protocol"]),
+            Ok(Invocation::Fetch { path, protocol: SocketProtocol::Raw, .. }) if path.as_os_str() == "--protocol"
         ));
     }
 
@@ -487,7 +646,11 @@ mod tests {
                 "/run/cred.sock": {"env_file": "/nix/store/x/.env", "key": "DB_URL", "env_file_sha256": ["0000000000000000000000000000000000000000000000000000000000000000"], "peer_user": "_www"}
             }
         });
-        serde_json::from_value::<Config>(raw).unwrap();
+        let config = serde_json::from_value::<Config>(raw).unwrap();
+        assert_eq!(
+            config.credentials.values().next().unwrap().protocol,
+            SocketProtocol::Raw
+        );
     }
 
     #[test]
@@ -568,7 +731,7 @@ mod tests {
         // The real path still parses.
         assert!(matches!(
             parse(&["fetch", "/run/pm/s.sock"]),
-            Ok(Invocation::Fetch(p)) if &*p == std::path::Path::new("/run/pm/s.sock")
+            Ok(Invocation::Fetch { path, .. }) if &*path == std::path::Path::new("/run/pm/s.sock")
         ));
     }
 

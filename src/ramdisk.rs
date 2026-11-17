@@ -109,6 +109,9 @@ pub(crate) fn open_verified_ramdisk_dir(
     let out = std::process::Command::new("/sbin/mount")
         .output()
         .map_err(|e| format!("/sbin/mount: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("/sbin/mount: exited with {}", out.status));
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     if !mount_lists_hfs(&text, mount_point) {
         return Err(format!(
@@ -129,6 +132,9 @@ pub(crate) fn open_verified_ramdisk_dir(
         .arg("info")
         .output()
         .map_err(|e| format!("hdiutil info: {e}"))?;
+    if !hdiutil_out.status.success() {
+        return Err(format!("hdiutil info: exited with {}", hdiutil_out.status));
+    }
     let hdiutil_text = String::from_utf8_lossy(&hdiutil_out.stdout);
     if !device_is_ram_backed(&device, &hdiutil_text) {
         return Err(format!(

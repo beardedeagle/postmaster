@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use crate::adapter::KeyNaming;
+use crate::cli::SocketProtocol;
 
 /// Public launcher configuration shared by deployment integrations.
 /// Contains input paths, key-source names, and projection settings, not secret values.
@@ -51,11 +52,23 @@ pub struct ExecConfig {
     /// Non-empty selects the fetch path; empty means systemd already
     /// materialized the credentials.
     #[serde(default)]
-    pub sockets: HashMap<String, PathBuf>,
+    pub sockets: HashMap<String, CredentialSocket>,
     /// On macOS, require a RAM-backed HFS mount and an owned `secrets_dir`
     /// on that device before writing plaintext.
     #[serde(default)]
     pub verify_ramdisk: Option<PathBuf>,
+}
+
+/// Explicit listener address, wire protocol, and authenticated server identity.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSocket {
+    /// Relative or absolute Unix socket path.
+    pub path: PathBuf,
+    /// Wire protocol configured on the corresponding daemon entry.
+    pub protocol: SocketProtocol,
+    /// Expected socket creator UID, which can be the manager for activated sockets.
+    pub server_uid: u32,
 }
 
 /// How resolved secret values are projected into the child process.
@@ -137,9 +150,20 @@ fn validate_mode_required_fields(cfg: &ExecConfig) -> Result<(), String> {
                     return Err("credentials(fetch) mode requires secrets_dir".into());
                 }
                 for key in &cfg.credential_keys {
-                    if !cfg.sockets.contains_key(key) {
-                        return Err(format!("{key}: no socket mapped in exec config"));
+                    match cfg.sockets.get(key) {
+                        None => return Err(format!("{key}: no socket mapped in exec config")),
+                        Some(socket) if socket.path.as_os_str().is_empty() => {
+                            return Err(format!("{key}: socket path must not be empty"));
+                        }
+                        Some(_) => {}
                     }
+                }
+                if cfg
+                    .sockets
+                    .keys()
+                    .any(|key| !cfg.credential_keys.contains(key))
+                {
+                    return Err("sockets contains a key absent from credential_keys".into());
                 }
             }
         }
@@ -205,6 +229,17 @@ fn validate_mode_irrelevant_fields(cfg: &ExecConfig) -> Result<(), String> {
             if !cfg.passthrough.is_empty() {
                 return Err("credentials mode does not use passthrough".into());
             }
+            if !cfg.strict {
+                return Err("credentials mode does not use strict".into());
+            }
+            if cfg.sockets.is_empty() {
+                if cfg.secrets_dir.is_some() {
+                    return Err("systemd credentials mode does not use secrets_dir".into());
+                }
+                if cfg.verify_ramdisk.is_some() {
+                    return Err("systemd credentials mode does not use verify_ramdisk".into());
+                }
+            }
         }
     }
     Ok(())
@@ -261,6 +296,11 @@ fn validate_ident_list(field: &str, keys: &[String]) -> Result<(), String> {
         if !crate::keys::is_ident(key) {
             return Err(format!("{field} entry {key:?}: not a valid identifier"));
         }
+        if crate::keys::is_private_key_var_name(key) {
+            return Err(format!(
+                "{field} entry {key:?}: reserved for private-key provisioning"
+            ));
+        }
     }
     Ok(())
 }
@@ -274,6 +314,67 @@ fn default_true() -> bool {
 /// Tests for exec config parsing and validation.
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_socket_requires_path_protocol_and_server_identity() {
+        for protocol in ["raw", "framed"] {
+            let mut raw = serde_json::json!({
+                "mode":"credentials", "credential_keys":["K"], "secrets_dir":"/run/secrets",
+                "sockets":{"K":{"path":"relative.sock", "protocol":protocol, "server_uid":42}}
+            });
+            let cfg: ExecConfig = serde_json::from_value(raw.clone()).unwrap();
+            cfg.validate_shape().unwrap();
+            assert_eq!(cfg.sockets["K"].server_uid, 42);
+            for field in ["path", "protocol", "server_uid"] {
+                let mut incomplete = raw.clone();
+                incomplete["sockets"]["K"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+                assert!(serde_json::from_value::<ExecConfig>(incomplete).is_err());
+            }
+            raw["sockets"]["K"]["unexpected"] = serde_json::json!(true);
+            assert!(serde_json::from_value::<ExecConfig>(raw).is_err());
+        }
+        for socket in [
+            serde_json::json!("/run/credential.sock"),
+            serde_json::json!({"path":"/run/k.sock", "protocol":"auto", "server_uid":42}),
+            serde_json::json!({"path":"/run/k.sock", "protocol":"framed", "server_uid":-1}),
+        ] {
+            assert!(
+                serde_json::from_value::<ExecConfig>(serde_json::json!({
+                    "mode":"credentials", "credential_keys":["K"], "secrets_dir":"/run/secrets",
+                    "sockets":{"K":socket}
+                }))
+                .is_err()
+            );
+        }
+        let cfg: ExecConfig = serde_json::from_value(serde_json::json!({
+            "mode":"credentials", "credential_keys":["K"], "secrets_dir":"/run/secrets",
+            "sockets":{"K":{"path":"", "protocol":"framed", "server_uid":42}}
+        }))
+        .unwrap();
+        assert!(cfg.validate_shape().unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn credentials_reject_unused_fields_and_unmapped_sockets() {
+        for extra in [
+            serde_json::json!({"secrets_dir":"/run/secrets"}),
+            serde_json::json!({"verify_ramdisk":"/run/secrets"}),
+            serde_json::json!({"strict":false}),
+            serde_json::json!({"secrets_dir":"/run/secrets", "sockets":{"DB":{"path":"/run/db.sock", "protocol":"raw", "server_uid":0}, "UNUSED":{"path":"/run/unused.sock", "protocol":"raw", "server_uid":0}}}),
+        ] {
+            let mut raw = serde_json::json!({"mode":"credentials", "credential_keys":["DB"]});
+            raw.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let cfg: ExecConfig = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate_shape().is_err());
+        }
+        let cfg: ExecConfig = serde_json::from_value(serde_json::json!({"mode":"credentials", "credential_keys":["DB"], "secrets_dir":"/run/secrets", "sockets":{"DB":{"path":"/run/db.sock", "protocol":"raw", "server_uid":0}}, "verify_ramdisk":"/run/ramdisk"})).unwrap();
+        assert!(cfg.validate_shape().is_ok());
+    }
 
     #[test]
     fn exec_config_parses() {
@@ -377,7 +478,7 @@ mod tests {
 
         // files mode should reject credential_keys and sockets.
         let files_with_sockets: ExecConfig = serde_json::from_str(
-            r#"{"mode":"files","keys":["environment"],"env_files":["/nix/store/x/.env"],"secrets_dir":"/run/x","sockets":{"DB":"/s.sock"}}"#,
+            r#"{"mode":"files","keys":["environment"],"env_files":["/nix/store/x/.env"],"secrets_dir":"/run/x","sockets":{"DB":{"path":"/s.sock", "protocol":"raw", "server_uid":0}}}"#,
         )
         .unwrap();
         assert!(

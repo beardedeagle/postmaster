@@ -93,13 +93,7 @@ fn exec_private_key_variables_are_not_inherited() {
     let env = common::write_env_file(
         &d,
         ".env",
-        &[
-            format!("PLAIN=\"{}\"", common::enc("from-env")),
-            format!(
-                "POSTMASTER_KEY_STAGING=\"{}\"",
-                common::enc("reserved-output")
-            ),
-        ],
+        &[format!("PLAIN=\"{}\"", common::enc("from-env"))],
     );
     let bundle = write_bundle(&d, &[("SECRET", "from-bundle")]);
     let keys = write_keys(&d, true);
@@ -154,6 +148,8 @@ fn exec_private_key_variables_are_not_inherited() {
                 ("DOTENV_PRIVATE_KEY_PRODUCTION", common::TEST_SK_HEX),
                 ("POSTMASTER_KEY", common::TEST_SK_HEX),
                 ("POSTMASTER_KEY_PRODUCTION", common::TEST_SK_HEX),
+                ("POSTMASTER_KEY_STAGING", common::TEST_SK_HEX),
+                ("POSTMASTER_KEY_STAGING_FILE", common::TEST_SK_HEX),
                 ("DOTENV_PRIVATE_KEYFOO", "keep-dotenv"),
                 ("POSTMASTER_KEYFOO", "keep-bundle"),
                 ("HOME", "/postmaster-test-home"),

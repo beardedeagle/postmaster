@@ -65,7 +65,7 @@
         "$ref": "#/$defs/identifier"
       },
       "additionalProperties": {
-        "type": "string"
+        "$ref": "#/$defs/credential_socket"
       }
     },
     "verify_ramdisk": {
@@ -138,8 +138,18 @@
           "keys": { "maxItems": 0 },
           "env_files": { "maxItems": 0 },
           "bundle_files": { "maxItems": 0 },
+          "strict": { "const": true },
           "overload": { "const": false },
           "passthrough": { "maxItems": 0 }
+        },
+        "if": {
+          "properties": { "sockets": { "maxProperties": 0 } }
+        },
+        "then": {
+          "properties": {
+            "secrets_dir": { "const": null },
+            "verify_ramdisk": { "const": null }
+          }
         }
       }
     },
@@ -165,7 +175,24 @@
   "$defs": {
     "identifier": {
       "type": "string",
-      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "not": {
+        "pattern": "^(DOTENV_PRIVATE_KEY|POSTMASTER_KEY)(_.+)?$"
+      }
+    },
+    "credential_socket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "protocol", "server_uid"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "protocol": { "enum": ["raw", "framed"] },
+        "server_uid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
     },
     "credential_name": {
       "type": "string",
@@ -173,7 +200,7 @@
       "not": {
         "enum": [".", ".."]
       },
-      "pattern": "^[^/]+$"
+      "pattern": "^[^/\\u0000]+$"
     },
     "key_source": {
       "oneOf": [

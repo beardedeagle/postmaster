@@ -47,10 +47,18 @@ by the effective uid of the loading process, so `chown` it to the
 service user (or run the file-owning step as that user) — a root-owned
 keys file fails closed for a service running as a normal user.
 
-On macOS, runtime loading and file-source `setup --recheck` also reject ACL
+On macOS, runtime loading and `setup --recheck` also reject ACL
 grants that let anyone other than root or the effective user read or modify the
 key file. These checks leave the file and its ACL intact, including read-only
 files.
+
+`setup --recheck` follows runtime's ordered key-source selection. An unset
+`CREDENTIALS_DIRECTORY` or missing named credential allows the next source;
+an existing credential must pass the same private-file checks as a file source.
+The directory variable must be absolute and nonempty when set. File, Keychain,
+and environment sources are terminal once reached. Credentials projection mode
+requires no private keys, so setup validates that config without provisioning
+a keys directory. `--recheck` and `--force` conflict.
 
 ## Strategy B: TPM2 / host-sealed blob
 
@@ -122,7 +130,9 @@ It restores terminal settings when input finishes, fails, or receives a
 catchable termination or suspend signal. Failed or interrupted terminal reads
 discard unread input before restoration, so a partial secret cannot reach the
 next terminal reader. Successful reads retain queued values. Redirected
-key-file input still accepts multiple lines through EOF. `--force` publishes
+key-file input still accepts multiple lines through EOF. Input is read directly
+into zeroizing buffers without a global stdin read-ahead buffer. Setup input and
+key files are capped at 16 MiB. `--force` publishes
 a fresh 0600 key-file inode after confirmation and refuses a substituted,
 foreign, linked, or special file. Existing open handles keep the old contents.
 

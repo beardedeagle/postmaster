@@ -50,8 +50,9 @@ just ci          # ci-rust + nix flake check
 just docs        # mdBook build
 ```
 
-The GitHub workflow jobs currently use `if: false`, so hosted checks are
-skipped. Run the recipes locally and report that distinction in the PR.
+GitHub workflows run the same recipes on pull requests and pushes to `main`.
+The Rust gate also exercises the runner setup actions without installing tools.
+Report local and hosted results separately in the PR.
 
 For dependency policy checks:
 

@@ -6,11 +6,48 @@
 //! its failure fails the launcher.
 
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::adapter::KeyNaming;
 use crate::exec_config::KeySourceSpec;
 use crate::keys::KeyRing;
+
+/// Read systemd's credential directory, rejecting a set but invalid path.
+pub(crate) fn credential_directory() -> Result<Option<PathBuf>, String> {
+    std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(|dir| {
+            let path = PathBuf::from(dir);
+            if !path.is_absolute() {
+                return Err("$CREDENTIALS_DIRECTORY must be an absolute path".into());
+            }
+            Ok(path)
+        })
+        .transpose()
+}
+
+/// Resolve an optional credential source without following its final symlink.
+pub(crate) fn credential_path(name: &str) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = credential_directory()? else {
+        return Ok(None);
+    };
+    let path = dir.join(name);
+    match fs::symlink_metadata(&path) {
+        Ok(md) if md.file_type().is_symlink() => Err(format!(
+            "{}: credential source is a symlink; refusing to follow",
+            path.display()
+        )),
+        Ok(md) if md.is_file() => Ok(Some(path)),
+        Ok(_) => Err(format!(
+            "{}: credential source is not a regular file",
+            path.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "{}: cannot stat credential source: {e}",
+            path.display()
+        )),
+    }
+}
 
 /// Ordered key-source selection. `credential` is skippable (no
 /// $CREDENTIALS_DIRECTORY or file absent ⇒ try next source); every other
@@ -31,42 +68,9 @@ pub fn load_ring(
     for spec in specs {
         match spec {
             KeySourceSpec::Credential(name) => {
-                if let Some(dir) = std::env::var_os("CREDENTIALS_DIRECTORY") {
-                    let p = Path::new(&dir).join(name);
-                    // Use symlink_metadata instead of p.exists(): exists() follows
-                    // symlinks, so a planted symlink at $CREDENTIALS_DIRECTORY/<name>
-                    // pointing to a world-readable file would be silently followed.
-                    // Reject symlinks outright; the subsequent KeyRing::load also opens
-                    // with O_NOFOLLOW as defense-in-depth.
-                    match fs::symlink_metadata(&p) {
-                        Ok(md) if md.file_type().is_symlink() => {
-                            return Err(format!(
-                                "{}: credential source is a symlink; refusing to follow (remove the symlink)",
-                                p.display()
-                            ));
-                        }
-                        Ok(md) if md.is_file() => return KeyRing::load(&p, namings),
-                        Ok(_) => {
-                            return Err(format!(
-                                "{}: credential source is not a regular file",
-                                p.display()
-                            ));
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            // absent: fall through to next source
-                        }
-                        // A permission-denied or malformed credential dir is NOT
-                        // "absent" — it is misconfigured. Fail loudly rather than
-                        // silently selecting a source the operator didn't expect.
-                        Err(e) => {
-                            return Err(format!(
-                                "{}: cannot stat credential source: {e}",
-                                p.display()
-                            ));
-                        }
-                    }
+                if let Some(path) = credential_path(name)? {
+                    return KeyRing::load(&path, namings);
                 }
-                // absent credential: fall through to the next source
             }
             KeySourceSpec::File(p) => {
                 if p.starts_with("/nix/store") {
@@ -100,41 +104,61 @@ mod tests {
 
     #[test]
     fn load_ring_credential_is_skippable() {
-        // credential source with no CREDENTIALS_DIRECTORY set should fall
-        // through to the next source. Here the next source is "environment",
-        // which is terminal and will fail closed (no DOTENV_PRIVATE_KEY*
-        // vars in the test runner). The error must be from the environment
-        // source, not from the credential source.
-        //
-        // SAFETY: set_var/remove_var are unsafe on edition 2024 (not
-        // thread-safe). Serialized via the process-wide ENV_LOCK
-        // (crate::test_util) shared by every env-mutating test.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::test_util::temp_dir::TestDir::new("credential-fallback");
+        let keys = dir.join("keys");
+        fs::write(&keys, format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32))).unwrap();
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
         let _guard = ENV_LOCK.lock().unwrap();
+        let original = std::env::var_os("CREDENTIALS_DIRECTORY");
+        for credential_dir in [None, Some(dir.as_os_str())] {
+            // SAFETY: serialized against other environment-mutating tests by ENV_LOCK.
+            unsafe {
+                if let Some(path) = credential_dir {
+                    std::env::set_var("CREDENTIALS_DIRECTORY", path);
+                } else {
+                    std::env::remove_var("CREDENTIALS_DIRECTORY");
+                }
+            }
+            let specs = [
+                KeySourceSpec::Credential("absent".into()),
+                KeySourceSpec::File(keys.clone()),
+            ];
+            let ring = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap();
+            assert_eq!(
+                &ring.candidates("DOTENV_PRIVATE_KEY").unwrap()[0][..],
+                &[0x11; 32]
+            );
+        }
+        // SAFETY: ENV_LOCK remains held while the original value is restored.
         unsafe {
-            std::env::remove_var("CREDENTIALS_DIRECTORY");
+            if let Some(value) = original {
+                std::env::set_var("CREDENTIALS_DIRECTORY", value);
+            } else {
+                std::env::remove_var("CREDENTIALS_DIRECTORY");
+            }
         }
-        // Guard against an ambient valid key var in the test runner's own environment
-        // (e.g. DOTENV_PRIVATE_KEY exported in CI): with one present, the environment
-        // source SUCCEEDS and the terminal error is unobservable — skip rather than
-        // flake. Only the Env prefix counts here: these namings require Env alone.
-        let ambient = std::env::vars_os().any(|(k, _)| {
-            k.to_str()
-                .is_some_and(|k| crate::keys::is_key_var_name(KeyNaming::Env.key_prefix(), k))
-        });
-        if ambient {
-            return;
+    }
+
+    #[test]
+    fn credential_directory_rejects_empty_and_relative_paths() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original = std::env::var_os("CREDENTIALS_DIRECTORY");
+        for value in ["", "relative"] {
+            // SAFETY: serialized by ENV_LOCK.
+            unsafe {
+                std::env::set_var("CREDENTIALS_DIRECTORY", value);
+            }
+            assert!(credential_directory().unwrap_err().contains("absolute"));
         }
-        let specs = vec![
-            KeySourceSpec::Credential("nonexistent".to_string()),
-            KeySourceSpec::Environment,
-        ];
-        let err = load_ring(&specs, &[], &[KeyNaming::Env]).unwrap_err();
-        // The error must come from the environment source (terminal),
-        // proving credential fell through rather than erroring.
-        assert!(
-            err.contains("environment:"),
-            "credential should be skippable; got: {err}"
-        );
+        // SAFETY: ENV_LOCK remains held while restoring the original environment.
+        unsafe {
+            if let Some(value) = original {
+                std::env::set_var("CREDENTIALS_DIRECTORY", value);
+            } else {
+                std::env::remove_var("CREDENTIALS_DIRECTORY");
+            }
+        }
     }
 
     #[test]

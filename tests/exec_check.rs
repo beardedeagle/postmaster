@@ -96,7 +96,7 @@ fn exec_check_rejects_structurally_incomplete_credentials_fetch_config() {
           "credential_keys": ["DB_URL", "REDIS_URL"],
           "secrets_dir": "/private/var/run/postmaster/myapp",
           "sockets": {
-            "DB_URL": "/private/var/run/postmaster-credd/myapp/DB_URL.sock"
+            "DB_URL": {"path":"/private/var/run/postmaster-credd/myapp/DB_URL.sock", "protocol":"raw", "server_uid":0}
           }
         }"#,
     )

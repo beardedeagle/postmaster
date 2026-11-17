@@ -14,7 +14,7 @@ Every `unsafe` block requires:
 
 1. A SAFETY comment at the site covering every UB vector
 2. Minimal scope — the smallest possible unsafe block
-3. Safe wrappers first — rustix (raw syscalls, no libc FFI) on Linux;
+3. Safe wrappers first — rustix raw syscalls on Linux;
    libc only where the platform's stable ABI *is* libc (Darwin)
 4. Documentation in this section (registry entry + page)
 5. Tests exercising the mitigation where the platform allows
@@ -24,13 +24,13 @@ Every `unsafe` block requires:
 | Location | Platform | Purpose | Page |
 |----------|----------|---------|------|
 | `launcher.rs` (TerminationGuard: block/block_input/input_pending/restore_mask/Drop) | macOS, Linux | Defer termination across plaintext writes and no-echo input; restore terminal settings before pending signal delivery | [signal-deferral](./signal-deferral.md) |
-| `launcher.rs` (fork(2)) | macOS, Linux | Fork the sibling monitor before exec — the single libc FFI call on Linux (doctrine exception) | [monitor](./monitor.md) |
-| `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`, raw stderr write) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
+| `launcher.rs` (fork(2)) | macOS, Linux | Fork the sibling monitor before exec; rustix has no fork wrapper | [monitor](./monitor.md) |
+| `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `secret_files/acl.rs` | macOS | Inspect directory and key-file ACL grants; clear new private-file ACLs | [macos-libc-boundary](./macos-libc-boundary.md#extended-acls) |
 | `test_util/pty.rs` | all, test-only | Create and own pseudo-terminal descriptors for input restoration tests | [signal-deferral](./signal-deferral.md#tests) |
-| `server.rs` (socket activation) | Linux | `UnixListener::from_raw_fd` on systemd-inherited sockets | [systemd-fd-ownership](./systemd-fd-ownership.md) |
+| `server.rs` (socket activation) | Linux | Raw `getsockopt` validation before `UnixListener::from_raw_fd` on inherited listeners | [systemd-fd-ownership](./systemd-fd-ownership.md) |
 | `keys/source.rs`, `keys/env.rs`, `keys/provisioning/mod.rs` (test modules) | all, test-only | `set_var`/`remove_var` (unsafe on edition 2024) | [test-env-mutation](./test-env-mutation.md) |
 
 Note what is NOT in the inventory: `mlockall`, `setrlimit(Core, 0)`, and

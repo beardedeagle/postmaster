@@ -32,6 +32,11 @@ build:
 test:
     cargo +{{stable_toolchain}} test --locked
 
+# Exercise runner setup logic without installing tools or changing this machine.
+test-actions:
+    python3 .github/actions/setup-rust/test.py
+    python3 .github/actions/setup-nix/test.py
+
 # =============================================================================
 # Nix
 # =============================================================================
@@ -80,7 +85,7 @@ audit:
 # Aggregate
 # =============================================================================
 
-ci-rust: fmt-check clippy clippy-release clippy-linux build test
+ci-rust: fmt-check clippy clippy-release clippy-linux build test test-actions
 ci: ci-rust flake-check
 
 # Release tooling is shared by local checks and the release workflow.

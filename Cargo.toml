@@ -20,7 +20,8 @@ repository = "https://github.com/beardedeagle/postmaster"
 # sibling launch monitor (fork + pidfd/kqueue liveness — see
 # docs/src/unsafe-code/monitor.md; on Linux the monitor's signal ops use
 # rustix's linux_raw `runtime` API, fork(2) is the single libc FFI call),
-# UnixListener::from_raw_fd on the inherited systemd sockets (Linux), and
+# raw descriptor checks and UnixListener::from_raw_fd on inherited systemd sockets
+# (Linux), and
 # test-only set_var/remove_var (unsafe on edition 2024). Each site carries
 # a SAFETY comment and is documented in docs/src/unsafe-code/ (the mdbook
 # "Unsafe Code" section). mlockall/setrlimit/set_dumpable hardening uses
@@ -113,8 +114,9 @@ sha2 = "0.11"
 getrandom = "0.4"
 # Syscall layer: rustix's default linux_raw backend issues raw syscalls from
 # Rust. Signal-mask operations and systemd fd adoption require narrow unsafe
-# blocks; fork(2) uses libc at the launcher boundary.
-rustix = { version = "1", features = ["net", "process", "mm", "fs", "termios", "event"] }
+# blocks; fork(2) uses libc at the launcher boundary and getsockopt validates
+# inherited raw descriptors before constructing Rust fd owners.
+rustix = { version = "1", features = ["net", "process", "mm", "fs", "termios", "event", "stdio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux-only additions for the sibling launch monitor
@@ -127,9 +129,9 @@ rustix = { version = "1", features = ["net", "process", "mm", "fs", "termios", "
 #   an update that changes this unstable API fails the build loudly,
 #   never silently.
 # - rustix "event": poll(2) on the service pidfd for liveness.
-# - libc: fork(2) ONLY. rustix deliberately has no fork wrapper; this is
-#   the single libc FFI call on the Linux exec path (house-doctrine
-#   exception, review-gated — flagged in the unsafe-code registry).
+# - libc: fork(2) at launch and getsockopt for inherited descriptor validation.
+#   rustix deliberately has no fork wrapper, and borrowing an unvalidated raw fd
+#   for a safe socket wrapper would violate the Rust fd contract.
 rustix = { version = "1", features = ["runtime", "event"] }
 libc = "0.2"
 

@@ -1,9 +1,9 @@
 # macOS libc boundary
 
 On Darwin the stable kernel ABI *is* libc, so these calls have no
-raw-syscall route (contrast with Linux, where rustix's `linux_raw`
-backend avoids libc FFI except `fork(2)`). This page covers peer checks, anti-
-debug hardening, and extended ACLs; the launcher's signal-mask guard and the
+raw-syscall route. Linux generally uses rustix's `linux_raw` backend; fork and
+raw inherited-fd validation use narrow libc calls. This page covers peer checks,
+anti-debug hardening, and extended ACLs; the launcher's signal-mask guard and the
 sibling monitor's
 kqueue/signal ops share the same justification and live on their own
 pages ([signal deferral](./signal-deferral.md),
@@ -19,9 +19,10 @@ src/server.rs — fn peer_euid (macOS cfg only)
 
 ### Purpose
 
-The credential socket must only answer the service user. On Linux the
-daemon reads peer credentials with `SO_PEERCRED` (safe rustix); Darwin
-has no `SO_PEERCRED`, so the equivalent is `getpeereid(2)` via libc.
+The daemon checks connecting consumers against its peer-user policy. Fetch
+clients use the same helper to check the listener's expected UID before
+reading. Linux uses `SO_PEERCRED` through safe rustix; Darwin uses
+`getpeereid(2)` through libc.
 
 ### UB vectors and mitigations
 
@@ -32,8 +33,8 @@ has no `SO_PEERCRED`, so the equivalent is `getpeereid(2)` via libc.
 
 ### Remaining risks
 
-`getpeereid` establishes *same-euid*, not *same-process*: any process
-running as the service user passes. That is an accepted residual of the
+`getpeereid` identifies an account, not an executable: any process
+with the expected identity passes. That is an accepted residual of the
 UID-based peer model (see the threat model), not a defect of this
 wrapper.
 
@@ -75,18 +76,19 @@ does not expose. Mode bits alone do not restrict extended ACL grants on macOS.
 Directory checks reject grants to principals other than root or the effective
 user that permit replacement or inherited reads of fresh files. Fresh private
 files have their ACLs cleared before plaintext writes.
-Runtime key-file loading and file-source setup rechecks use the same
+Runtime key-file loading and setup rechecks use the same
 descriptor-based inspection to reject untrusted read or mutation grants without
 changing the source ACL. Root and the effective user remain trusted principals.
 
 The wrapper owns each ACL and qualifier allocation and frees it once with
-`acl_free`. Entry pointers borrow the live ACL; output pointers have initialized
-storage and stay valid through each call. Qualifiers use Darwin's fixed
-16-byte UUID layout and are compared with UUIDs resolved for trusted users.
+`acl_free`. Entry and flag-set pointers borrow the live ACL; output pointers
+have initialized storage and stay valid through each call. Qualifiers use
+Darwin's fixed 16-byte UUID layout and are compared with UUIDs resolved for
+trusted users.
 Descriptor borrows keep the file open throughout each call. Failures return
 errors before plaintext is read or written.
 
 Native tests install replacement and inheritance grants in private fixtures,
 verify rejection, and check that published files have no extended entries.
 Key-file tests cover read/write grants, trusted-user grants, read-only modes,
-and repeated runtime loads and file-source setup rechecks without ACL mutation.
+and repeated runtime loads and setup rechecks without ACL mutation.

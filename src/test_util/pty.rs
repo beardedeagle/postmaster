@@ -60,6 +60,36 @@ impl TestPty {
         self.master.write_all(bytes).unwrap();
     }
 
+    pub fn wait_for_input_consumed(&mut self) {
+        assert!(
+            !rustix::termios::tcgetattr(&self.slave)
+                .unwrap()
+                .local_modes
+                .contains(rustix::termios::LocalModes::ICANON),
+            "queue synchronization requires a noncanonical terminal"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rustix::io::ioctl_fionread(&self.slave).unwrap() != 0 {
+            assert!(self.child.as_mut().unwrap().try_wait().unwrap().is_none());
+            assert!(
+                Instant::now() < deadline,
+                "child did not consume terminal input"
+            );
+            self.receive();
+        }
+    }
+
+    pub fn expect_running_for(&mut self, duration: Duration) {
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            assert!(
+                self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "child exited while waiting for input"
+            );
+            self.receive();
+        }
+    }
+
     fn receive(&mut self) {
         let mut fds = [rustix::event::PollFd::new(
             &self.master,
@@ -69,7 +99,12 @@ impl TestPty {
             tv_sec: 0,
             tv_nsec: 20_000_000,
         };
-        if rustix::event::poll(&mut fds, Some(&timeout)).unwrap() != 0 {
+        let ready = match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(ready) => ready,
+            Err(rustix::io::Errno::INTR) => return,
+            Err(error) => panic!("cannot poll terminal: {error}"),
+        };
+        if ready != 0 {
             let mut bytes = [0; 4096];
             if let Ok(count) = self.master.read(&mut bytes) {
                 self.output.extend_from_slice(&bytes[..count]);

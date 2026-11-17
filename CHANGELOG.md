@@ -31,6 +31,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   termination or suspend signals. Failed or interrupted terminal reads discard
   unread input; successful reads retain queued values. Idle noncanonical reads
   wait for input, and prompt failures restore settings before returning errors.
+  Setup reads input directly into zeroizing buffers without a global stdin
+  read-ahead buffer and preserves queued confirmation and secret values.
   Forced key-file replacement verifies inode
   identity and ownership before publishing a fresh owner-only file.
 - Authorizes daemon dotenv files against trusted `env_file_sha256` hashes
@@ -41,16 +43,24 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   closed when unavailable or invalid.
 - Checks private key files through an opened descriptor for ownership and
   restrictive permissions. It rejects final-component symlinks and private
-  key paths in the Nix store. On macOS, runtime loading and file-source setup
+  key paths in the Nix store. On macOS, runtime loading and setup
   rechecks reject untrusted read or mutation ACL grants without changing files.
 - Keeps runtime key loading and setup verification on the same
-  key-variable naming rules. Environment loading skips non-UTF-8 entries.
+  ordered-source selection, file-custody, and key-variable naming rules.
+  Environment loading skips non-UTF-8 entries.
 - Supports `env` mode for direct environment injection.
 - Supports `files` mode with one file per secret, `KEY_FILE` pointers,
   and optional environment passthrough. Deployment integrations provide
   RAM-backed storage and configure swap, dump, and cleanup policies.
 - Supports `credentials` mode with pointers to systemd credentials or
-  selected values fetched from local Postmaster sockets.
+  selected values fetched from local Postmaster sockets. The systemd path
+  verifies that each credential exists as a regular file without reading it.
+- Provides raw local socket endpoints for systemd and framed endpoints for
+  Postmaster clients. Framed responses use a versioned length header and reject
+  partial or extra data. Socket descriptors select the path, protocol, and
+  expected listener UID; the client checks that UID before reading bytes.
+  Connect and read share one five-second deadline. Raw endpoints retain
+  systemd's byte format and its EOF truncation limitation.
 - Resolves dotenv files before bundles. The first file defining a name
   wins unless `overload` selects the last; the last assignment within one
   dotenv file wins. Existing environment values take precedence unless
@@ -58,13 +68,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Rejects undecryptable dotenv values by default. With `strict: false`,
   it logs and omits those values; `--verify-keys` makes any omission fatal.
   Bundle authentication failures always abort the launch.
-- Rejects private-key variable names in bundles and removes recognized
+- Rejects private-key variable names in dotenv and bundle output and removes recognized
   private-key variables from the application's environment after
-  projection, regardless of key source or mode.
+  projection, regardless of key source or mode. Dotenv interpolation rejects
+  private-key references in the environment and earlier assignments.
 - Validates identifiers, credential-source path components, and NUL bytes
   at the relevant input and projection boundaries. Encrypted values reach
   the application without shell evaluation. Plaintext dotenv values follow
   dotenv parsing rules, including variable substitution.
+- Preserves non-UTF-8 Unix paths and child arguments without panicking.
 - Zeroizes the key ring and resolved value buffers before launch.
   `KeyRing` and `Resolution` debug output redacts secret material.
   ECIES secret-key debug output also redacts key bytes, and secret-key
@@ -72,7 +84,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Keeps the application as the service's main PID. A sibling monitor
   forwards stop signals, allows a 250 ms grace period before SIGKILL, and
   tracks service exit with Linux pidfds or macOS kqueue. It attempts file
-  cleanup after natural exit, forced termination, or a crash.
+  cleanup after natural exit, forced termination, or a crash. Its fallback
+  detects reparenting before service reaping, so zombies do not delay cleanup.
 - Defers termination signals across the plaintext write window on Linux
   and macOS. The monitor consumes signals synchronously; the launcher
   restores its signal mask before exec.
@@ -83,39 +96,50 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and trusted symlink aliases remain supported.
 - Guards bulk cleanup with a `.postmaster-managed` sentinel. Bulk cleanup
   retains the marker on failure so the operation can be retried.
-  Launch-failure cleanup uses the same pinned directory.
+  The sentinel and removable files must be owned, regular, and single-linked.
+  Standalone cleanup validates directory ancestry. Launch-failure cleanup uses
+  the same pinned directory and removes safe plaintext left by prior launches.
+  Unsafe entries are retained, and unlink failures are logged.
 - Verifies macOS RAM backing through `mount` and `hdiutil info`.
   The pinned directory must be beneath the configured mount, owned by the
   service user, and on the verified RAM device. Mounted and partitioned
   device rows stay associated with their own image; cross-device ancestor
-  symlinks fail the check.
+  symlinks and failed helper commands fail the check.
 - Opens ciphertext files with `O_NOFOLLOW` and sets `CLOEXEC` on the file
-  descriptors it opens. Config, bundle, and credential-response reads
-  enforce their documented size limits. Dotenv sources must be regular files;
+  descriptors it opens. Config, bundle, private-key file, setup-input, and
+  credential-response reads enforce a 16 MiB limit. File readers reject
+  nonregular inputs without blocking on FIFOs. Public config aliases remain
+  supported. Dotenv sources must be regular files;
   parsing bounds source bytes, assignments, and expanded values before growth,
   while syntax errors omit input contents.
 - Verifies external tools before use with macOS code-signature checks or
   Linux ownership and permission checks. Linux helpers reject group or other
   write permissions. `id` lookup resolves system aliases, including NixOS
   profiles, verifies the target and its directory ancestry, then invokes it.
+  User lookup refuses option-like names and separates the username operand.
 - Validates daemon configuration at the root and nested credential
-  mappings. Startup rejects relative paths, symlinked socket parents,
-  and empty credentials.
+  mappings. Startup rejects relative socket and key-file paths, symlinked
+  socket parents, and empty credentials.
 - Applies a configured `peer_user` ACL independently of
   `--allow-nonroot`. Socket permissions use a bind-time umask on Linux
   and macOS, with the prior mask restored immediately afterward.
+  Binding pins ancestor directories for creation, ownership changes, and
+  unlinking, preserving trusted intermediate aliases. Inherited systemd
+  descriptors must be valid listening stream sockets before adoption.
 - Applies process hardening on secret-handling command paths and logs
   failures. Help, version output, and structural config checks avoid
   secret-path hardening work.
 - Provides `postmaster exec --check` for offline config-shape validation.
   The JSON Schema covers dotenv and bundle inputs, mode-specific fields,
   and strict unknown-field handling. Tested examples exercise the parser
-  and guard schema agreement.
+  and guard schema agreement. Contradictory `--check --verify-keys` and
+  `--recheck --force` combinations fail instead of ignoring a flag.
 - Provides `postmaster exec --verify-keys` to check decryption before
   launching with keys that may be stale after rotation.
 - Provides interactive and unattended `postmaster setup` workflows.
   Setup creates a `0700` keys directory, verifies owner-only key files,
-  and optionally seeds each required macOS Keychain account once.
+  and optionally seeds each required macOS Keychain account once. Credentials
+  mode validates without provisioning private keys or a keys directory.
 - Provides `setup --recheck` for key-source accessibility checks and
   `--keys-dir` for an explicit key directory. `--force` re-prompts for
   key files or re-seeds Keychain items; force with unattended mode fails
@@ -132,7 +156,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Requires Rust 1.99.1 or newer. Release builds use LTO, stripped symbols,
   overflow checks, and `panic = "abort"`.
 - Provides a Nix package and overlay with rust-overlay for toolchain
-  selection. Service-manager bindings live in deployment integrations.
+  selection and a committed flake lockfile for input revisions.
+  Service-manager bindings live in deployment integrations.
 - Provides native and cross builds through the Justfile build matrix.
   Cross builds use `cargo zigbuild`; builds preserve compiler flags and
   profile overrides, and `max` builds remap source paths.
@@ -150,6 +175,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Nix setup extends existing feature settings with `nix-command` and `flakes`.
   Cargo tool installation honors `CARGO_INSTALL_ROOT` and `CARGO_HOME` and
   verifies the selected executables before adding their directory to `PATH`.
+  The Rust gate runs the setup-action self-tests without installing packages.
 - Runs formatting, Clippy, and Markdown lint from pre-commit hooks.
   Pre-push hooks run the Rust gate, dependency policy, and advisory checks.
   The Rust gate includes native, release, and Linux-target Clippy; the

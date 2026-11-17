@@ -36,6 +36,15 @@ pub(crate) fn validate_private_file_acl(fd: impl AsFd) -> Result<(), String> {
     Ok(())
 }
 
+/// Reject directory ACL grants that permit untrusted entry replacement.
+pub(crate) fn validate_directory_acl(fd: impl AsFd) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    acl::validate(fd)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = fd;
+    Ok(())
+}
+
 /// Resolved values keyed by name, each zeroized on drop.
 pub type Resolved = Vec<(String, Zeroizing<Vec<u8>>)>;
 
@@ -109,7 +118,7 @@ pub(crate) fn validate_directory_path(dir: &Path) -> Result<PathBuf, String> {
         #[cfg(target_os = "macos")]
         {
             let fd = open_secrets_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            acl::validate(&fd).map_err(|e| format!("{}: {e}", path.display()))?;
+            validate_directory_acl(&fd).map_err(|e| format!("{}: {e}", path.display()))?;
         }
         Ok(())
     };
@@ -277,7 +286,27 @@ pub fn write_secret_file(
 pub fn cleanup_written(dir_fd: impl AsFd, names: &[String]) {
     let dir_fd = dir_fd.as_fd();
     for name in names {
-        let _ = rustix::fs::unlinkat(dir_fd, name, rustix::fs::AtFlags::empty());
+        if let Err(error) = rustix::fs::unlinkat(dir_fd, name, rustix::fs::AtFlags::empty())
+            && error != rustix::io::Errno::NOENT
+        {
+            // The monitor also calls this after fork: use no allocation or stdio locks.
+            let stderr = rustix::stdio::stderr();
+            let _ = rustix::io::write(stderr, b"postmaster: cleanup: could not unlink ");
+            let _ = rustix::io::write(stderr, name.as_bytes());
+            let _ = rustix::io::write(stderr, b"\n");
+        }
+    }
+}
+
+/// Remove published values and custody-checked leftovers when materialization fails.
+pub(crate) fn cleanup_failed_launch(dir_fd: impl AsFd, dir: &Path, written: &[String]) {
+    let dir_fd = dir_fd.as_fd();
+    cleanup_written(dir_fd, written);
+    if let Err(error) = prune_stale_at(dir_fd, dir, &[]) {
+        crate::server::log(&format!(
+            "{}: failed-launch cleanup: {error}",
+            dir.display()
+        ));
     }
 }
 
@@ -305,6 +334,7 @@ pub fn prune_stale(dir: &Path, keep_keys: &[String]) -> Result<(), String> {
         }
         Err(e) => return Err(format!("{}: prune: {e}", dir.display())),
     };
+    validate_projection(&dir_fd, dir)?;
     prune_stale_at(&dir_fd, dir, keep_keys)
 }
 
@@ -336,6 +366,8 @@ pub(crate) fn prune_stale_at(
             ));
         }
     }
+    check_file(dir_fd, std::ffi::OsStr::new(MANAGED_SENTINEL))
+        .map_err(|e| format!("{}: prune: sentinel: {e}", dir.display()))?;
     for name in &names {
         let Some(name_str) = name.to_str() else {
             // Every other skip in this loop logs; a foreign file with a non-UTF8 name
@@ -357,6 +389,10 @@ pub(crate) fn prune_stale_at(
         let path = dir.join(name);
         match rustix::fs::statat(dir_fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) if rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() => {
+                if let Err(e) = check_file(dir_fd, name) {
+                    crate::server::log(&format!("{}: prune: {e}", path.display()));
+                    continue;
+                }
                 if let Err(e) = rustix::fs::unlinkat(dir_fd, name, rustix::fs::AtFlags::empty()) {
                     crate::server::log(&format!("{}: prune: {e}", path.display()));
                 }
@@ -605,6 +641,25 @@ mod tests {
     }
 
     #[test]
+    fn prune_stale_refuses_linked_sentinel_and_preserves_linked_files() {
+        let dir = tdir("prune-linked");
+        let outside = tdir("prune-outside");
+        fs::write(dir.join("SECRET"), b"secret").unwrap();
+        fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
+        fs::hard_link(dir.join(MANAGED_SENTINEL), outside.join("sentinel")).unwrap();
+
+        let err = prune_stale(&dir, &[]).unwrap_err();
+        assert!(err.contains("sentinel"), "{err}");
+        assert!(dir.join("SECRET").exists());
+
+        fs::remove_file(outside.join("sentinel")).unwrap();
+        fs::hard_link(dir.join("SECRET"), outside.join("secret")).unwrap();
+        prune_stale(&dir, &[]).unwrap();
+        assert_eq!(fs::read(dir.join("SECRET")).unwrap(), b"secret");
+        assert_eq!(fs::read(outside.join("secret")).unwrap(), b"secret");
+    }
+
+    #[test]
     fn prune_stale_refuses_symlinked_dir() {
         // A symlink swapped in at the secrets-dir path itself must be
         // rejected at open (O_DIRECTORY|O_NOFOLLOW), never traversed.
@@ -674,5 +729,25 @@ mod tests {
 
         assert!(!f1.exists(), "cleanup should unlink f1");
         assert!(!f2.exists(), "cleanup should unlink f2");
+    }
+
+    #[test]
+    fn failed_launch_cleans_prior_plaintext_without_unlinking_foreign_entries() {
+        let dir = tdir("failed-launch");
+        let outside = tdir("failed-launch-outside");
+        let fd = open_secrets_dir(&dir).unwrap();
+        write_secret_file(&fd, &dir, "A", b"old-a").unwrap();
+        write_secret_file(&fd, &dir, "B", b"old-b").unwrap();
+        fs::hard_link(dir.join("A"), outside.join("A")).unwrap();
+
+        assert!(write_secret_file(&fd, &dir, "A", b"new-a").is_err());
+        cleanup_failed_launch(&fd, &dir, &[]);
+
+        assert!(
+            !dir.join("B").exists(),
+            "unreached prior plaintext must be removed"
+        );
+        assert_eq!(fs::read(dir.join("A")).unwrap(), b"old-a");
+        assert_eq!(fs::read(outside.join("A")).unwrap(), b"old-a");
     }
 }

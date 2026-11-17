@@ -69,7 +69,7 @@ fn fork_monitor(
             // Never returns (`-> !`), so the guard is never dropped
             // and the mask stays blocked for the monitor's life
             // (run_inner re-asserts it regardless).
-            run_inner(service_pid, dir_fd, names, grace, poll_interval);
+            run_inner(service_pid, dir_fd, names, grace, poll_interval, false);
         }
         child => {
             guard.restore_mask();
@@ -351,4 +351,77 @@ fn pre_dead_service_triggers_immediate_cleanup_and_exit() {
         "cleanup must run even when the service died before the monitor started"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poll_fallback_cleans_after_parent_exit_before_reaping() {
+    if run_isolated() {
+        return;
+    }
+    let dir = tdir("poll-zombie");
+    let names = write_dummies(&dir);
+    let dir_fd = open_secrets_dir(&dir).unwrap();
+    let (mut report_read, report_write) = std::io::pipe().unwrap();
+    let (ready_read, ready_write) = std::io::pipe().unwrap();
+    // SAFETY: both children only use raw fd/signal/process operations and the
+    // monitor's allocation-free liveness and cleanup paths, then exit without unwinding.
+    let service_raw = unsafe { libc::fork() };
+    match service_raw {
+        -1 => panic!("fork: {}", std::io::Error::last_os_error()),
+        0 => unsafe {
+            libc::close(report_read.as_raw_fd());
+            let service_pid = rustix::process::getpid();
+            match libc::fork() {
+                -1 => exit_process(1),
+                0 => {
+                    libc::close(ready_read.as_raw_fd());
+                    let watch = Watch::Poll {
+                        parent: Some(service_pid),
+                    };
+                    if watch.dead(service_pid)
+                        || libc::write(ready_write.as_raw_fd(), b"R".as_ptr().cast(), 1) != 1
+                    {
+                        exit_process(1);
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !watch.dead(service_pid) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let status = if watch.dead(service_pid)
+                        && matches!(Watch::new(service_pid, true), Watch::Dead)
+                    {
+                        cleanup_written(&dir_fd, &names);
+                        b"D"
+                    } else {
+                        b"F"
+                    };
+                    libc::write(report_write.as_raw_fd(), status.as_ptr().cast(), 1);
+                    exit_process(0);
+                }
+                _ => {
+                    libc::close(ready_write.as_raw_fd());
+                    let mut ready = 0_u8;
+                    if libc::read(ready_read.as_raw_fd(), (&raw mut ready).cast(), 1) != 1 {
+                        exit_process(1);
+                    }
+                    exit_process(0);
+                }
+            }
+        },
+        _ => {}
+    }
+    let service_pid = Pid::from_raw(service_raw).unwrap();
+    let _reap = ReapOnDrop(service_pid);
+    drop(report_write);
+    drop(ready_read);
+    drop(ready_write);
+    let mut report = [0];
+    report_read.read_exact(&mut report).unwrap();
+    assert_eq!(report, *b"D", "poll fallback must observe exit before reap");
+    #[cfg(target_os = "linux")]
+    assert!(
+        test_kill_process(service_pid).is_ok(),
+        "service remains an unreaped zombie"
+    );
+    assert!(!dir.join("A").exists() && !dir.join("B").exists());
 }

@@ -5,10 +5,9 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(target_os = "linux")]
 use rustix::runtime_448b8ad740e2a26f as runtime;
@@ -21,9 +20,10 @@ use crate::keys::{is_private_key_var_name, resolve_all};
 use crate::monitor::{self, STOP_SIGNALS};
 use crate::ramdisk::open_verified_ramdisk_dir;
 use crate::secret_files::{
-    Resolved, cleanup_written, env_pairs, open_secrets_dir, prune_stale_at, write_secret_file,
+    Resolved, cleanup_failed_launch, cleanup_written, env_pairs, open_secrets_dir, prune_stale_at,
+    write_secret_file,
 };
-use crate::server::{fetch_bytes, log, read_capped};
+use crate::server::{fetch_bytes_with_options, log, read_regular_capped};
 
 /// Guard deferring termination signals across the window where plaintext
 /// secret files exist on the ramdisk/tmpfs. A
@@ -199,9 +199,7 @@ impl Drop for TerminationGuard {
 /// Read and deserialize an ExecConfig from a JSON file. Shared by
 /// `check_config` (validate-only) and `exec` (validate + materialize).
 pub fn parse_exec_config(config_path: &Path) -> Result<ExecConfig, String> {
-    let file =
-        fs::File::open(config_path).map_err(|e| format!("{}: {e}", config_path.display()))?;
-    let raw = read_capped(file, config_path)?;
+    let raw = read_regular_capped(config_path, rustix::fs::OFlags::empty())?;
     serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", config_path.display()))
 }
 
@@ -293,19 +291,7 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
         .collect();
     // Bundle files follow env files and use the same first/last-wins contract.
     for bundle_path in &cfg.bundle_files {
-        // O_NOFOLLOW on the ciphertext open: refuse to read through a planted symlink.
-        let bundle_fd = rustix::fs::open(
-            bundle_path,
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|e| {
-            format!(
-                "{}: {e} (refusing to follow a symlink)",
-                bundle_path.display()
-            )
-        })?;
-        let raw = read_capped(fs::File::from(bundle_fd), bundle_path)?;
+        let raw = read_regular_capped(bundle_path, rustix::fs::OFlags::NOFOLLOW)?;
         let bundle = parse_bundle(&raw, bundle_path)?;
         let bundle_resolved = resolve_bundle(&bundle, &ring, bundle_path)?;
         for (name, value, encoding) in bundle_resolved {
@@ -341,7 +327,7 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
 /// Decrypt configured secret inputs, inject them into the child
 /// context, and `execvp` the target binary. The process image is
 /// replaced — this function never returns on success.
-pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<(), String> {
+pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<(), String> {
     let cfg = parse_exec_config(config_path)?;
     cfg.validate_shape()?;
 
@@ -402,7 +388,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 let path = match write_secret_file(&dir_fd, dir, k, v) {
                     Ok(p) => p,
                     Err(e) => {
-                        cleanup_written(&dir_fd, &written);
+                        cleanup_failed_launch(&dir_fd, dir, &written);
                         return Err(e);
                     }
                 };
@@ -410,7 +396,7 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 extra.push((OsString::from(format!("{k}_FILE")), path.into_os_string()));
                 if cfg.passthrough.iter().any(|p| p == k) {
                     if v.contains(&0) {
-                        cleanup_written(&dir_fd, &written);
+                        cleanup_failed_launch(&dir_fd, dir, &written);
                         return Err(format!("{k}: passthrough value contains NUL"));
                     }
                     extra.push((OsString::from(k.clone()), OsString::from_vec(v.to_vec())));
@@ -429,10 +415,24 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
             validate_credential_keys(&cfg.credential_keys)?;
             if cfg.sockets.is_empty() {
                 // systemd path: pid 1 already materialized the credentials.
-                let dir = std::env::var_os("CREDENTIALS_DIRECTORY")
+                let dir = crate::key_source::credential_directory()?
                     .ok_or("postmaster credentials expected but CREDENTIALS_DIRECTORY is unset")?;
-                let dir = crate::secret_files::validate_directory_path(&PathBuf::from(dir))?;
+                let dir = crate::secret_files::validate_directory_path(&dir)?;
+                let dir_fd =
+                    open_secrets_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                 for k in &cfg.credential_keys {
+                    let stat = rustix::fs::statat(
+                        &dir_fd,
+                        k.as_str(),
+                        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                    )
+                    .map_err(|e| format!("{}: credential: {e}", dir.join(k).display()))?;
+                    if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
+                        return Err(format!(
+                            "{}: credential is not a regular file",
+                            dir.join(k).display()
+                        ));
+                    }
                     extra.push((
                         OsString::from(format!("{k}_FILE")),
                         dir.join(k).into_os_string(),
@@ -452,25 +452,29 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 };
                 let projected_dir = crate::secret_files::validate_projection(&dir_fd, dir)?;
                 let dir = projected_dir.as_path();
-                let sockets: &HashMap<String, PathBuf> = &cfg.sockets;
                 // Prune stale credential files from a prior launch.
                 prune_stale_at(&dir_fd, dir, &cfg.credential_keys)?;
                 written.reserve(cfg.credential_keys.len());
                 for k in &cfg.credential_keys {
-                    let sock = sockets
+                    let source = cfg
+                        .sockets
                         .get(k)
                         .ok_or_else(|| format!("{k}: no socket mapped in exec config"))?;
-                    let bytes = match fetch_bytes(sock) {
+                    let bytes = match fetch_bytes_with_options(
+                        &source.path,
+                        source.protocol,
+                        Some(source.server_uid),
+                    ) {
                         Ok(b) => b,
                         Err(e) => {
-                            cleanup_written(&dir_fd, &written);
+                            cleanup_failed_launch(&dir_fd, dir, &written);
                             return Err(e);
                         }
                     };
                     let path = match write_secret_file(&dir_fd, dir, k, &bytes) {
                         Ok(p) => p,
                         Err(e) => {
-                            cleanup_written(&dir_fd, &written);
+                            cleanup_failed_launch(&dir_fd, dir, &written);
                             return Err(e);
                         }
                     };
@@ -520,8 +524,8 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
                 cleanup_written(dir_fd, &written);
             }
             let err = std::io::Error::last_os_error();
-            log(&format!("exec {program}: fork: {err}"));
-            return Err(format!("exec {program}: fork: {err}"));
+            log(&format!("exec {}: fork: {err}", program.to_string_lossy()));
+            return Err(format!("exec {}: fork: {err}", program.to_string_lossy()));
         }
         0 => {
             // Fork-child = the monitor (never returns). sig_guard is
@@ -565,14 +569,15 @@ pub fn exec(config_path: &Path, argv: &[String], verify_keys: bool) -> Result<()
     if let Some(dir_fd) = &secrets_dir_fd {
         cleanup_written(dir_fd, &written);
     }
-    log(&format!("exec {program}: {err}"));
-    Err(format!("exec {program}: {err}"))
+    log(&format!("exec {}: {err}", program.to_string_lossy()));
+    Err(format!("exec {}: {err}", program.to_string_lossy()))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, unused_qualifications)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn validate_credential_keys_accepts_identifiers() {
