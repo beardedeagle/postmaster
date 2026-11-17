@@ -143,12 +143,17 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and helper tools use pinned versions. Nix installer temporary files
   work with GNU and macOS `mktemp`.
   Nix setup extends existing feature settings with `nix-command` and `flakes`.
+  Nix checks authenticate GitHub input fetches with their read-only job
+  token.
   Cargo tool installation honors `CARGO_INSTALL_ROOT` and `CARGO_HOME` and
   verifies the selected executables before adding their directory to `PATH`.
 - Runs formatting, Clippy, and Markdown lint from pre-commit hooks.
   Pre-push hooks run the Rust gate, dependency policy, and advisory checks.
   The Rust gate includes native, release, and Linux-target Clippy; the
   toolchain configuration includes `x86_64-unknown-linux-gnu`.
+- Builds documentation on pull requests and publishes `main` through
+  GitHub Pages. Deployment uses official actions pinned to full commits
+  and a `main`-restricted `github-pages` environment.
 - Keeps Markdown lint rules in `.markdownlint-cli2.jsonc` and excludes
   generated Cargo and mdBook output. Dependency policy checks duplicate
   crate versions, sources, licenses, and advisories, with a documented
