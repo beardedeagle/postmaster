@@ -165,7 +165,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runs. Runs release-profile tests and packaged-binary checks, and generates
   GitHub attestations for archives, SHA-256 manifests, and source metadata.
   Verifies downloaded draft assets before publication and refuses to
-  overwrite existing releases.
+  overwrite existing releases. Tag pushes submit read-only release requests;
+  publishing runs from `main` and validates the request against the triggering
+  commit, tag target, version, and `main` ancestry. Trusted `main` release
+  tooling builds the separately checked-out tag. Verification accepts only
+  the release workflow's `main` identity.
 - Uses Justfile recipes for local checks and GitHub workflow definitions.
   In-repo setup actions refresh stable before resolving the repository's
   components and targets. Nix installation verifies

@@ -7,10 +7,12 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +90,117 @@ def plan(root: Path, tag: str, preview: bool) -> tuple[str, str]:
             raise ValueError("release tag must point to a commit reachable from main")
         manifest = tomllib.loads(git(root, "show", f"{commit}:Cargo.toml"))
     validate_tag(tag, manifest["package"]["version"])
+    return tag, commit
+
+
+def read_request(path: Path) -> tuple[str, str]:
+    """Read a bounded tag request containing an exact Git object SHA.
+
+    Args:
+        path (Path): Downloaded request JSON, treated as untrusted data.
+
+    Returns:
+        tuple[str, str]: Syntactically valid requested version tag and object SHA.
+
+    Raises:
+        OSError: The request cannot be read.
+        ValueError: The JSON, size, fields, tag, or commit is invalid.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("release request must be a regular file")
+        raw = source.read(4097)
+    if len(raw) > 4096:
+        raise ValueError("release request exceeds 4096 bytes")
+
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        fields = dict(pairs)
+        if len(fields) != len(pairs):
+            raise ValueError("release request contains duplicate fields")
+        return fields
+
+    request = json.loads(raw, object_pairs_hook=unique_fields)
+    if (
+        not isinstance(request, dict)
+        or request.keys() != {"tag", "commit"}
+        or not all(isinstance(value, str) for value in request.values())
+    ):
+        raise ValueError("release request requires only string tag and commit fields")
+    if not re.fullmatch(r"[0-9a-f]{40}", request["commit"]):
+        raise ValueError("release request has an invalid source SHA")
+    tag = request["tag"]
+    validate_tag(tag, tag.removeprefix("v"))
+    return tag, request["commit"]
+
+
+def release_plan(root: Path, environment: Mapping[str, str]) -> tuple[str, str]:
+    """Authorize a main-workflow release request or an unprivileged PR preview.
+
+    Args:
+        root (Path): Trusted tooling checkout with fetched tags and origin/main.
+        environment (Mapping[str, str]): GitHub context and requested tag or artifact.
+
+    Returns:
+        tuple[str, str]: Validated tag and tagged source commit.
+
+    Raises:
+        OSError: A required event or request file cannot be read.
+        ValueError: The event, repository, ref, request, or source is unauthorized.
+        subprocess.CalledProcessError: A required Git ref is unavailable.
+    """
+    event = environment.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    if event == "pull_request":
+        return plan(root, "", True)
+    if (
+        event not in {"workflow_dispatch", "workflow_run"}
+        or environment.get("GITHUB_REF", "refs/heads/main") != "refs/heads/main"
+    ):
+        raise ValueError("releases must run the workflow from main")
+    tag = environment.get("RELEASE_TAG", "")
+    expected_commit = None
+    if event == "workflow_run":
+        event_path = environment.get("GITHUB_EVENT_PATH")
+        if not event_path:
+            raise ValueError("workflow_run requires the GitHub event payload")
+        payload = json.loads(Path(event_path).read_bytes())
+        run = payload.get("workflow_run", {}) if isinstance(payload, dict) else {}
+        repository = environment.get("GITHUB_REPOSITORY", "")
+        if (
+            not isinstance(run, dict)
+            or run.get("event") != "push"
+            or run.get("conclusion") != "success"
+            or not repository
+            or not isinstance(run.get("head_repository"), dict)
+            or not isinstance(run["head_repository"].get("full_name"), str)
+            or run["head_repository"].get("full_name", "").casefold()
+            != repository.casefold()
+        ):
+            raise ValueError(
+                "release request must be a successful push from this repository"
+            )
+        expected_commit = run.get("head_sha")
+        if not isinstance(expected_commit, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", expected_commit
+        ):
+            raise ValueError("release request has an invalid triggering commit")
+        expected_commit = git(
+            root, "rev-parse", "--verify", f"{expected_commit}^{{commit}}"
+        )
+        if request_path := environment.get("RELEASE_REQUEST"):
+            tag, request_commit = read_request(Path(request_path))
+            if (
+                git(root, "rev-parse", "--verify", f"{request_commit}^{{commit}}")
+                != expected_commit
+            ):
+                raise ValueError(
+                    "release request commit differs from the triggering workflow"
+                )
+        elif not tag:
+            raise ValueError("workflow_run requires a release request")
+    tag, commit = plan(root, tag, False)
+    if expected_commit is not None and commit != expected_commit:
+        raise ValueError("release tag differs from the triggering workflow commit")
     return tag, commit
 
 
@@ -245,23 +358,16 @@ def release_files(directory: Path, tag: str, commit: str, verify: bool) -> None:
 def main() -> None:
     """Dispatch release tooling; invalid input terminates with a nonzero status."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("command", choices=["plan", "package", "manifest", "verify"])
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
     if args.command == "plan":
-        event = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
-        if (
-            event == "workflow_dispatch"
-            and os.environ.get("GITHUB_REF", "refs/heads/main") != "refs/heads/main"
-        ):
-            raise ValueError("manual releases must run the workflow from main")
-        tag, commit = plan(
-            ROOT, os.environ.get("RELEASE_TAG", ""), event == "pull_request"
-        )
+        tag, commit = release_plan(args.root, os.environ)
         print(f"tag={tag}\ncommit={commit}")
     elif args.command == "package":
         (target,) = args.args
-        print(package(ROOT, target))
+        print(package(args.root, target))
     else:
         tag, commit, directory = args.args
         release_files(Path(directory), tag, commit, args.command == "verify")

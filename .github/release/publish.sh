@@ -7,6 +7,10 @@ set -euo pipefail
 tag="$1"
 commit="$2"
 directory="$3"
+if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+  echo "Release publication requires the workflow on main" >&2
+  exit 1
+fi
 if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
   echo "Release already exists; refusing to replace its assets" >&2
   exit 1
@@ -25,7 +29,8 @@ just release-verify "$tag" "$commit" "$download_dir"
 for artifact in "$download_dir"/*; do
   gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
     --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-    --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+    --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main" \
+    --source-digest "$GITHUB_SHA" --source-ref refs/heads/main \
     --deny-self-hosted-runners
 done
 gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false

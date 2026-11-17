@@ -95,10 +95,10 @@ release-test:
 release-plan:
     python3 .github/release/release.py plan
 
-release-build target:
-    cargo +{{stable_toolchain}} test --locked --release --target {{quote(target)}}
-    cargo +{{stable_toolchain}} build --locked --release --target {{quote(target)}}
-    python3 .github/release/release.py package {{quote(target)}}
+release-build target source=".":
+    cargo +{{stable_toolchain}} test --manifest-path {{quote(source + "/Cargo.toml")}} --locked --release --target {{quote(target)}}
+    cargo +{{stable_toolchain}} build --manifest-path {{quote(source + "/Cargo.toml")}} --locked --release --target {{quote(target)}}
+    python3 .github/release/release.py --root {{quote(source)}} package {{quote(target)}}
 
 release-manifest tag commit directory="target/release-artifacts":
     python3 .github/release/release.py manifest {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
