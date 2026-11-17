@@ -50,7 +50,8 @@ just ci          # ci-rust + nix flake check
 just docs        # mdBook build
 ```
 
-GitHub workflows run the same recipes on pull requests and pushes to `main`.
+CI and Nix run the same recipes on pull requests and manual runs.
+Pages deployment keeps its `main` push trigger.
 The Rust gate also exercises the runner setup actions without installing tools.
 Report local and hosted results separately in the PR.
 
