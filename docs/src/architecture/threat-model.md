@@ -85,6 +85,10 @@ environment in every projection mode. Both adapter namespaces are reserved:
 `DOTENV_PRIVATE_KEY`, `POSTMASTER_KEY`, and their `_<nonempty suffix>` variants.
 The environment source can still use these variables to decrypt inputs;
 ordinary inherited variables remain available to the application.
+Dotenv interpolation rejects references to either private-key namespace before
+reading the environment or earlier assignments. Dotenv and bundle output names
+in those namespaces are rejected, so an alias cannot bypass the environment
+scrub. The daemon refuses private-key and dotenv metadata names as credentials.
 
 This filtering does not erase the launcher's original environment or the
 copy inherited by its sibling monitor. Prefer a non-environment key source
@@ -186,7 +190,7 @@ where secret material is read or written:
   This fd-based approach eliminates the TOCTOU window between open
   and permission check. On macOS, the same descriptor is checked for ACL
   grants that let principals other than root or the effective user read or
-  modify the file. File-source setup rechecks use the same validation.
+  modify the file. Setup rechecks use the same validation.
   Both checks leave source ACLs intact.
 - **Credential source paths** are checked with `symlink_metadata`
   before loading, rejecting symlinks at the path level. The
@@ -212,6 +216,31 @@ where secret material is read or written:
   before serving threads start. Distinct consumer ownership domains cannot
   share a parent or sit beneath a parent controlled by another consumer.
   Alias and dot-segment checks run before any directory or socket mutation.
+  The bind path pins the traversed directories and performs creation, ownership
+  changes, and unlinking relative to those descriptors. Trusted intermediate
+  aliases remain usable; a final-parent symlink is refused.
+
+### Local credential transport
+
+The daemon and fetch client communicate through Unix sockets on the same host.
+They do not open a remote transport. Server-side peer checks restrict who may
+request a credential. Client-side UID checks verify the listener's account
+before reading the response. The expected UID comes from trusted configuration,
+not the socket pathname's owner. It identifies an account, not an executable;
+another process with that identity remains trusted. On Linux, socket activation
+can report the manager's credentials captured at `listen()` rather than the
+accepting daemon's user.
+
+Framed endpoints send a versioned length header. The client accepts only the
+exact bounded payload followed by EOF, rejecting incomplete or extra bytes
+before any value reaches the application. A framed fetch requires an expected
+UID. Both connection setup and reading share a five-second deadline.
+
+Raw endpoints preserve systemd's `LoadCredential=` socket format. A raw fetch
+can also pin the expected UID, but a nonempty raw response cut short by EOF is
+indistinguishable from a complete shorter secret. Raw sockets therefore retain
+that transport limitation and need trusted endpoint custody. Framing does not
+change the raw reader's guarantees.
 
 Daemon entries authorize the exact dotenv source bytes with trusted
 `env_file_sha256` hashes before parsing, interpolation, or decryption. The
@@ -257,6 +286,10 @@ the secret path:
   preserve `${VAR}` literally. `$(cmd)` is not executed. Source bytes, expanded
   values, assignments, and aggregate parsed output have fixed limits checked
   before growth; parser errors omit input values.
+- **Regular-file reads:** config, bundle, and private-key inputs use nonblocking
+  opens and verify the opened inode is regular. A FIFO cannot hang startup.
+  Public config aliases remain supported; final bundle and key symlinks are
+  refused. Config, bundle, key-file, and setup-input reads are capped at 16 MiB.
 
 ### Key freshness verification
 
@@ -516,7 +549,10 @@ service, and escalates to SIGKILL after a fixed 250 ms grace. The service
 manager's stop timeout is separate. The monitor attempts cleanup after
 forwarded stops, natural exit, `kill -9`, and crashes. Liveness uses a
 pidfd with `poll` on Linux and kqueue `NOTE_EXIT` on macOS. Both report exit
-without waiting for reaping; `kill(pid, 0)` polling is a fallback.
+without waiting for reaping. The fallback also observes the monitor's parent
+relationship: the service's exit reparents the monitor before the service is
+reaped. An already-reparented monitor cleans up immediately, so an unreaped
+zombie does not delay fallback cleanup.
 
 On systemd the monitor receives its own copy of cgroup-wide stop signals.
 On launchd, signals go to the job's main process, so the monitor primarily
@@ -535,6 +571,12 @@ no plaintext crosses services through Postmaster's resolution. Bindings must
 give each service its own directory or private mount. Postmaster does not
 enforce a service identity in the sentinel; directory separation is an
 integration requirement.
+
+Cleanup and pruning require the managed sentinel and removable files to be
+regular, owned by the effective user, and single-linked. Standalone cleanup
+validates directory ancestry before deleting. Unsafe entries are retained and
+reported. A failed materialization removes safe prior plaintext as well as files
+written by that launch; unlink failures are logged.
 
 ### Ramdisk mount verification (macOS) — Mitigated
 

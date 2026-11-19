@@ -32,6 +32,11 @@ build:
 test:
     cargo +{{stable_toolchain}} test --locked
 
+# Exercise runner setup logic without installing tools or changing this machine.
+test-actions:
+    python3 .github/actions/setup-rust/test.py
+    python3 .github/actions/setup-nix/test.py
+
 # =============================================================================
 # Nix
 # =============================================================================
@@ -80,8 +85,29 @@ audit:
 # Aggregate
 # =============================================================================
 
-ci-rust: fmt-check clippy clippy-release clippy-linux build test
+ci-rust: fmt-check clippy clippy-release clippy-linux build test test-actions
 ci: ci-rust flake-check
+
+# Release tooling is shared by local checks and the release workflow.
+release-test:
+    python3 -B -m unittest discover -s .github/release -p 'test_*.py' -v
+
+release-plan:
+    python3 .github/release/release.py plan
+
+release-build target source=".":
+    cargo +{{stable_toolchain}} test --manifest-path {{quote(source + "/Cargo.toml")}} --locked --release --target {{quote(target)}}
+    cargo +{{stable_toolchain}} build --manifest-path {{quote(source + "/Cargo.toml")}} --locked --release --target {{quote(target)}}
+    python3 .github/release/release.py --root {{quote(source)}} package {{quote(target)}}
+
+release-manifest tag commit directory="target/release-artifacts":
+    python3 .github/release/release.py manifest {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
+
+release-verify tag commit directory="target/release-artifacts":
+    python3 .github/release/release.py verify {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
+
+release-publish tag commit directory="target/release-artifacts":
+    bash .github/release/publish.sh {{quote(tag)}} {{quote(commit)}} {{quote(directory)}}
 
 # =============================================================================
 # Build Matrix — Cross-platform builds with varying optimization levels

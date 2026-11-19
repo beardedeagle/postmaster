@@ -43,7 +43,7 @@ src/launcher.rs — the fork(2) site and both TerminationGuard legs (macOS + Lin
 Unsafe blocks: fork(2) (libc, both platforms); rustix `runtime`
   kernel_sigprocmask/kernel_sigwait (Linux); libc pthread_sigmask/
   sigpending/sigwait/kqueue/kevent/_exit (macOS);
-  OwnedFd::from_raw_fd (macOS kqueue fd); BorrowedFd::borrow_raw (stderr)
+  OwnedFd::from_raw_fd (macOS kqueue fd)
 ```
 
 ## Purpose
@@ -59,7 +59,8 @@ blocked for life, consumes them synchronously (sigpending/sigwait — no
 handlers anywhere), forwards stops to the service, escalates to SIGKILL
 after a 250 ms grace (a single global security policy, deliberately not
 configurable), watches liveness (pidfd+poll on Linux, kqueue
-`EVFILT_PROC`/`NOTE_EXIT` on macOS, `kill(pid, 0)` only as fallback), and
+`EVFILT_PROC`/`NOTE_EXIT` on macOS, parent-relationship checks plus
+`kill(pid, 0)` as fallback), and
 runs `cleanup_written` before exiting — on stop, on natural exit, on
 `kill -9`, and crashes. The monitor consumes signals synchronously; it
 does not install signal handlers.
@@ -92,14 +93,15 @@ exposure. See [Private-key environment variables](../architecture/threat-model.m
   this boundary, plus kqueue. rustix's `runtime` module does not exist
   off Linux (it is `linux_raw_sys`-typed), and rustix's stable API has no
   signal-mask or sigwait wrappers on any platform.
-- `OwnedFd::from_raw_fd` (kqueue fd) and `BorrowedFd::borrow_raw(2)`
-  (monitor diagnostics) are fd-ownership assertions of the same kind as
-  the systemd socket boundary.
+- `OwnedFd::from_raw_fd` wraps the fresh kqueue fd exactly once.
+  Monitor and cleanup diagnostics borrow stderr through rustix's safe stdio
+  wrapper and write without allocation or stdio locks.
 
 rustix 1.x provides
-`pidfd_open`/`pidfd_send_signal` (Linux-only) and `poll`, so the pidfd
-leg needs no fallback in practice; `kill(pid, 0)` polling is kept only
-for kernels without `pidfd_open` (< 5.3) and for kqueue failure. An
+`pidfd_open`/`pidfd_send_signal` (Linux-only) and `poll`. If an event watch is
+unavailable, the monitor checks that its expected parent is still the service,
+alongside `kill(pid, 0)`. Parent changes report service exit before reaping,
+including when exit happens before the watch is initialized. An
 `ESRCH` from `pidfd_open`, from `kevent` registration, or from
 `kill(pid, 0)` is race-free "definitely gone" and short-circuits to
 cleanup (on macOS, xnu drops exited procs from the pid table before they
@@ -118,9 +120,9 @@ The launcher and monitor import it as `runtime`.
 | Blocking sigwait hang | `sigwait` blocks until a set member is pending | Called only after `sigpending` shows a member pending — single-threaded, so nothing else can dequeue it first |
 | Mask clobber | Restoring a mask never captured | Linux guard stores `None` on block failure (logged); restore then no-ops |
 | Mask leak to the service | Service inheriting blocked termination signals | The parent restores the saved mask before `execvp` (explicit call + `Drop` on early-Err paths); the fork-child's guard is never dropped (`monitor::run` diverges, `_exit` runs no destructors), so the monitor keeps the mask for life |
-| Wrong-fd ownership | Closing an fd not owned | `from_raw_fd` wraps a fresh `kqueue()` result exactly once; `borrow_raw(2)` never closes and never outlives the call (an absent stderr just fails the write with EBADF) |
+| Wrong-fd ownership | Closing an fd not owned | `from_raw_fd` wraps a fresh `kqueue()` result exactly once; diagnostics use a safe borrowed stderr wrapper |
 | PID reuse | Signals/liveness hitting a recycled PID | pidfd pins the process: `poll` fires at exit (zombie-proof) and `pidfd_send_signal` cannot hit a recycled PID. `ESRCH` anywhere is treated as race-free death. Residual: the macOS stop-forward path uses plain `kill(2)` (Darwin has no pidfd) — a bounded exposure, accepted in the threat model |
-| Zombie blindness | `kill(pid, 0)` succeeds on zombies | pidfd/kqueue are the primary mechanisms precisely because they fire at exit, not at reap; polling is fallback-only and documented |
+| Zombie blindness | `kill(pid, 0)` succeeds on zombies | Event watches report exit; the production polling fallback also observes reparenting before the service is reaped |
 | Handler unsoundness | Non-reentrant work in signal context | Eliminated by design — there are no signal handlers; consumption is synchronous in the loop |
 
 ## Remaining risks
@@ -131,7 +133,7 @@ The launcher and monitor import it as `runtime`.
 | Monitor dies before the service | Monitor failure or external termination | Cleanup falls to integration-provided `ExecStopPost`, ramdisk teardown, and next-launch `prune_stale` |
 | Job-control stop (SIGTSTP) of the monitor's process group | Interactive sessions only | The monitor suspends with the service; cleanup waits for continuation — backstops remain |
 | Service unkillable in D-state after SIGKILL | Kernel pathology | The monitor's post-SIGKILL death wait is unbounded by design (abandoning cleanup is worse); the manager's own escalation path still applies |
-| Polling fallback on a pre-5.3 kernel | Legacy kernels only | Zombie-blindness until the parent reaps (systemd reaps promptly); PID-reuse exposure as documented |
+| Polling fallback without an event watch | pidfd or kqueue unavailable | Cleanup follows the parent change at the polling interval; it does not wait for reaping |
 
 ## Tests
 
@@ -149,3 +151,5 @@ fork. The parent waits for that acknowledgement before starting the monitor.
 The exec integration suites
 (`tests/exec_check.rs`, `tests/exec_conformance/`) exercise the full
 fork+exec path and assert the post-exit cleanup contract.
+The forced-poll regression keeps the service unreaped and verifies that its
+monitor detects reparenting and removes plaintext before reaping.

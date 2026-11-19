@@ -90,9 +90,11 @@ $ postmaster cleanup --config <exec.json>
 - `--config <path>` is required and must come before `--`.
 - Everything after `--` is the argv of the child process; it must be
   non-empty (`exec: missing command after` `` `--` `` otherwise).
+  Unix paths and child arguments preserve non-UTF-8 bytes.
 - `--check` validates the public config shape and exits without decrypting,
   reading key material, checking the filesystem, fetching sockets, or
   launching the child command. It does not accept a command after `--`.
+  `--check` conflicts with `--verify-keys`.
 - `--verify-keys` performs a preflight check: after loading and decrypting,
   if any value was skipped because the key ring could not decrypt it
   (stale keys from a previous rotation cycle), the exec aborts with a
@@ -109,6 +111,8 @@ $ postmaster cleanup --config <exec.json>
   the default path (`/var/lib/postmaster` on Linux,
   `~/Library/Application Support/postmaster` on macOS — falling back to
   `/var/lib/postmaster` when `HOME` is unset).
+  `--recheck` conflicts with `--force`. Credentials mode requires no private
+  keys; setup validates that mode without creating a keys directory.
   **`--check` validates config shape only, not key source accessibility:**
   a config can pass `--check` in CI but fail at runtime because the key
   file is missing, the keychain item is absent, or the credential source
@@ -143,7 +147,7 @@ Every field except `mode` has a default, so a minimal config is just
 | `secrets_dir` | path or `null` | `null` | `files` mode, and `credentials` mode on the socket-fetch path: directory plaintext files are written into. |
 | `passthrough` | array of strings | `[]` | `files` mode only: these keys are *also* exported as real env vars, in addition to their `_FILE` pointer. |
 | `credential_keys` | array of strings | `[]` | `credentials` mode: keys to expose as `$CREDENTIALS_DIRECTORY/<KEY>`. Required (non-empty) for that mode. |
-| `sockets` | map of key → socket path | `{}` | `credentials` mode: postmaster socket to fetch `<KEY>` from. Non-empty selects local socket fetching on either OS; empty means systemd already materialized the credentials via `LoadCredential=`. |
+| `sockets` | map of key → socket descriptor | `{}` | Each descriptor requires `path`, `protocol`, and `server_uid`. Non-empty selects local Unix socket fetching on either OS; empty means systemd already materialized the credentials via `LoadCredential=`. |
 | `verify_ramdisk` | path or `null` | `null` | darwin only: require a RAM-backed HFS mount and a service-owned `secrets_dir` on that device. The verified directory handle is retained for plaintext I/O. |
 
 Note the field name is `verify_ramdisk`, not `ramdisk` or `ramdisk_mount` —
@@ -158,7 +162,25 @@ before a real launch:
   `bundle_files` non-empty, and `secrets_dir`.
 - `credentials` requires non-empty `credential_keys`. If `sockets` is
   non-empty, it also requires `secrets_dir` and a socket mapping for every
-  credential key.
+  credential key. Extra mappings are rejected.
+
+A socket descriptor names the endpoint, its protocol, and the expected
+kernel-reported listener UID:
+
+```json
+{
+  "path": "/run/postmaster-credd/myapp/DB_URL.sock",
+  "protocol": "framed",
+  "server_uid": 0
+}
+```
+
+`protocol` is `raw` or `framed`; it must match the daemon entry. The launcher
+checks `server_uid` before reading any credential bytes. This identifies a
+local account, not the daemon executable. On Linux, an activated socket can
+report the service manager's UID captured at `listen()`, rather than the UID
+of the process accepting connections. The UID belongs in trusted deployment
+configuration.
 
 **One `secrets_dir` per service.** postmaster treats `secrets_dir` as
 single-tenant: `prune_stale` at launch and cleanup on every death path
@@ -178,14 +200,20 @@ validation fail fast if a config includes fields that do not belong to the
 selected mode — before any secret material transits. This catches binding
 bugs where a config generator accidentally emits, for example, `env_files`
 in a credentials-mode config or `credential_keys` in an env-mode config.
-Default/empty values (empty arrays, `null`, `false`) are accepted, since
-serde fills those in even when the generator omits the field.
+Default values are accepted, since serde fills those in when the generator
+omits the field. `strict` defaults to `true`; credentials mode rejects
+`strict: false` because it performs no decryption.
 
 | Mode | Rejected if present (non-default) |
 |---|---|
 | `env` | `secrets_dir`, `credential_keys`, `sockets`, `verify_ramdisk`, `passthrough` |
 | `files` | `credential_keys`, `sockets` |
-| `credentials` | `keys`, `env_files`, `bundle_files`, `overload`, `passthrough` |
+| `credentials` | `keys`, `env_files`, `bundle_files`, `overload`, `passthrough`, `strict: false` |
+
+The systemd credentials path, selected by empty `sockets`, also rejects
+`secrets_dir` and `verify_ramdisk`. Those fields apply only when Postmaster
+writes plaintext files. The JSON Schema covers these field rules; the parser
+also checks that socket mappings match `credential_keys` exactly.
 
 ## Key-source list (`keys`)
 
@@ -210,9 +238,11 @@ metadata; they do not select keys. Bindings select the bundle paths.
 does not receive `DOTENV_PRIVATE_KEY`, `POSTMASTER_KEY`, or their
 `_<nonempty suffix>` variants. This applies regardless of the selected key
 source and after all projected values are added. Other inherited variables,
-including `PATH` and `HOME`, are preserved. Bundle entries using these
-reserved private-key names are rejected before launch, even with
-`strict: false`.
+including `PATH` and `HOME`, are preserved. Dotenv and bundle entries using
+these reserved private-key names are rejected before launch, even with
+`strict: false`. Plaintext dotenv substitution cannot read either private-key
+namespace from the environment or earlier assignments. Single-quoted
+references remain literal.
 
 **Selection contract**, evaluated in list order:
 
@@ -221,6 +251,10 @@ reserved private-key names are rejected before launch, even with
   next entry in `keys`. If the file *does* exist, whatever
   `KeyRing::load` returns (success or parse error) is final — a bad
   keys file under an existing credential does not fall through.
+  A set `$CREDENTIALS_DIRECTORY` must be absolute and nonempty. Existing
+  credential key files receive the same opened-inode ownership, permission,
+  type, and macOS ACL checks as file sources. Setup verification follows the
+  same selection and custody rules without decrypting values.
 - `file`, `keychain`, and `environment` are **terminal**: the first time
   one of these is reached, its result — success or failure — is the
   result of key-ring selection. There is no fallback past a terminal
@@ -269,8 +303,9 @@ contents. Resource-limit failures abort even with `strict: false`.
 
 ## `DOTENV_` filtering and identifier validation
 
-- Any raw key beginning with `DOTENV_` (not just the private/public key
-  vars) is dropped during parsing — metadata, never a value to inject.
+- Private-key names in either adapter namespace are rejected. Other raw keys
+  beginning with `DOTENV_` are dropped as metadata, never values to inject.
+  The daemon also refuses metadata and private-key names as served credentials.
 - Every remaining key must match `[A-Za-z_][A-Za-z0-9_]*`
   (`crate::keys::is_ident`) — ASCII letters/digits/underscore, first
   character not a digit. A key that fails this is a hard parse error
@@ -299,7 +334,9 @@ first one that decrypts wins).
 Decrypted plaintext and bundle entries are not interpolated. For a plaintext
 dotenv value, single quotes preserve `${VAR}` literally; unquoted and
 double-quoted values can substitute variables. No value is evaluated as shell
-code, and `$(cmd)` does not run a command.
+code, and `$(cmd)` does not run a command. References to `DOTENV_PRIVATE_KEY`,
+`POSTMASTER_KEY`, and their nonempty suffix variants fail rather than copying
+private keys into an ordinary output variable.
 
 **Lenient base64 decoding:** the payload after `encrypted:` may contain
 ASCII whitespace (spaces, tabs, newlines, carriage returns). If any is
@@ -350,19 +387,41 @@ this mode — it dispatches on whether `sockets` is empty:
   Requires `$CREDENTIALS_DIRECTORY` to be set in the *process*
   environment (`"postmaster credentials expected but
   CREDENTIALS_DIRECTORY is unset"` otherwise — a fail-closed guard
-  against running this mode outside systemd). For each key, exports
-  `<KEY>_FILE=$CREDENTIALS_DIRECTORY/<KEY>` — no reading, no
-  permission changes; systemd already owns that file.
+  against running this mode outside systemd). The directory must be absolute.
+  Every named credential must exist as a regular file; final symlinks and
+  special files fail. For each key, exports
+  `<KEY>_FILE=$CREDENTIALS_DIRECTORY/<KEY>` without reading values or changing
+  permissions; systemd already owns those files.
 - **`sockets` non-empty (local fetch path):** requires
   `secrets_dir`; runs the ramdisk guard if `verify_ramdisk` is set. For
-  each key, looks up its socket in `sockets` (missing entry is an error),
-  connects and reads to EOF via the same client path `postmaster fetch`
-  uses, writes the bytes to `<secrets_dir>/<KEY>` at `0600`, and exports
+  each key, looks up its socket descriptor in `sockets`, verifies the connected
+  peer UID, and reads with the selected protocol through the same client path
+  as `postmaster fetch`. Only a complete accepted response is written to
+  `<secrets_dir>/<KEY>` at `0600`. The launcher exports
   `<KEY>_FILE`. After all keys, also exports
   `CREDENTIALS_DIRECTORY` set to `secrets_dir`
   so the application can use the same credential-directory convention.
   This path is normally used with launchd, but `sockets` selects it on
   either supported operating system.
+
+### Local socket protocols
+
+Both protocols use local Unix sockets. No remote transport is involved.
+The daemon's optional per-entry `protocol` defaults to `raw` so systemd can
+read the socket directly with `LoadCredential=`.
+
+- `raw` sends credential bytes followed by EOF. An empty response fails, but
+  EOF cannot distinguish a shorter valid secret from a truncated longer one.
+- `framed` sends a 12-byte header: `PMCR\x00\x00\x00\x01`, then the payload
+  length as an unsigned 32-bit big-endian integer. The length must be between
+  1 byte and 16 MiB. Exactly that many payload bytes and EOF must follow.
+  Unknown versions, partial headers or payloads, and extra bytes fail.
+
+Connect and read share one five-second deadline. A framed fetch requires an
+explicit expected UID. Standalone raw `fetch` can also check a UID with
+`--server-uid`; the launcher's socket descriptors always require one. UID
+verification authenticates the listener account, not an executable or another
+process using the same account.
 
 ## Fail-closed rules
 
@@ -377,17 +436,20 @@ this mode — it dispatches on whether `sockets` is empty:
   `passthrough` values in `files` mode (see above); in `files` mode's
   primary write path (the pointer-file contents), NUL is not restricted
   — the exact bytes reach the file.
-- **Empty fetch response** (`credentials` mode, darwin socket path):
-  `fetch_bytes` treats a zero-byte read as the server having refused to
-  serve, and fails closed with `"<path>: server sent zero bytes (refused
-  to serve); failing closed"` rather than writing an empty credential
-  file.
-- **16 MiB read cap.** Config JSON, bundle JSON, and credential fetch payloads
-  are capped at 16 MiB by `read_capped`; oversized payloads fail. Dotenv
+- **Empty fetch response** (`credentials` mode, local sockets on Linux or macOS):
+  The launcher rejects empty responses before writing a credential file.
+  Raw responses must contain bytes; framed responses must declare and deliver
+  a nonzero payload.
+- **16 MiB read cap.** Config JSON, bundle JSON, private-key files, setup
+  input, and credential fetch payloads are capped at 16 MiB; oversized input
+  fails. Dotenv
   sources have the separate byte, assignment, and expansion limits described
-  above. Private-key files use the `dotenvy` streaming parser without that cap.
-- **Missing `$CREDENTIALS_DIRECTORY`** in `credentials` mode's systemd
-  branch fails closed rather than silently exporting nothing.
+  above. Config, bundle, and key reads reject nonregular files without blocking
+  on FIFOs. Public config aliases are supported; bundle and key final symlinks
+  remain refused.
+- **Missing systemd credentials.** An unset, empty, or relative
+  `$CREDENTIALS_DIRECTORY`, or a missing or nonregular credential, fails before
+  the systemd credentials branch launches the application.
 - **Private keys never come from the Nix store.** A `{"file": …}` key
   source under `/nix/store` is refused outright, even before attempting
   to read it — the store is world-readable, so a private key living
@@ -396,7 +458,7 @@ this mode — it dispatches on whether `sockets` is empty:
   keys file with `O_NOFOLLOW` and `fstat`s the fd to verify: no
   group/world access (`mode & 0o077 == 0`), and owned by the current
   euid. A world-readable or symlinked keys file fails closed. On macOS,
-  runtime loading and file-source setup rechecks also reject ACL grants that let
+  runtime loading and setup rechecks also reject ACL grants that let
   principals other than root or the effective user read or modify the file.
   These checks do not change the source file's ACL.
 - **External binary verification.** Keychain access uses the
@@ -478,7 +540,7 @@ metacharacter-laden values stay inert in `env` mode,
 process-env-wins-without-overload and overload-reverses-it, rotation with
 a bogus first key, strict failure refuses to exec, `0600` pointer files
 and `passthrough`, both `credentials` branches (systemd pointer-only and
-the darwin fetch loop), first-file/last-file precedence, same-file
+local socket fetching), first-file/last-file precedence, same-file
 last-assignment-wins, NUL-in-value handling in both `env` and `files`
 modes, stale-key detection with `--verify-keys`, and non-identifier key
 rejection at the exec boundary. Any binding — Ansible, Puppet, Salt, CDK,

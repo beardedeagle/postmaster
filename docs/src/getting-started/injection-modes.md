@@ -101,14 +101,19 @@ daemon. In that deployment, the consumer's unit gets
 the app reads `$CREDENTIALS_DIRECTORY/<KEY>` from unit-private,
 **unswappable** ramfs.
 
-The launcher exports file pointers without reading the credential values.
-Systemd owns their storage and access controls.
+The launcher verifies that each credential exists as a regular file, then
+exports file pointers without reading the values. Systemd owns their storage
+and access controls.
 
 For local socket delivery, normally used with launchd on macOS, the daemon
 runs with `--bind`. The launcher fetches each configured key, writes it beneath
 `secrets_dir`, and exports `CREDENTIALS_DIRECTORY` along with `<KEY>_FILE`
 pointers. The file naming convention matches systemd credentials. The fetch
 branch is selected by `sockets`, not by the operating system.
+Each socket descriptor specifies `path`, `protocol`, and `server_uid`. The
+launcher checks the expected listener UID before reading. Use framed endpoints
+to reject incomplete responses; raw endpoints preserve direct systemd socket
+delivery. Both protocols remain local to the host.
 
 ## Fail-closed rules
 
@@ -122,8 +127,9 @@ branch is selected by `sockets`, not by the operating system.
   not restricted — the exact bytes reach the file.
 - **Empty fetch response:** (`credentials` mode, macOS socket path):
   treated as a refusal, fails closed.
-- **Missing `$CREDENTIALS_DIRECTORY`:** fails closed in credentials mode
-  (systemd path).
+- **Missing systemd credential:** an unset, empty, or relative
+  `$CREDENTIALS_DIRECTORY`, or a missing or nonregular credential file, fails
+  before launch.
 
 See the [Launcher contract](../reference/launcher-contract.md) for the
 complete specification of each mode's fields, validation rules, and

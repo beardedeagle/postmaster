@@ -6,13 +6,14 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
+use std::os::fd::OwnedFd;
 #[cfg(target_os = "linux")]
 use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
@@ -20,7 +21,7 @@ use zeroize::Zeroizing;
 use libc;
 
 use crate::adapter::KeyNaming;
-use crate::config::{Args, Config, Entry, KeysSource};
+use crate::config::{Args, Config, Entry, KeysSource, SocketProtocol};
 use crate::keys::{KeyRing, resolve};
 
 /// Shared I/O deadline for socket reads and writes (one constant, so
@@ -37,18 +38,16 @@ pub fn log(msg: &str) {
     eprintln!("postmaster: {msg}");
 }
 
-/// Serve a single credential entry on a Unix socket. Handles one peer
-/// at a time (thread-per-socket); each peer must be uid 0 (root) or the
-/// configured peer_user.
+/// Serve a single credential entry on a Unix socket, one peer at a time.
+/// Accept root or `peer_uid`; skip peer UID verification only when
+/// `allow_nonroot` is set and `peer_uid` is absent.
 ///
 /// Connection limiting (documented decision): the
 /// loop is serialized — one connection at a time, each accepted stream
-/// closed at the end of its iteration, writes bounded by IO_TIMEOUT —
+/// closed at the end of its iteration, writes use a per-operation timeout —
 /// so per-connection FDs/threads never accumulate and pending connects
-/// are bounded by the kernel backlog. A trusted peer (root or the
-/// configured peer_user) can starve the listener with slow connections;
-/// that is the authorized consumer of this socket, so no rate limiting
-/// is implemented.
+/// are bounded by the kernel backlog. An admitted peer can occupy the listener
+/// with slow connections; no rate limiting is implemented.
 pub fn serve(
     listener: UnixListener,
     path: PathBuf,
@@ -62,6 +61,7 @@ pub fn serve(
             Ok(s) => s,
             Err(e) => {
                 log(&format!("{}: accept: {e}", path.display()));
+                thread::sleep(Duration::from_millis(100));
                 continue;
             }
         };
@@ -86,7 +86,7 @@ pub fn serve(
         // Fresh resolution per request: rotation-friendly, nothing cached.
         match resolve(&entry, &ring, KeyNaming::Env) {
             Ok(value) => {
-                if let Err(e) = stream.write_all(&value) {
+                if let Err(e) = write_credential(&mut stream, &value, entry.protocol) {
                     log(&format!("{}: write: {e}", path.display()));
                 }
                 let _ = stream.shutdown(Shutdown::Both);
@@ -106,11 +106,33 @@ pub fn serve(
 /// read. These payloads are small; the cap keeps a hostile or broken
 /// peer from forcing unbounded heap allocation. Oversized payloads fail.
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+const FRAME_MAGIC: [u8; 8] = *b"PMCR\0\0\0\x01";
+const FRAME_HEADER_BYTES: usize = FRAME_MAGIC.len() + size_of::<u32>();
+
+fn write_credential(
+    stream: &mut impl Write,
+    value: &[u8],
+    protocol: SocketProtocol,
+) -> std::io::Result<()> {
+    if protocol == SocketProtocol::Framed {
+        if value.is_empty() || value.len() as u64 > MAX_READ_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "credential frame payload must contain 1..=16 MiB bytes",
+            ));
+        }
+        let mut header = [0_u8; FRAME_HEADER_BYTES];
+        header[..FRAME_MAGIC.len()].copy_from_slice(&FRAME_MAGIC);
+        header[FRAME_MAGIC.len()..].copy_from_slice(&(value.len() as u32).to_be_bytes());
+        stream.write_all(&header)?;
+    }
+    stream.write_all(value)
+}
 
 /// Read `reader` to EOF with a hard size cap.
 /// Fails rather than truncates when the stream exceeds the cap — a
 /// truncated secret must never be served as if complete.
-pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     let mut limited = reader.take(MAX_READ_BYTES + 1);
     let mut buf = Zeroizing::new(Vec::new());
     limited
@@ -123,17 +145,70 @@ pub(crate) fn read_capped<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, St
             MAX_READ_BYTES
         ));
     }
-    Ok(std::mem::take(&mut *buf))
+    Ok(buf)
 }
 
-/// Connect, read one credential to EOF (hard-capped by `read_capped`).
-/// Zero bytes means the server refused to serve — fail closed, exactly
-/// like LoadCredential failing.
+/// Open a regular file without blocking on special files, then read within the byte cap.
+pub(crate) fn read_regular_capped(
+    path: &Path,
+    extra_flags: rustix::fs::OFlags,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+    let fd = open(
+        path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | extra_flags,
+        Mode::empty(),
+    )
+    .map_err(|e| {
+        if extra_flags.contains(OFlags::NOFOLLOW) && e == rustix::io::Errno::LOOP {
+            format!(
+                "{}: open: {e} (refusing to follow a symlink)",
+                path.display()
+            )
+        } else {
+            format!("{}: open: {e}", path.display())
+        }
+    })?;
+    let stat = fstat(&fd).map_err(|e| format!("{}: stat: {e}", path.display()))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(format!("{}: not a regular file", path.display()));
+    }
+    read_capped(fs::File::from(fd), path)
+}
+
+/// Fetch raw credential bytes to EOF without checking the server UID.
+/// Reject empty responses and payloads over 16 MiB. Raw EOF cannot distinguish
+/// a truncated nonempty response from a complete credential.
 pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
-    let stream =
-        UnixStream::connect(path).map_err(|e| format!("{}: connect: {e}", path.display()))?;
-    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-    let buf = Zeroizing::new(read_capped(stream, path)?);
+    fetch_bytes_with_options(path, SocketProtocol::Raw, None)
+}
+
+/// Fetch a credential with the selected protocol and optional listener UID check.
+/// Check `expected_uid`, when supplied, before reading any credential bytes.
+/// Framed endpoints require an expected UID and reject incomplete responses.
+/// Raw EOF cannot detect nonempty truncation. Connect and reads share one
+/// five-second deadline; payloads must contain 1 byte through 16 MiB.
+pub fn fetch_bytes_with_options(
+    path: &Path,
+    protocol: SocketProtocol,
+    expected_uid: Option<u32>,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    if protocol == SocketProtocol::Framed && expected_uid.is_none() {
+        return Err("framed fetch requires an expected server uid".into());
+    }
+    let deadline = Instant::now() + IO_TIMEOUT;
+    let mut stream = connect_fetch(path, deadline)?;
+    if let Some(expected) = expected_uid {
+        let actual = peer_euid(&stream)
+            .map_err(|e| format!("{}: server peer credentials: {e}", path.display()))?;
+        if actual != expected {
+            return Err(format!(
+                "{}: server uid {actual} does not match expected uid {expected}",
+                path.display()
+            ));
+        }
+    }
+    let buf = read_fetch(&mut stream, path, deadline, protocol)?;
     if buf.is_empty() {
         return Err(format!(
             "{}: server sent zero bytes (refused to serve); failing closed",
@@ -143,12 +218,156 @@ pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     Ok(buf)
 }
 
-/// Connect to a local credential socket, read to EOF, and write to stdout.
-/// Available on Linux and macOS. Zero bytes means
-/// the server refused to serve — fail closed, exactly like LoadCredential
-/// failing the unit.
+fn connect_fetch(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketType};
+    let socket = rustix::net::socket(AddressFamily::UNIX, SocketType::STREAM, None)
+        .map_err(|e| format!("{}: socket: {e}", path.display()))?;
+    rustix::io::fcntl_setfd(&socket, rustix::io::FdFlags::CLOEXEC)
+        .map_err(|e| format!("{}: FD_CLOEXEC: {e}", path.display()))?;
+    rustix::fs::fcntl_setfl(&socket, rustix::fs::OFlags::NONBLOCK)
+        .map_err(|e| format!("{}: nonblocking socket: {e}", path.display()))?;
+    let address = SocketAddrUnix::new(path)
+        .map_err(|e| format!("{}: socket address: {e}", path.display()))?;
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| format!("{}: credential fetch timed out", path.display()))?;
+        match rustix::net::connect(&socket, &address) {
+            Ok(()) | Err(rustix::io::Errno::ISCONN) => break,
+            Err(
+                rustix::io::Errno::AGAIN
+                | rustix::io::Errno::INPROGRESS
+                | rustix::io::Errno::ALREADY,
+            ) => {
+                thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
+            Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(format!("{}: connect: {e}", path.display())),
+        }
+    }
+    Ok(UnixStream::from(socket))
+}
+
+fn read_fetch(
+    stream: &mut UnixStream,
+    path: &Path,
+    deadline: Instant,
+    protocol: SocketProtocol,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    let expected = if protocol == SocketProtocol::Framed {
+        let mut header = [0_u8; FRAME_HEADER_BYTES];
+        let mut filled = 0;
+        while filled < header.len() {
+            let n = read_fetch_chunk(stream, &mut header[filled..], path, deadline)?;
+            if n == 0 {
+                return Err(format!(
+                    "{}: truncated credential frame header",
+                    path.display()
+                ));
+            }
+            filled += n;
+        }
+        if header[..FRAME_MAGIC.len()] != FRAME_MAGIC {
+            return Err(format!(
+                "{}: invalid credential frame magic/version",
+                path.display()
+            ));
+        }
+        let mut encoded_length = [0_u8; size_of::<u32>()];
+        encoded_length.copy_from_slice(&header[FRAME_MAGIC.len()..]);
+        let length = u32::from_be_bytes(encoded_length) as usize;
+        if length == 0 || length as u64 > MAX_READ_BYTES {
+            return Err(format!(
+                "{}: credential frame payload must contain 1..=16 MiB bytes",
+                path.display()
+            ));
+        }
+        Some(length)
+    } else {
+        None
+    };
+    let mut buf = Zeroizing::new(Vec::with_capacity(expected.unwrap_or(0)));
+    let mut chunk = Zeroizing::new([0_u8; 8192]);
+    loop {
+        let remaining = expected
+            .unwrap_or(MAX_READ_BYTES as usize)
+            .saturating_sub(buf.len());
+        let n = read_fetch_chunk(
+            stream,
+            &mut chunk[..(remaining + 1).min(8192)],
+            path,
+            deadline,
+        )?;
+        if n == 0 {
+            if expected.is_some_and(|length| buf.len() != length) {
+                return Err(format!(
+                    "{}: truncated credential frame payload",
+                    path.display()
+                ));
+            }
+            return Ok(buf);
+        }
+        if n > remaining {
+            let reason = if expected.is_some() {
+                "credential frame contains extra bytes".to_string()
+            } else {
+                format!("exceeds the {MAX_READ_BYTES}-byte size cap")
+            };
+            return Err(format!("{}: {reason}", path.display()));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+fn read_fetch_chunk(
+    stream: &mut UnixStream,
+    output: &mut [u8],
+    path: &Path,
+    deadline: Instant,
+) -> Result<usize, String> {
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|time| !time.is_zero())
+            .ok_or_else(|| format!("{}: credential fetch timed out", path.display()))?;
+        let mut ready = [rustix::event::PollFd::new(
+            &*stream,
+            rustix::event::PollFlags::IN,
+        )];
+        let timeout = rustix::event::Timespec::try_from(remaining)
+            .map_err(|e| format!("{}: read deadline: {e}", path.display()))?;
+        match rustix::event::poll(&mut ready, Some(&timeout)) {
+            Ok(0) => return Err(format!("{}: credential fetch timed out", path.display())),
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(e) => return Err(format!("{}: read readiness: {e}", path.display())),
+        }
+        match stream.read(output) {
+            Ok(n) => return Ok(n),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(e) => return Err(format!("{}: read: {e}", path.display())),
+        }
+    }
+}
+
+/// Fetch raw bytes under [`fetch_bytes`] rules, then write and flush stdout.
+/// Available on Linux and macOS; raw EOF cannot detect nonempty truncation.
 pub fn fetch(path: &Path) -> Result<(), String> {
-    let buf = fetch_bytes(path)?;
+    fetch_with_options(path, SocketProtocol::Raw, None)
+}
+
+/// Fetch under [`fetch_bytes_with_options`] rules, then write and flush stdout.
+/// Fetch failures produce no output; stdout failures can leave partial output.
+pub fn fetch_with_options(
+    path: &Path,
+    protocol: SocketProtocol,
+    expected_uid: Option<u32>,
+) -> Result<(), String> {
+    let buf = fetch_bytes_with_options(path, protocol, expected_uid)?;
     let mut out = std::io::stdout().lock();
     out.write_all(&buf)
         .and_then(|()| out.flush())
@@ -157,7 +376,7 @@ pub fn fetch(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn sd_listen_fds() -> Vec<RawFd> {
+fn sd_listen_fds() -> Result<std::ops::Range<RawFd>, String> {
     let pid_ok = std::env::var("LISTEN_PID")
         .ok()
         .and_then(|v| v.parse::<i32>().ok())
@@ -169,9 +388,12 @@ fn sd_listen_fds() -> Vec<RawFd> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     if !pid_ok || n <= 0 {
-        return Vec::new();
+        return Ok(SD_LISTEN_FDS_START..SD_LISTEN_FDS_START);
     }
-    (SD_LISTEN_FDS_START..SD_LISTEN_FDS_START + n).collect()
+    let end = SD_LISTEN_FDS_START
+        .checked_add(n)
+        .ok_or("LISTEN_FDS count overflows")?;
+    Ok(SD_LISTEN_FDS_START..end)
 }
 
 #[cfg(target_os = "linux")]
@@ -256,6 +478,9 @@ pub fn harden_process() {
 
 /// Resolve a user name to a uid without getpwnam FFI.
 pub fn uid_of(name: &str) -> Result<u32, String> {
+    if name.is_empty() || name.starts_with('-') {
+        return Err(format!("peer_user {name:?}: expected a user name"));
+    }
     // Trust boundary: a compromised `id` returning a wrong uid would defeat the socket
     // peer-uid ACL. macOS invokes /usr/bin/id by absolute path under SIP, verified via
     // codesign. Linux never uses PATH resolution — a PATH-resolved `id` would inherit a
@@ -271,7 +496,7 @@ pub fn uid_of(name: &str) -> Result<u32, String> {
     #[cfg(not(target_os = "macos"))]
     let id = verified_id_binary()?;
     let out = std::process::Command::new(&id)
-        .args(["-u", name])
+        .args(["-u", "--", name])
         .output()
         .map_err(|e| format!("{}: {e}", id.display()))?;
     if !out.status.success() {
@@ -347,7 +572,7 @@ pub fn keys_path(source: &KeysSource) -> Result<PathBuf, String> {
             // $CREDENTIALS_DIRECTORY and read an arbitrary root-readable file as key
             // material.
             crate::exec_config::validate_credential_source_name(name)?;
-            let dir = std::env::var_os("CREDENTIALS_DIRECTORY").ok_or(
+            let dir = crate::key_source::credential_directory()?.ok_or(
                 "keys.credential configured but $CREDENTIALS_DIRECTORY is unset \
                  (is LoadCredential wired on the postmaster unit?)",
             )?;
@@ -449,10 +674,119 @@ fn validate_socket_domains(
     Ok(())
 }
 
+fn open_socket_parent(parent: &Path, peer_uid: Option<u32>) -> Result<OwnedFd, String> {
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    use std::collections::VecDeque;
+    use std::os::unix::ffi::OsStringExt as _;
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    if !parent.is_absolute() {
+        return Err(format!(
+            "{}: socket parent must be absolute",
+            parent.display()
+        ));
+    }
+    let euid = rustix::process::geteuid().as_raw();
+    let mut dir = rustix::fs::open("/", flags, Mode::empty())
+        .map_err(|e| format!("/: socket parent: {e}"))?;
+    let mut parts: VecDeque<_> = parent
+        .components()
+        .map(|part| part.as_os_str().to_owned())
+        .collect();
+    let mut links = 0;
+    while let Some(part) = parts.pop_front() {
+        let stat = rustix::fs::fstat(&dir).map_err(|e| format!("socket parent: {e}"))?;
+        if stat.st_uid != 0 && stat.st_uid != euid && Some(stat.st_uid) != peer_uid {
+            return Err(format!(
+                "{}: socket ancestor is owned by an untrusted user",
+                parent.display()
+            ));
+        }
+        if stat.st_mode & 0o022 != 0 && stat.st_mode & 0o1000 == 0 {
+            return Err(format!(
+                "{}: socket ancestor permits untrusted replacement",
+                parent.display()
+            ));
+        }
+        crate::secret_files::validate_directory_acl(&dir)?;
+        if part == "/" {
+            dir = rustix::fs::open("/", flags, Mode::empty())
+                .map_err(|e| format!("/: socket parent: {e}"))?;
+            continue;
+        }
+        let opened = match rustix::fs::openat(&dir, &part, flags, Mode::empty()) {
+            Err(rustix::io::Errno::NOENT) => {
+                match rustix::fs::mkdirat(&dir, &part, Mode::from_bits_truncate(0o700)) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(e) => {
+                        return Err(format!("{}: create socket parent: {e}", parent.display()));
+                    }
+                }
+                rustix::fs::openat(&dir, &part, flags, Mode::empty())
+            }
+            result => result,
+        };
+        match opened {
+            Ok(next) => dir = next,
+            Err(error) => {
+                let link = rustix::fs::statat(&dir, &part, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|e| format!("{}: socket parent: {e}", parent.display()))?;
+                if FileType::from_raw_mode(link.st_mode) != FileType::Symlink
+                    || parts.is_empty()
+                    || (stat.st_uid != 0 && stat.st_uid != euid)
+                    || (link.st_uid != 0 && link.st_uid != euid)
+                {
+                    return Err(format!(
+                        "{}: socket parent: {error} (refusing an untrusted symlink)",
+                        parent.display()
+                    ));
+                }
+                links += 1;
+                if links > 40 {
+                    return Err(format!(
+                        "{}: too many socket-parent symlinks",
+                        parent.display()
+                    ));
+                }
+                let target = rustix::fs::readlinkat(&dir, &part, Vec::new())
+                    .map_err(|e| format!("{}: socket parent link: {e}", parent.display()))?;
+                let target = PathBuf::from(std::ffi::OsString::from_vec(target.into_bytes()));
+                for component in target.components().rev() {
+                    parts.push_front(component.as_os_str().to_owned());
+                }
+            }
+        }
+    }
+    let stat = rustix::fs::fstat(&dir).map_err(|e| format!("socket parent: {e}"))?;
+    if stat.st_uid != 0 && stat.st_uid != euid && Some(stat.st_uid) != peer_uid {
+        return Err(format!(
+            "{}: socket parent is owned by an untrusted user",
+            parent.display()
+        ));
+    }
+    if stat.st_mode & 0o022 != 0 && stat.st_mode & 0o1000 == 0 {
+        return Err(format!(
+            "{}: socket parent permits untrusted replacement",
+            parent.display()
+        ));
+    }
+    crate::secret_files::validate_directory_acl(&dir)?;
+    Ok(dir)
+}
+
+fn bind_in_directory(dir: &OwnedFd, name: &std::ffi::OsStr) -> Result<UnixListener, String> {
+    let cwd = crate::secret_files::open_secrets_dir(Path::new("."))
+        .map_err(|e| format!("pin current directory: {e}"))?;
+    rustix::process::fchdir(dir).map_err(|e| format!("enter socket parent: {e}"))?;
+    let listener = UnixListener::bind(Path::new(name));
+    let restored = rustix::process::fchdir(&cwd);
+    restored.map_err(|e| format!("restore current directory after bind: {e}"))?;
+    listener.map_err(|e| format!("bind: {e}"))
+}
+
 /// Bind and listen on all configured credential sockets. Returns
 /// a vector of `(UnixListener, path)` pairs ready for serving (the entry
 /// is re-looked-up by the caller).
-/// Call during single-threaded startup: bind mode temporarily changes umask.
+/// Call during single-threaded startup: bind mode temporarily changes umask and cwd.
 pub fn acquire_listeners(
     cfg: &Config,
     bind: bool,
@@ -464,57 +798,20 @@ pub fn acquire_listeners(
         let mut out = Vec::new();
         for path in cfg.credentials.keys() {
             let expected = peer_uids.get(path).copied().flatten();
-            if let Some(parent) = path.parent() {
-                // Refuse a symlinked socket parent unconditionally in bind mode:
-                // create_dir_all, remove_file, and bind all follow a swapped parent,
-                // and the O_NOFOLLOW fd discipline below only runs when privileged with
-                // a configured peer_user.
-                match fs::symlink_metadata(parent) {
-                    Ok(md) if md.file_type().is_symlink() => {
-                        return Err(format!(
-                            "{}: socket parent is a symlink; refusing to follow",
-                            parent.display()
-                        ));
-                    }
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => {
-                        return Err(format!(
-                            "{}: cannot stat socket parent: {e}",
-                            parent.display()
-                        ));
-                    }
-                }
-                fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-                // The parent directory is the filesystem half of the ACL:
-                // owned by the consumer's user, execute-only-for-owner, so
-                // only that user (and root) can even reach the socket. Only
-                // meaningful when we run privileged; dev runs skip it.
-                if am_root && let Some(uid) = expected {
-                    // Open the directory and operate on the fd throughout: O_NOFOLLOW
-                    // rejects a symlink at the final component, and fchown/fchmod on
-                    // the fd act on the pinned inode, immune to path swaps.
-                    let dir_fd = rustix::fs::open(
-                        parent,
-                        rustix::fs::OFlags::RDONLY
-                            | rustix::fs::OFlags::DIRECTORY
-                            | rustix::fs::OFlags::NOFOLLOW
-                            | rustix::fs::OFlags::CLOEXEC,
-                        rustix::fs::Mode::empty(),
-                    )
-                    .map_err(|e| {
-                        format!(
-                            "{}: open dir: {e} (refusing to follow a symlink)",
-                            parent.display()
-                        )
-                    })?;
-                    rustix::fs::fchown(&dir_fd, Some(rustix::fs::Uid::from_raw(uid)), None)
-                        .map_err(|e| format!("{}: fchown: {e}", parent.display()))?;
-                    rustix::fs::fchmod(&dir_fd, rustix::fs::Mode::from_bits_truncate(0o500))
-                        .map_err(|e| format!("{}: fchmod: {e}", parent.display()))?;
-                }
+            let parent = path.parent().ok_or("socket requires a parent directory")?;
+            let name = path.file_name().ok_or("socket requires a file name")?;
+            let dir_fd = open_socket_parent(parent, expected)?;
+            // The parent directory is the filesystem half of the ACL:
+            // owned by the consumer's user, execute-only-for-owner, so
+            // only that user (and root) can even reach the socket. Only
+            // meaningful when we run privileged; dev runs skip it.
+            if am_root && let Some(uid) = expected {
+                rustix::fs::fchown(&dir_fd, Some(rustix::fs::Uid::from_raw(uid)), None)
+                    .map_err(|e| format!("{}: fchown: {e}", parent.display()))?;
+                rustix::fs::fchmod(&dir_fd, rustix::fs::Mode::from_bits_truncate(0o500))
+                    .map_err(|e| format!("{}: fchmod: {e}", parent.display()))?;
             }
-            let _ = fs::remove_file(path);
+            let _ = rustix::fs::unlinkat(&dir_fd, name, rustix::fs::AtFlags::empty());
             // connect(2) needs write on the socket inode; the reachability
             // gate is the 0500 parent dir plus the peer-credential check.
             let mode = if expected.is_some() { 0o666 } else { 0o600 };
@@ -523,7 +820,7 @@ pub fn acquire_listeners(
             let l = {
                 let _umask_guard =
                     UmaskGuard::around_bind(rustix::fs::Mode::from_bits_truncate(mode));
-                UnixListener::bind(path).map_err(|e| format!("{}: bind: {e}", path.display()))?
+                bind_in_directory(&dir_fd, name).map_err(|e| format!("{}: {e}", path.display()))?
             };
             out.push((l, path.clone()));
         }
@@ -541,7 +838,7 @@ pub fn acquire_listeners(
 
     #[cfg(target_os = "linux")]
     {
-        let fds = sd_listen_fds();
+        let fds = sd_listen_fds()?;
         if fds.is_empty() {
             return Err("no sockets inherited from systemd (and --bind not given); \
              start via postmaster-credd.socket"
@@ -550,10 +847,10 @@ pub fn acquire_listeners(
         let mut seen: Vec<PathBuf> = Vec::new();
         let mut out = Vec::new();
         for fd in fds {
-            // SAFETY: sd_listen_fds() proved
-            // LISTEN_PID names this process, so fds [3, 3+n) are listening
-            // sockets systemd created for us and nothing else owns them; taking
-            // ownership here is exactly the sd_listen_fds(3) contract.
+            validate_inherited_socket(fd)?;
+            // SAFETY: the raw getsockopt checks proved fd is an open listening
+            // stream socket. Startup is single-threaded, so it cannot close
+            // between validation and adoption; systemd transferred its ownership.
             let l = unsafe { UnixListener::from_raw_fd(fd) };
             rustix::io::fcntl_setfd(&l, rustix::io::FdFlags::CLOEXEC)
                 .map_err(|e| format!("fd {fd}: FD_CLOEXEC: {e}"))?;
@@ -583,6 +880,40 @@ pub fn acquire_listeners(
         }
         Ok(out)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_inherited_socket(fd: RawFd) -> Result<(), String> {
+    for (option, expected) in [
+        (libc::SO_DOMAIN, libc::AF_UNIX),
+        (libc::SO_TYPE, libc::SOCK_STREAM),
+        (libc::SO_ACCEPTCONN, 1),
+    ] {
+        let mut value: libc::c_int = 0;
+        let mut len = size_of_val(&value) as libc::socklen_t;
+        // SAFETY: getsockopt accepts an arbitrary raw descriptor and validates it
+        // in the kernel; both output pointers reference initialized live storage.
+        // No Rust fd owner or borrow is constructed before validity is established.
+        let result = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                option,
+                std::ptr::from_mut(&mut value).cast(),
+                &raw mut len,
+            )
+        };
+        if result != 0 {
+            return Err(format!(
+                "fd {fd}: inherited socket: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if len as usize != size_of_val(&value) || value != expected {
+            return Err(format!("fd {fd}: expected a listening Unix stream socket"));
+        }
+    }
+    Ok(())
 }
 
 /// Enforce the absoluteness the config type docs promise: a CWD-relative
@@ -642,12 +973,11 @@ fn preflight_credentials(
 }
 
 /// Load keys, bind sockets, and serve credential requests.
-/// The caller applies process hardening before calling. Runs until the process is
-/// terminated; returns only on startup-path failure.
+/// The caller applies process hardening. Normally runs until process termination.
+/// Startup failures and worker panics observed while joining return errors;
+/// abort-on-panic builds terminate instead of returning a panic error.
 pub fn run(args: &Args) -> Result<(), String> {
-    let file =
-        fs::File::open(&args.config).map_err(|e| format!("{}: {e}", args.config.display()))?;
-    let raw = read_capped(file, &args.config)?;
+    let raw = read_regular_capped(&args.config, rustix::fs::OFlags::empty())?;
     let cfg: Config =
         serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", args.config.display()))?;
     if cfg.credentials.is_empty() {
@@ -700,7 +1030,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     log(&format!("serving {} socket(s)", handles.len()));
     for h in handles {
-        let _ = h.join();
+        h.join().map_err(|_| "credential server thread panicked")?;
     }
     Ok(())
 }
@@ -727,6 +1057,294 @@ mod tests {
         assert_eq!(&*fetch_bytes(&sock).unwrap(), b"sekrit");
         assert!(fetch_bytes(&sock).unwrap_err().contains("zero bytes"));
         t.join().unwrap();
+    }
+
+    fn fetch_wire(bytes: &[u8], protocol: SocketProtocol) -> Result<Zeroizing<Vec<u8>>, String> {
+        let dir = crate::test_util::temp_dir::TestDir::new("frame");
+        let sock = dir.join("credential.sock");
+        let listener = UnixListener::bind(&sock).map_err(|e| e.to_string())?;
+        let bytes = bytes.to_vec();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.write_all(&bytes);
+        });
+        let response =
+            fetch_bytes_with_options(&sock, protocol, Some(rustix::process::geteuid().as_raw()));
+        server
+            .join()
+            .map_err(|_| "mock credential server panicked")?;
+        response
+    }
+
+    #[test]
+    fn framed_fetch_is_binary_exact_and_raw_remains_unframed() {
+        let payload = b"a\0b\xff";
+        let mut framed = Vec::new();
+        write_credential(&mut framed, payload, SocketProtocol::Framed).unwrap();
+        assert_eq!(&framed[..FRAME_HEADER_BYTES], b"PMCR\0\0\0\x01\0\0\0\x04");
+        assert_eq!(
+            &*fetch_wire(&framed, SocketProtocol::Framed).unwrap(),
+            payload
+        );
+        let mut raw = Vec::new();
+        write_credential(&mut raw, payload, SocketProtocol::Raw).unwrap();
+        assert_eq!(raw, payload);
+        assert_eq!(&*fetch_wire(&raw, SocketProtocol::Raw).unwrap(), payload);
+    }
+
+    #[test]
+    fn framed_payload_cap_does_not_include_its_header() {
+        let payload = vec![0x5a; MAX_READ_BYTES as usize];
+        let mut frame = Vec::with_capacity(FRAME_HEADER_BYTES + payload.len());
+        write_credential(&mut frame, &payload, SocketProtocol::Framed).unwrap();
+        let received = fetch_wire(&frame, SocketProtocol::Framed).unwrap();
+        assert_eq!(&*received, &payload);
+    }
+
+    #[test]
+    fn framed_fetch_rejects_incomplete_invalid_and_extra_data() {
+        let frame = b"PMCR\0\0\0\x01\0\0\0\x03a\0b";
+        for length in 0..FRAME_HEADER_BYTES {
+            assert!(
+                fetch_wire(&frame[..length], SocketProtocol::Framed)
+                    .unwrap_err()
+                    .contains("truncated credential frame header")
+            );
+        }
+        for length in FRAME_HEADER_BYTES..frame.len() {
+            assert!(
+                fetch_wire(&frame[..length], SocketProtocol::Framed)
+                    .unwrap_err()
+                    .contains("truncated credential frame payload")
+            );
+        }
+        let mut invalid = frame.to_vec();
+        invalid[7] = 2;
+        assert!(
+            fetch_wire(&invalid, SocketProtocol::Framed)
+                .unwrap_err()
+                .contains("magic/version")
+        );
+        invalid = frame.to_vec();
+        invalid.push(0);
+        assert!(
+            fetch_wire(&invalid, SocketProtocol::Framed)
+                .unwrap_err()
+                .contains("extra bytes")
+        );
+        for length in [0, MAX_READ_BYTES as u32 + 1, u32::MAX] {
+            let mut header = frame[..FRAME_HEADER_BYTES].to_vec();
+            header[FRAME_MAGIC.len()..].copy_from_slice(&length.to_be_bytes());
+            assert!(
+                fetch_wire(&header, SocketProtocol::Framed)
+                    .unwrap_err()
+                    .contains("1..=16 MiB")
+            );
+        }
+    }
+
+    #[test]
+    fn framed_fetch_checks_server_uid_before_reading() {
+        let dir = crate::test_util::temp_dir::TestDir::new("frame-uid");
+        let sock = dir.join("credential.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0_u8; 1];
+            assert_eq!(stream.read(&mut bytes).unwrap(), 0);
+        });
+        let start = Instant::now();
+        let wrong_uid = rustix::process::geteuid().as_raw() ^ 1;
+        let error =
+            fetch_bytes_with_options(&sock, SocketProtocol::Framed, Some(wrong_uid)).unwrap_err();
+        assert!(error.contains("does not match expected uid"), "{error}");
+        assert!(start.elapsed() < IO_TIMEOUT);
+        server.join().unwrap();
+        assert!(
+            fetch_bytes_with_options(&sock, SocketProtocol::Framed, None)
+                .unwrap_err()
+                .contains("requires an expected server uid")
+        );
+    }
+
+    #[test]
+    fn framed_fetch_uses_one_deadline_for_header_and_payload() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let writer = thread::spawn(move || {
+            server.write_all(b"PMCR\0\0\0\x01\0\0\x01\0").unwrap();
+            while server.write_all(b"x").is_ok() {
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let start = Instant::now();
+        let error = read_fetch(
+            &mut client,
+            Path::new("/test.sock"),
+            start + Duration::from_millis(100),
+            SocketProtocol::Framed,
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        drop(client);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_deadline_rejects_a_slow_partial_response() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let writer = thread::spawn(move || {
+            while server.write_all(b"x").is_ok() {
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let start = Instant::now();
+        assert!(
+            read_fetch(
+                &mut client,
+                Path::new("/test.sock"),
+                start + Duration::from_millis(100),
+                SocketProtocol::Raw,
+            )
+            .is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        drop(client);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn regular_reads_reject_special_files_and_preserve_config_aliases() {
+        let dir = crate::test_util::temp_dir::TestDir::new("regular-read");
+        let fifo = dir.join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            read_regular_capped(&fifo, rustix::fs::OFlags::empty())
+                .unwrap_err()
+                .contains("not a regular file")
+        );
+        assert!(read_regular_capped(&dir, rustix::fs::OFlags::empty()).is_err());
+        fs::write(dir.join("config"), b"{}").unwrap();
+        std::os::unix::fs::symlink("config", dir.join("alias")).unwrap();
+        assert_eq!(
+            &*read_regular_capped(&dir.join("alias"), rustix::fs::OFlags::empty()).unwrap(),
+            b"{}"
+        );
+        assert!(read_regular_capped(&dir.join("alias"), rustix::fs::OFlags::NOFOLLOW).is_err());
+    }
+
+    #[test]
+    fn peer_user_is_never_an_id_option() {
+        for name in ["", "-r", "--help"] {
+            assert!(uid_of(name).unwrap_err().contains("expected a user name"));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn inherited_fds_must_be_open_listening_stream_sockets() {
+        use std::os::fd::AsRawFd as _;
+        assert!(validate_inherited_socket(-1).is_err());
+        let dir = crate::test_util::temp_dir::TestDir::new("inherited-socket");
+        let file = fs::File::create(dir.join("regular")).unwrap();
+        assert!(validate_inherited_socket(file.as_raw_fd()).is_err());
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        assert!(validate_inherited_socket(stream.as_raw_fd()).is_err());
+        let tcp = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        assert!(validate_inherited_socket(tcp.as_raw_fd()).is_err());
+        let listener = UnixListener::bind(dir.join("listener.sock")).unwrap();
+        validate_inherited_socket(listener.as_raw_fd()).unwrap();
+    }
+
+    #[test]
+    fn socket_parent_walk_preserves_aliases_and_checks_ancestors() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = crate::test_util::temp_dir::TestDir::new("socket-walk");
+        let parent = dir.join("parent");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&parent, dir.join("alias")).unwrap();
+        let path = dir.join("alias/new/../nested");
+        let opened = open_socket_parent(&path, None);
+        if !crate::test_util::root_has_trusted_owner() {
+            assert_eq!(
+                opened.unwrap_err(),
+                format!(
+                    "{}: socket ancestor is owned by an untrusted user",
+                    path.display()
+                )
+            );
+            assert!(!parent.join("new").exists());
+            assert!(!parent.join("nested").exists());
+            return;
+        }
+        let opened = opened.unwrap();
+        assert_eq!(
+            rustix::fs::fstat(&opened).unwrap().st_ino,
+            fs::metadata(parent.join("nested")).unwrap().ino()
+        );
+        assert!(open_socket_parent(&dir.join("alias"), None).is_err());
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            open_socket_parent(&parent, None)
+                .unwrap_err()
+                .contains("untrusted replacement")
+        );
+        assert!(
+            open_socket_parent(&parent.join("nested"), None)
+                .unwrap_err()
+                .contains("untrusted replacement")
+        );
+    }
+
+    #[test]
+    fn socket_bind_stays_in_its_pinned_directory_and_restores_cwd() {
+        const CHILD: &str = "POSTMASTER_TEST_PINNED_SOCKET";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "server::tests::socket_bind_stays_in_its_pinned_directory_and_restores_cwd",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let dir = crate::test_util::temp_dir::TestDir::new("socket-pin");
+        let parent = dir.join("parent");
+        fs::create_dir(&parent).unwrap();
+        let fd = open_socket_parent(&parent, None);
+        if !crate::test_util::root_has_trusted_owner() {
+            assert_eq!(
+                fd.unwrap_err(),
+                format!(
+                    "{}: socket ancestor is owned by an untrusted user",
+                    parent.display()
+                )
+            );
+            assert!(!parent.join("cred.sock").exists());
+            return;
+        }
+        let fd = fd.unwrap();
+        fs::rename(&parent, dir.join("pinned")).unwrap();
+        fs::create_dir(dir.join("unrelated")).unwrap();
+        std::os::unix::fs::symlink(dir.join("unrelated"), &parent).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let listener = bind_in_directory(&fd, std::ffi::OsStr::new("cred.sock")).unwrap();
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        assert!(dir.join("pinned/cred.sock").exists());
+        assert!(!dir.join("unrelated/cred.sock").exists());
+        assert!(bind_in_directory(&fd, std::ffi::OsStr::new("cred.sock")).is_err());
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        drop(listener);
     }
 
     #[test]
@@ -824,6 +1442,7 @@ mod tests {
                     sha2::Sha256::digest(b"KEY=\n").into()
                 }],
                 peer_user: None,
+                protocol: SocketProtocol::Raw,
             },
         );
         let cfg = Config {
@@ -854,6 +1473,7 @@ mod tests {
                 key: "K".to_string(),
                 env_file_sha256: Vec::new(),
                 peer_user: None,
+                protocol: SocketProtocol::Raw,
             },
         );
         let cfg = Config {
@@ -913,6 +1533,7 @@ mod tests {
                                 key: "KEY".into(),
                                 env_file_sha256: Vec::new(),
                                 peer_user: None,
+                                protocol: SocketProtocol::Raw,
                             },
                         )
                     })

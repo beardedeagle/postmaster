@@ -1,6 +1,6 @@
 //! Secret stdin input with terminal echo suppressed and restored before signal delivery.
 
-use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+use std::io::{IsTerminal as _, Write as _};
 
 use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use zeroize::Zeroizing;
@@ -48,22 +48,79 @@ impl Drop for EchoGuard {
     }
 }
 
+/// Read a confirmation without buffering bytes belonging to a later secret prompt.
+pub(super) fn read_line() -> Result<Zeroizing<String>, String> {
+    read_input(true, None)
+}
+
+fn read_input(
+    single_line: bool,
+    signals: Option<&crate::launcher::TerminationGuard>,
+) -> Result<Zeroizing<String>, String> {
+    let stdin = std::io::stdin();
+    let mut value = Zeroizing::new(Vec::new());
+    let mut utf8_validated = 0;
+    let mut chunk = Zeroizing::new([0_u8; 4096]);
+    let read_size = if single_line { 1 } else { chunk.len() };
+    loop {
+        if let Some(signals) = signals
+            && signals.input_pending()?
+        {
+            return Err("secret input interrupted".into());
+        }
+        match rustix::io::read(&stdin, &mut chunk[..read_size]) {
+            Ok(0) => break,
+            Ok(count) => {
+                if value.len() + count > 16 * 1024 * 1024 {
+                    return Err("secret input exceeds the 16777216-byte size cap".into());
+                }
+                value.extend_from_slice(&chunk[..count]);
+                match std::str::from_utf8(&value[utf8_validated..]) {
+                    Ok(_) => utf8_validated = value.len(),
+                    Err(error) if error.error_len().is_none() => {
+                        utf8_validated += error.valid_up_to();
+                    }
+                    Err(_) => return Err("cannot read secret input".into()),
+                }
+                if single_line && chunk[0] == b'\n' {
+                    break;
+                }
+                continue;
+            }
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::AGAIN) => {}
+            Err(_) => return Err("cannot read secret input".into()),
+        }
+        let mut fds = [rustix::event::PollFd::new(
+            &stdin,
+            rustix::event::PollFlags::IN,
+        )];
+        let timeout = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 100_000_000,
+        };
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(format!("cannot wait for secret input: {e}")),
+        }
+    }
+    match String::from_utf8(std::mem::take(&mut *value)) {
+        Ok(value) => Ok(Zeroizing::new(value)),
+        Err(error) => {
+            let _bytes = Zeroizing::new(error.into_bytes());
+            Err("cannot read secret input".into())
+        }
+    }
+}
+
 /// Read one line or a multiline EOF-terminated value without terminal echo.
-/// Redirected input uses stdin's existing buffer. Errors never include input values.
+/// Input buffers are zeroized; errors never include input values.
 pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<String>, String> {
     let stdin = std::io::stdin();
-    let mut value = Zeroizing::new(String::new());
     if !stdin.is_terminal() {
         writeln!(std::io::stderr().lock(), "{prompt}")
             .map_err(|e| format!("cannot write secret input prompt: {e}"))?;
-        let mut input = stdin.lock();
-        if single_line {
-            input.read_line(&mut value)
-        } else {
-            input.read_to_string(&mut value)
-        }
-        .map_err(|_| "cannot read secret input")?;
-        return Ok(value);
+        return read_input(single_line, None);
     }
     // Drop order matters: restore echo before unblocking a pending termination or suspend.
     let signals = crate::launcher::TerminationGuard::block_input();
@@ -91,34 +148,7 @@ pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<S
         .map_err(|e| format!("cannot suppress terminal echo: {e}"))?;
     writeln!(std::io::stderr().lock(), "{prompt}")
         .map_err(|e| format!("cannot write secret input prompt: {e}"))?;
-    let mut input = stdin.lock();
-    loop {
-        if signals.input_pending()? {
-            return Err("secret input interrupted".into());
-        }
-        // Read buffered data first. NONBLOCK also protects partial noncanonical lines.
-        match input.read_line(&mut value) {
-            Ok(0) => break,
-            Ok(_) if single_line => break,
-            Ok(_) => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(_) => return Err("cannot read secret input".into()),
-        }
-        let mut fds = [rustix::event::PollFd::new(
-            &stdin,
-            rustix::event::PollFlags::IN,
-        )];
-        let timeout = rustix::event::Timespec {
-            tv_sec: 0,
-            tv_nsec: 100_000_000,
-        };
-        match rustix::event::poll(&mut fds, Some(&timeout)) {
-            Ok(0) | Err(rustix::io::Errno::INTR) => continue,
-            Ok(_) => {}
-            Err(e) => return Err(format!("cannot wait for secret input: {e}")),
-        }
-    }
+    let value = read_input(single_line, Some(&signals))?;
     if signals.input_pending()? {
         return Err("secret input interrupted".into());
     }
@@ -136,18 +166,73 @@ mod tests {
         let Ok(style) = std::env::var("POSTMASTER_TEST_INPUT") else {
             return;
         };
-        let result = read_secret("secret-ready", style != "multiline");
+        if style == "confirmed-two-lines" {
+            assert_eq!(read_line().unwrap().trim(), "y");
+        }
+        let result = read_secret(
+            "secret-ready",
+            !matches!(style.as_str(), "multiline" | "unicode" | "oversized"),
+        );
         if style == "prompt-error" {
             assert!(result.unwrap_err().contains("prompt"));
             return;
         }
+        if style == "oversized" {
+            assert!(result.unwrap_err().contains("size cap"));
+            return;
+        }
         assert!(result.is_ok(), "input failed");
+        if style == "unicode" {
+            assert_eq!(*result.unwrap(), format!("x{}", "é".repeat(3000)));
+            return;
+        }
         assert_eq!(result.unwrap().trim(), "PRIVATE_SENTINEL");
-        if style == "two-lines" {
+        if style == "two-lines" || style == "confirmed-two-lines" {
             assert_eq!(
                 read_secret("second-secret-ready", true).unwrap().trim(),
                 "NEXT_SENTINEL"
             );
+        }
+    }
+
+    #[test]
+    fn redirected_input_preserves_queued_prompts_and_split_utf8() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        for (style, contents) in [
+            (
+                "confirmed-two-lines",
+                "y\nPRIVATE_SENTINEL\nNEXT_SENTINEL\n".to_owned(),
+            ),
+            ("unicode", format!("x{}", "é".repeat(3000))),
+            ("oversized", "x".repeat(16 * 1024 * 1024 + 1)),
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "keys::provisioning::input::tests::input_child",
+                    "--nocapture",
+                ])
+                .env("POSTMASTER_TEST_INPUT", style)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(contents.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("SENTINEL"));
         }
     }
 
@@ -217,7 +302,7 @@ mod tests {
         );
         pty.expect("secret-ready");
         pty.send(b"PRIVATE_");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        pty.wait_for_input_consumed();
         pty.send(b"SENTINEL\n");
         assert!(pty.wait().success());
         assert_eq!(tcgetattr(&pty.slave).unwrap().local_modes, mode.local_modes);
@@ -242,7 +327,7 @@ mod tests {
                 .env("POSTMASTER_TEST_INPUT", "line"),
         );
         pty.expect("secret-ready");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        pty.expect_running_for(std::time::Duration::from_millis(100));
         pty.send(b"PRIVATE_SENTINEL\n");
         assert!(pty.wait().success());
         let restored = tcgetattr(&pty.slave).unwrap();

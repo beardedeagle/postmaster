@@ -127,11 +127,10 @@ fn credentials_mode_fetch_loop() {
     });
     let cfg = write_config(
         &d,
-        &format!(
-            r#"{{"mode":"credentials","credential_keys":["K"],"sockets":{{"K":"{}"}},"secrets_dir":"{}"}}"#,
-            sock.display(),
-            secrets_dir.display()
-        ),
+        &serde_json::json!({
+            "mode":"credentials", "credential_keys":["K"], "secrets_dir":secrets_dir,
+            "sockets":{"K":{"path":sock, "protocol":"raw", "server_uid":rustix::process::geteuid().as_raw()}}
+        }).to_string(),
     );
     let sh = format!(
         "printf %s \"$CREDENTIALS_DIRECTORY\" > '{d}'/creddir.out && cat '{sd}'/K > '{d}'/kcontents.out && find '{sd}/K' -perm 600 -print | grep -q .",
@@ -163,6 +162,65 @@ fn credentials_mode_fetch_loop() {
         !secrets_dir.join("K").exists(),
         "the sibling monitor must remove plaintext files on service death"
     );
+}
+
+#[test]
+fn framed_credentials_reject_incomplete_or_untrusted_responses_before_projection() {
+    use std::io::Write as _;
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    const HEADER: &[u8] = b"PMCR\0\0\0\x01";
+    let value = b"binary\0credential\n";
+    let mut complete = HEADER.to_vec();
+    complete.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    complete.extend_from_slice(value);
+    let mut truncated = complete.clone();
+    truncated.pop();
+    let uid = rustix::process::geteuid().as_raw();
+    for (label, response, expected_uid, success) in [
+        ("complete", complete.clone(), uid, true),
+        ("truncated", truncated, uid, false),
+        ("wrong-uid", complete, uid ^ 1, false),
+    ] {
+        let dir = common::tmpdir(label);
+        let secrets_dir = dir.join("secrets");
+        std::fs::create_dir(&secrets_dir).unwrap();
+        let socket = dir.join("credential.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.write_all(&response);
+        });
+        let config = write_config(
+            &dir,
+            &serde_json::json!({
+                "mode":"credentials", "credential_keys":["K"], "secrets_dir":secrets_dir,
+                "sockets":{"K":{"path":socket, "protocol":"framed", "server_uid":expected_uid}}
+            })
+            .to_string(),
+        );
+        let script = format!("touch '{}/child-ran'; cat \"$K_FILE\"", dir.display());
+        let output = run_exec(&config, &script, &[]);
+        // Release accept if startup fails before connecting, so a regression cannot hang join.
+        let _ = UnixStream::connect(&socket);
+        server.join().unwrap();
+        assert_eq!(
+            output.status.success(),
+            success,
+            "{label}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(dir.join("child-ran").exists(), success, "{label}");
+        if success {
+            assert_eq!(output.stdout, value);
+        } else {
+            assert!(output.stdout.is_empty(), "{label}");
+        }
+        assert!(
+            !secrets_dir.join("K").exists(),
+            "{label}: plaintext survived"
+        );
+    }
 }
 
 #[test]

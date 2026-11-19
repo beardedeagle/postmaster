@@ -242,6 +242,9 @@ fn apply_substitution(
     substitution_name: &str,
     output: &mut String,
 ) -> Result<()> {
+    if super::is_private_key_var_name(substitution_name) {
+        return Err("private-key variables cannot be interpolated");
+    }
     if let Ok(value) = env::var(substitution_name) {
         let value = Zeroizing::new(value);
         push_str(output, &value)?;
@@ -453,6 +456,22 @@ fn parse(raw: &[u8], budget: &mut Budget) -> Result<Vec<(String, Zeroizing<Strin
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_keys_cannot_be_interpolated_from_prior_assignments() {
+        for name in [
+            "DOTENV_PRIVATE_KEY",
+            "DOTENV_PRIVATE_KEY_PRODUCTION",
+            "POSTMASTER_KEY",
+            "POSTMASTER_KEY_FILE",
+        ] {
+            let input = format!("{name}=PRIVATE_SENTINEL\nALIAS=${{{name}}}\n");
+            let error = parse(input.as_bytes(), &mut Budget::default()).unwrap_err();
+            assert_eq!(error, "private-key variables cannot be interpolated");
+        }
+        let literal = parse(b"A='${DOTENV_PRIVATE_KEY}'\n", &mut Budget::default()).unwrap();
+        assert_eq!(&*literal[0].1, "${DOTENV_PRIVATE_KEY}");
+    }
 
     #[test]
     fn matches_dotenv_grammar_and_substitution() {

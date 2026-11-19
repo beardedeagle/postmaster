@@ -55,7 +55,7 @@ fn wait_for_socket(
 #[test]
 fn daemon_serves_a_real_fetch_roundtrip() {
     for mask in ["000", "022", "077"] {
-        daemon_roundtrip(mask, None);
+        daemon_roundtrip(mask, None, "raw");
     }
 }
 
@@ -65,13 +65,34 @@ fn daemon_serves_configured_peer_under_any_umask() {
     assert!(out.status.success());
     let user = String::from_utf8(out.stdout).unwrap();
     for mask in ["000", "022", "077"] {
-        daemon_roundtrip(mask, Some(user.trim()));
+        daemon_roundtrip(mask, Some(user.trim()), "raw");
     }
 }
 
-fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
+#[test]
+fn daemon_serves_a_pinned_framed_binary_roundtrip() {
+    daemon_roundtrip("022", None, "framed");
+}
+
+fn fetch_command(sock: &std::path::Path, protocol: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_postmaster"));
+    command.arg("fetch").arg(sock);
+    if protocol == "framed" {
+        command
+            .args(["--protocol", "framed", "--server-uid"])
+            .arg(rustix::process::geteuid().as_raw().to_string());
+    }
+    command
+}
+
+fn daemon_roundtrip(mask: &str, peer_user: Option<&str>, protocol: &str) {
     let d = common::tmpdir("daemon");
-    let encrypted = common::enc("postgres://real-roundtrip");
+    let value = if protocol == "framed" {
+        "postgres://real\0roundtrip"
+    } else {
+        "postgres://real-roundtrip"
+    };
+    let encrypted = common::enc(value);
     let env = common::write_env_file(
         &d,
         ".env.production",
@@ -94,6 +115,7 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
                 "env_file": env,
                 "key": "DB_URL",
                 "peer_user": peer_user,
+                "protocol": protocol,
                 "env_file_sha256": [hash],
             }},
         })
@@ -128,17 +150,32 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
     let expected = if peer_user.is_some() { 0o666 } else { 0o600 };
     assert_eq!(mode, expected, "socket mode under umask {mask}");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_postmaster"))
-        .arg("fetch")
-        .arg(&sock)
-        .output()
-        .unwrap();
+    if protocol == "raw" {
+        use std::io::Read as _;
+        let mut stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, value.as_bytes());
+    } else {
+        let refused = Command::new(env!("CARGO_BIN_EXE_postmaster"))
+            .arg("fetch")
+            .arg(&sock)
+            .args(["--protocol", "framed", "--server-uid"])
+            .arg((rustix::process::geteuid().as_raw() ^ 1).to_string())
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("does not match expected uid"));
+    }
+
+    let out = fetch_command(&sock, protocol).output().unwrap();
     assert!(
         out.status.success(),
         "fetch stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(out.stdout, b"postgres://real-roundtrip");
+    assert_eq!(out.stdout, value.as_bytes());
 
     let original = std::fs::read(&env).unwrap();
     for replacement in [
@@ -146,22 +183,14 @@ fn daemon_roundtrip(mask: &str, peer_user: Option<&str>) {
         "DB_URL=${PATH}\n".into(),
     ] {
         std::fs::write(&env, replacement).unwrap();
-        let refused = Command::new(env!("CARGO_BIN_EXE_postmaster"))
-            .arg("fetch")
-            .arg(&sock)
-            .output()
-            .unwrap();
+        let refused = fetch_command(&sock, protocol).output().unwrap();
         assert!(!refused.status.success());
         assert!(refused.stdout.is_empty());
     }
     std::fs::write(&env, original).unwrap();
-    let restored = Command::new(env!("CARGO_BIN_EXE_postmaster"))
-        .arg("fetch")
-        .arg(&sock)
-        .output()
-        .unwrap();
+    let restored = fetch_command(&sock, protocol).output().unwrap();
     assert!(restored.status.success());
-    assert_eq!(restored.stdout, b"postgres://real-roundtrip");
+    assert_eq!(restored.stdout, value.as_bytes());
 }
 
 #[test]

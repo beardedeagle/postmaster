@@ -31,8 +31,8 @@
 //!    cannot be blocked or ignored; only a D-state hang can delay it, and
 //!    abandoning cleanup is worse) → `cleanup_written` → exit.
 //! 2. Otherwise, if the service is dead (liveness watch: pidfd + `poll`
-//!    on Linux, kqueue `EVFILT_PROC`/`NOTE_EXIT` on macOS, `kill(pid, 0)`
-//!    only as fallback) → `cleanup_written` → exit. This covers natural
+//!    on Linux, kqueue `EVFILT_PROC`/`NOTE_EXIT` on macOS, parent-relationship
+//!    checks plus `kill(pid, 0)` as fallback) → `cleanup_written` → exit. This covers natural
 //!    exit, `kill -9`, and crashes.
 //! 3. Otherwise, sleep one tick. Liveness/stop latency adds to cleanup
 //!    latency, never to the grace cap.
@@ -47,7 +47,7 @@
 //! hold a malloc lock; under `cargo test` (multithreaded) test children
 //! fork with an empty `extra`, so no child ever frees there. Otherwise:
 //! no allocation, no stdio locks — only signal mask/wait ops,
-//! `pidfd_open`/`poll`/`kevent`, `kill`/`pidfd_send_signal`, `unlinkat`,
+//! `pidfd_open`/`poll`/`kevent`, `getppid`, `kill`/`pidfd_send_signal`, `unlinkat`,
 //! `nanosleep`, raw `write(2)` for diagnostics, and `_exit`/`exit_group`.
 //! All inputs (`names`, the dir fd) are allocated pre-fork and moved in.
 //! Exit never runs destructors, atexit handlers, or stdio flushes
@@ -118,7 +118,7 @@ const ZERO_TIMESPEC: rustix::event::Timespec = rustix::event::Timespec {
 /// absent in env mode (cleanup is then a no-op, but the monitor still
 /// runs — uniform stop semantics).
 pub(crate) fn run<Fd: AsFd>(service_pid: Pid, dir_fd: Option<Fd>, names: Vec<String>) -> ! {
-    run_inner(service_pid, dir_fd, names, GRACE, POLL_INTERVAL)
+    run_inner(service_pid, dir_fd, names, GRACE, POLL_INTERVAL, true)
 }
 
 /// The monitor loop, parameterized for deterministic tests.
@@ -128,11 +128,15 @@ fn run_inner<Fd: AsFd>(
     names: Vec<String>,
     grace: Duration,
     poll_interval: Duration,
+    service_is_parent: bool,
 ) -> ! {
     block_monitor_signals();
     let set = stop_sigset();
-    let watch = Watch::new(service_pid);
+    let watch = Watch::new(service_pid, service_is_parent);
     loop {
+        if watch.dead(service_pid) {
+            cleanup_and_exit(dir_fd.as_ref(), &names);
+        }
         if let Some(sig) = take_pending_stop(&set) {
             // Stop semantics (diverges): forward, bounded grace, SIGKILL
             // escalation, then clean and exit.
@@ -144,10 +148,6 @@ fn run_inner<Fd: AsFd>(
                     std::thread::sleep(poll_interval);
                 }
             }
-            cleanup_and_exit(dir_fd.as_ref(), &names);
-        }
-        if watch.dead(service_pid) {
-            // Service death from any cause: natural exit, kill -9, crash.
             cleanup_and_exit(dir_fd.as_ref(), &names);
         }
         std::thread::sleep(poll_interval);
@@ -230,31 +230,31 @@ fn exit_process(code: i32) -> ! {
 /// parent may be multithreaded, e.g. under `cargo test`). SIGPIPE is
 /// blocked for the monitor's life, so a closed pipe cannot kill us here.
 fn monitor_log(msg: &str) {
-    // SAFETY: fd 2 is the process's stderr; if it has been closed the
-    // write simply fails with EBADF. The borrowed fd is not stored and
-    // does not outlive the call; nothing is closed.
-    let stderr = unsafe { std::os::fd::BorrowedFd::borrow_raw(2) };
+    let stderr = rustix::stdio::stderr();
     let _ = rustix::io::write(stderr, msg.as_bytes());
     let _ = rustix::io::write(stderr, b"\n");
 }
 
 /// The service liveness watch. Event sources (pidfd `POLLIN`, kqueue
 /// `NOTE_EXIT`) fire at process exit — zombie- and PID-reuse-proof,
-/// which is why they are the choice and `kill(pid, 0)` polling is only
-/// the fallback (zombie-blind, PID-reuse-prone).
+/// which is why they are the choice. The fallback additionally observes
+/// reparenting: the service's death changes the monitor's parent before reaping.
 #[cfg(target_os = "linux")]
 enum Watch {
     /// pidfd(2) opened at monitor start; the fd pins the process.
     Pidfd(OwnedFd),
-    /// kill(pid, 0) fallback for kernels without pidfd_open (< 5.3).
-    Poll,
+    /// Parent-relationship and kill(pid, 0) fallback without pidfd_open.
+    Poll { parent: Option<Pid> },
     /// The service was already dead when the monitor started.
     Dead,
 }
 
 #[cfg(target_os = "linux")]
 impl Watch {
-    fn new(pid: Pid) -> Self {
+    fn new(pid: Pid, service_is_parent: bool) -> Self {
+        if service_is_parent && rustix::process::getppid() != Some(pid) {
+            return Self::Dead;
+        }
         match pidfd_open(pid, PidfdFlags::empty()) {
             Ok(fd) => Self::Pidfd(fd),
             // ESRCH is race-free "definitely gone" — clean up at once.
@@ -264,7 +264,9 @@ impl Watch {
                 monitor_log(
                     "postmaster monitor: pidfd_open failed; falling back to kill(pid, 0) polling",
                 );
-                Self::Poll
+                Self::Poll {
+                    parent: service_is_parent.then_some(pid),
+                }
             }
         }
     }
@@ -272,7 +274,10 @@ impl Watch {
     fn dead(&self, pid: Pid) -> bool {
         match self {
             Self::Dead => true,
-            Self::Poll => matches!(test_kill_process(pid), Err(Errno::SRCH)),
+            Self::Poll { parent } => {
+                parent.is_some() && rustix::process::getppid() != *parent
+                    || matches!(test_kill_process(pid), Err(Errno::SRCH))
+            }
             Self::Pidfd(fd) => {
                 let mut fds = [PollFd::new(fd, PollFlags::IN)];
                 match poll(&mut fds, Some(&ZERO_TIMESPEC)) {
@@ -294,15 +299,18 @@ impl Watch {
 enum Watch {
     /// kqueue with `EVFILT_PROC`/`NOTE_EXIT` registered for the service.
     Kqueue(OwnedFd),
-    /// kill(pid, 0) fallback (kqueue creation failed — fd exhaustion).
-    Poll,
+    /// Parent-relationship and kill(pid, 0) fallback if kqueue fails.
+    Poll { parent: Option<Pid> },
     /// The service was already dead when the monitor started.
     Dead,
 }
 
 #[cfg(target_os = "macos")]
 impl Watch {
-    fn new(pid: Pid) -> Self {
+    fn new(pid: Pid, service_is_parent: bool) -> Self {
+        if service_is_parent && rustix::process::getppid() != Some(pid) {
+            return Self::Dead;
+        }
         // ESRCH is race-free "definitely gone" — clean up at once.
         if matches!(test_kill_process(pid), Err(Errno::SRCH)) {
             return Self::Dead;
@@ -317,7 +325,9 @@ impl Watch {
                 monitor_log(
                     "postmaster monitor: kqueue failed; falling back to kill(pid, 0) polling",
                 );
-                return Self::Poll;
+                return Self::Poll {
+                    parent: service_is_parent.then_some(pid),
+                };
             }
             let change = libc::kevent {
                 ident: pid.as_raw_pid() as usize,
@@ -343,7 +353,9 @@ impl Watch {
                 monitor_log(
                     "postmaster monitor: kevent registration failed; falling back to kill(pid, 0) polling",
                 );
-                return Self::Poll;
+                return Self::Poll {
+                    parent: service_is_parent.then_some(pid),
+                };
             }
             // SAFETY: kq is a fresh, valid fd owned by this process;
             // wrapping it in OwnedFd closes it exactly once at drop.
@@ -354,7 +366,10 @@ impl Watch {
     fn dead(&self, pid: Pid) -> bool {
         match self {
             Self::Dead => true,
-            Self::Poll => matches!(test_kill_process(pid), Err(Errno::SRCH)),
+            Self::Poll { parent } => {
+                parent.is_some() && rustix::process::getppid() != *parent
+                    || matches!(test_kill_process(pid), Err(Errno::SRCH))
+            }
             Self::Kqueue(kq) => {
                 // SAFETY: `ev`/`ts` are valid stack locals that outlive
                 // the call; a zero timeout makes kevent(2) a non-blocking

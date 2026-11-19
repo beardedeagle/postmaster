@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["Release request"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-request.yml"
+      - ".github/release/**"
+      - ".github/actions/setup-rust/**"
+      - "docs/src/development/releases.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+      - "Justfile"
+
+concurrency:
+  group: release-${{ inputs.tag || github.event.workflow_run.id || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  JUST_NO_DOTENV: "true"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: Validate release source
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+      - name: Test release tooling
+        run: just release-test
+      - name: Download tag request
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-request
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-request
+      - name: Resolve source
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_REQUEST: ${{ github.event_name == 'workflow_run' && format('{0}/release-request/request.json', runner.temp) || '' }}
+        run: just release-plan >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+          path: source
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl linker
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Build, test and package release binary
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: just release-build "$RELEASE_TARGET" source
+      - name: Upload release archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: source/target/release-artifacts/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Verify and publish
+    if: github.event_name != 'pull_request'
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    concurrency:
+      group: release-publish-${{ needs.plan.outputs.tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Setup Rust and just
+        uses: ./.github/actions/setup-rust
+      - name: Download built archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: target/release-artifacts
+      - name: Recheck source and assemble release files
+        run: |
+          set -euo pipefail
+          just release-plan > "$RUNNER_TEMP/release-source"
+          grep -Fx "commit=$RELEASE_COMMIT" "$RUNNER_TEMP/release-source"
+          just release-manifest "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Verify release files
+        run: just release-verify "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Attest all release files
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: target/release-artifacts/*
+          create-storage-record: false
+      - name: Verify downloaded release before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: just release-publish "$RELEASE_TAG" "$RELEASE_COMMIT"

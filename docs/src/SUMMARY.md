@@ -32,4 +32,5 @@
 
 # Development
 
+- [Releases](./development/releases.md)
 - [Changelog](./changelog.md)

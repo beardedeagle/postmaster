@@ -110,7 +110,7 @@ fn partial_noncanonical_input_does_not_delay_terminal_restoration() {
     pty.send(b"y\n");
     pty.expect("Paste the keys file contents");
     pty.send(b"PRIVATE_SENTINEL");
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    pty.wait_for_input_consumed();
     pty.signal(rustix::process::Signal::TERM);
     assert!(!pty.wait().success());
     assert_eq!(

@@ -3,7 +3,9 @@
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use crate::secret_files::{MANAGED_SENTINEL, open_secrets_dir, read_dir_names};
+use crate::secret_files::{
+    MANAGED_SENTINEL, check_file, open_secrets_dir, read_dir_names, validate_projection,
+};
 use crate::server::log;
 
 /// `postmaster cleanup`: remove all secret files from the secrets_dir
@@ -44,6 +46,7 @@ pub fn cleanup(config_path: &Path) -> Result<(), String> {
         }
         Err(e) => return Err(format!("{}: cleanup: {e}", dir.display())),
     };
+    validate_projection(&dir_fd, dir)?;
     let names = read_dir_names(&dir_fd).map_err(|e| format!("{}: cleanup: {e}", dir.display()))?;
     if names.is_empty() {
         log(&format!(
@@ -67,6 +70,8 @@ pub fn cleanup(config_path: &Path) -> Result<(), String> {
             ));
         }
     }
+    check_file(&dir_fd, std::ffi::OsStr::new(MANAGED_SENTINEL))
+        .map_err(|e| format!("{}: cleanup: sentinel: {e}", dir.display()))?;
     let mut removed = 0_usize;
     let mut had_failure = false;
     for name in &names {
@@ -78,6 +83,11 @@ pub fn cleanup(config_path: &Path) -> Result<(), String> {
         let path = dir.join(name);
         match rustix::fs::statat(&dir_fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) if rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() => {
+                if let Err(e) = check_file(&dir_fd, name) {
+                    had_failure = true;
+                    log(&format!("{}: cleanup: {e}", path.display()));
+                    continue;
+                }
                 match rustix::fs::unlinkat(&dir_fd, name, rustix::fs::AtFlags::empty()) {
                     Ok(()) => removed += 1,
                     Err(e) => {
@@ -165,15 +175,21 @@ mod tests {
         )
         .unwrap();
 
-        cleanup(&cfg_path).unwrap();
+        let result = cleanup(&cfg_path);
+        let trusted_root = crate::test_util::root_has_trusted_owner();
+        if trusted_root {
+            result.unwrap();
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "/: directory path is owned by an untrusted user"
+            );
+        }
 
-        assert!(!dir.join("KEY_A").exists(), "KEY_A should be removed");
-        assert!(!dir.join("KEY_B").exists(), "KEY_B should be removed");
+        assert_eq!(dir.join("KEY_A").exists(), !trusted_root);
+        assert_eq!(dir.join("KEY_B").exists(), !trusted_root);
         assert!(dir.join("subdir").exists(), "subdir should be preserved");
-        assert!(
-            !dir.join(MANAGED_SENTINEL).exists(),
-            "sentinel is removed last"
-        );
+        assert_eq!(dir.join(MANAGED_SENTINEL).exists(), !trusted_root);
     }
 
     #[test]
@@ -194,8 +210,77 @@ mod tests {
 
         let err = cleanup(&cfg_path).unwrap_err();
 
-        assert!(err.contains("sentinel"), "{err}");
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("sentinel"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
         assert!(dir.join("FOREIGN").exists(), "nothing may be deleted");
+    }
+
+    #[test]
+    fn cleanup_rejects_linked_sentinel_and_retains_linked_files() {
+        let dir = crate::test_util::temp_dir::TestDir::new("cleanup-linked");
+        let outside = crate::test_util::temp_dir::TestDir::new("cleanup-outside");
+        fs::write(dir.join("SECRET"), b"secret").unwrap();
+        fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
+        fs::hard_link(dir.join(MANAGED_SENTINEL), outside.join("sentinel")).unwrap();
+        let config = outside.join("exec.json");
+        fs::write(
+            &config,
+            serde_json::json!({
+                "mode": "files", "keys": ["environment"],
+                "env_files": ["/unused"], "secrets_dir": dir.as_path(),
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = cleanup(&config).unwrap_err();
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("sentinel"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
+        assert!(dir.join("SECRET").exists());
+
+        fs::remove_file(outside.join("sentinel")).unwrap();
+        fs::hard_link(dir.join("SECRET"), outside.join("secret")).unwrap();
+        let err = cleanup(&config).unwrap_err();
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("retaining"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
+        assert!(dir.join(MANAGED_SENTINEL).exists());
+        assert_eq!(fs::read(dir.join("SECRET")).unwrap(), b"secret");
+    }
+
+    #[test]
+    fn cleanup_refuses_untrusted_ancestor_before_removing_files() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = crate::test_util::temp_dir::TestDir::new("cleanup-ancestry");
+        let shared = root.join("shared");
+        let dir = shared.join("secrets");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SECRET"), b"secret").unwrap();
+        fs::write(dir.join(MANAGED_SENTINEL), b"").unwrap();
+        let config = root.join("exec.json");
+        fs::write(
+            &config,
+            serde_json::json!({
+                "mode": "files", "keys": ["environment"],
+                "env_files": ["/unused"], "secrets_dir": dir,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let err = cleanup(&config).unwrap_err();
+        assert!(err.contains("untrusted"), "{err}");
+        assert_eq!(fs::read(dir.join("SECRET")).unwrap(), b"secret");
+        assert!(dir.join(MANAGED_SENTINEL).exists());
     }
 
     #[test]
@@ -244,7 +329,11 @@ mod tests {
 
         // Restore write permission so the temp dir can be cleaned up.
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(err.contains("retaining"), "{err}");
+        if crate::test_util::root_has_trusted_owner() {
+            assert!(err.contains("retaining"), "{err}");
+        } else {
+            assert_eq!(err, "/: directory path is owned by an untrusted user");
+        }
         assert!(
             dir.join(MANAGED_SENTINEL).exists(),
             "the sentinel must be retained so a retry is not refused as unmanaged"

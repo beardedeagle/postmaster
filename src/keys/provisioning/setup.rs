@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use super::ensure_keychain_items;
 use super::{default_keys_dir, ensure_keys_dir, ensure_keys_file, verify_key_sources};
 use crate::adapter::KeyNaming;
-use crate::exec_config::{ExecConfig, KeySourceSpec};
+use crate::exec_config::{ExecConfig, ExecMode, KeySourceSpec};
 use crate::server::log;
 
 /// Resolve distinct setup key variables in first-seen input order.
@@ -47,8 +47,16 @@ pub fn setup(
     force: bool,
     keys_dir_override: Option<PathBuf>,
 ) -> Result<(), String> {
+    if recheck && force {
+        return Err("setup: --recheck conflicts with --force".into());
+    }
     let cfg = crate::launcher::parse_exec_config(config_path)?;
     cfg.validate_shape()?;
+
+    if cfg.mode == ExecMode::Credentials {
+        log("setup: credentials mode requires no private key sources");
+        return Ok(());
+    }
 
     let wanted = wanted_keys(&cfg)?;
 
@@ -80,9 +88,8 @@ pub fn setup(
     verify_key_sources(&cfg, &wanted)?;
 
     log(&format!(
-        "setup: complete — keys dir {}, {} key source(s) verified",
+        "setup: complete — keys dir {}, selected key source verified",
         keys_dir.display(),
-        cfg.keys.len()
     ));
     Ok(())
 }
@@ -91,6 +98,23 @@ pub fn setup(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_setup_does_not_create_or_require_key_sources() {
+        let dir = crate::test_util::temp_dir::TestDir::new("credentials-setup");
+        let config = dir.join("exec.json");
+        let keys_dir = dir.join("unused");
+        std::fs::write(
+            &config,
+            r#"{"mode":"credentials","credential_keys":["DB"]}"#,
+        )
+        .unwrap();
+        for recheck in [false, true] {
+            setup(&config, recheck, true, false, Some(keys_dir.clone())).unwrap();
+            assert!(!keys_dir.exists());
+        }
+        assert!(setup(&config, true, true, true, None).is_err());
+    }
 
     #[test]
     fn setup_keys_are_unique_and_keep_first_seen_order() {

@@ -7,12 +7,8 @@ use zeroize::Zeroizing;
 use super::KeyRing;
 use crate::adapter::KeyNaming;
 
-/// Implementation of [`KeyRing::load`]; the contract is documented on the
-/// method.
-pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
-    // NONBLOCK is inert on regular files; on a FIFO it turns the otherwise blocking
-    // open into an immediate success that the file-type check below rejects — a FIFO
-    // here must never hang the launcher at open.
+/// Open a regular, private, owned keys file and validate the opened inode.
+pub(super) fn open_private_file(path: &Path) -> Result<std::fs::File, String> {
     let oflags = rustix::fs::OFlags::RDONLY
         | rustix::fs::OFlags::NOFOLLOW
         | rustix::fs::OFlags::CLOEXEC
@@ -52,8 +48,14 @@ pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String
     }
     crate::secret_files::validate_private_file_acl(&fd)
         .map_err(|e| format!("keys file {}: {e}", path.display()))?;
-    let file = std::fs::File::from(fd);
-    let iter = dotenvy::from_read_iter(file);
+    Ok(std::fs::File::from(fd))
+}
+
+/// Implementation of [`KeyRing::load`].
+pub(super) fn load(path: &Path, namings: &[KeyNaming]) -> Result<KeyRing, String> {
+    let file = open_private_file(path)?;
+    let contents = crate::server::read_capped(file, path)?;
+    let iter = dotenvy::from_read_iter(contents.as_slice());
     let mut pairs = Vec::new();
     for item in iter {
         // Parser diagnostics include input that may contain a private key.
@@ -152,6 +154,21 @@ mod tests {
             Err(e) if e.contains("not valid hex") => {}
             other => panic!("expected bad hex error, got {other:?}"),
         });
+    }
+
+    #[test]
+    fn load_rejects_keys_files_larger_than_the_input_limit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tdir("oversized-keys");
+        let path = dir.join("keys");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(16 * 1024 * 1024 + 1).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            KeyRing::load(&path, &[KeyNaming::Env])
+                .unwrap_err()
+                .contains("size cap")
+        );
     }
 
     #[test]

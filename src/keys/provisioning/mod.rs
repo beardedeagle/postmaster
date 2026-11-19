@@ -209,10 +209,7 @@ fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), St
             "Create it now? You will need to paste the key contents (DOTENV_PRIVATE_KEY=<64-hex>...). [y/N] "
         );
     }
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .map_err(|_| format!("{}: cannot read input", path.display()))?;
+    let input = input::read_line().map_err(|_| format!("{}: cannot read input", path.display()))?;
     if !input.trim().eq_ignore_ascii_case("y") {
         if original.is_some() {
             log(&format!(
@@ -318,10 +315,7 @@ fn ensure_keychain_items(
     // Interactive: offer to seed
     eprintln!("keychain {service}: items to seed: {}", to_seed.join(", "));
     eprintln!("Seed them now? You will need to paste each key value. [y/N] ");
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return Err("cannot read input".into());
-    }
+    let input = input::read_line()?;
     if !input.trim().eq_ignore_ascii_case("y") {
         return Err(format!(
             "keychain {service}: operator declined to seed items"
@@ -345,103 +339,30 @@ fn ensure_keychain_items(
     Ok(())
 }
 
-/// Check configured key-source prerequisites without decrypting values.
-/// File sources get descriptor-based access checks; credentials get presence
-/// and type checks. Keychain and environment sources check required names.
+/// Verify the first usable key source using runtime selection and file custody rules.
 fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String> {
-    // `wanted` is only consulted by the macOS keychain check below.
     #[cfg(not(target_os = "macos"))]
     let _ = wanted;
-    let mut checked = 0_u32;
-
     for spec in &cfg.keys {
         match spec {
             KeySourceSpec::Credential(name) => {
-                checked += 1;
-                let dir = std::env::var_os("CREDENTIALS_DIRECTORY")
-                    .ok_or("$CREDENTIALS_DIRECTORY is not set")?;
-                let p = Path::new(&dir).join(name);
-                // Mirror load_ring's discipline: verification must not pass what
-                // resolution rejects — exists() follows symlinks, but the loader
-                // refuses a symlinked credential outright.
-                match fs::symlink_metadata(&p) {
-                    Ok(md) if md.file_type().is_symlink() => {
-                        return Err(format!(
-                            "{}: credential source is a symlink; refusing to follow",
-                            p.display()
-                        ));
-                    }
-                    Ok(md) if md.is_file() => {}
-                    Ok(_) => {
-                        return Err(format!(
-                            "{}: credential source is not a regular file",
-                            p.display()
-                        ));
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Err(format!(
-                            "{}: credential source not found under $CREDENTIALS_DIRECTORY",
-                            p.display()
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(format!(
-                            "{}: cannot stat credential source: {e}",
-                            p.display()
-                        ));
-                    }
-                }
+                let Some(path) = super::source::credential_path(name)? else {
+                    continue;
+                };
+                super::load::open_private_file(&path)?;
             }
             KeySourceSpec::File(path) => {
-                checked += 1;
                 if path.starts_with("/nix/store") {
                     return Err(format!(
                         "{}: refusing plaintext private keys from the world-readable Nix store",
                         path.display()
                     ));
                 }
-                // NONBLOCK is inert on regular files and prevents a FIFO from hanging
-                // verification at open; the file-type check then rejects anything that
-                // isn't a regular file.
-                let oflags = rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC
-                    | rustix::fs::OFlags::NONBLOCK;
-                let fd =
-                    rustix::fs::open(path, oflags, rustix::fs::Mode::empty()).map_err(|e| {
-                        format!("{}: {e} (refusing to follow a symlink)", path.display())
-                    })?;
-                let stat = rustix::fs::fstat(&fd)
-                    .map_err(|e| format!("{}: fstat: {e}", path.display()))?;
-                if !rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file() {
-                    return Err(format!(
-                        "{}: not a regular file (fail closed)",
-                        path.display()
-                    ));
-                }
-                let mode = rustix::fs::Mode::from_bits_truncate(stat.st_mode);
-                if mode.intersects(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO) {
-                    return Err(format!(
-                        "{}: permissions {:#o} are group/world accessible; expected 0400 or 0600",
-                        path.display(),
-                        stat.st_mode
-                    ));
-                }
-                let euid = rustix::process::geteuid().as_raw();
-                if stat.st_uid != euid {
-                    return Err(format!(
-                        "{}: owned by uid {} but postmaster euid is {euid}",
-                        path.display(),
-                        stat.st_uid
-                    ));
-                }
-                crate::secret_files::validate_private_file_acl(&fd)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                super::load::open_private_file(path)?;
             }
             KeySourceSpec::Keychain(service) => {
                 #[cfg(target_os = "macos")]
                 {
-                    checked += 1;
                     for var in wanted {
                         // Security.framework API — no subprocess; retrieved bytes
                         // zeroized on drop.
@@ -464,7 +385,6 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 }
             }
             KeySourceSpec::Environment => {
-                checked += 1;
                 // Require each adapter namespace with the same exact-prefix predicate
                 // as KeyRing::from_env; unrelated keys must not satisfy setup checks.
                 for naming in cfg.required_namings() {
@@ -472,7 +392,8 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                     // vars_os: std::env::vars() panics during iteration on non-Unicode
                     // entries — an abort under panic=abort, not a clean verification
                     // failure.
-                    if !std::env::vars_os().any(|(k, _)| {
+                    if !std::env::vars_os().any(|(k, value)| {
+                        let _value = zeroize::Zeroizing::new(value.into_encoded_bytes());
                         k.to_str()
                             .is_some_and(|k| crate::keys::is_key_var_name(prefix, k))
                     }) {
@@ -481,18 +402,11 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 }
             }
         }
+        log("setup: selected key source verified — environment ready");
+        return Ok(());
     }
 
-    if checked == 0 {
-        return Err("no key sources configured (configure keys=[…])".into());
-    }
-
-    // Every per-source failure above early-returns, so reaching the log means checked
-    // == verified — report the count, not a fraction that is always N/N.
-    log(&format!(
-        "setup: {checked} key source(s) verified — environment ready"
-    ));
-    Ok(())
+    Err("no usable key source (configure keys=[…] or set DOTENV_PRIVATE_KEY*)".into())
 }
 
 #[cfg(test)]
@@ -585,6 +499,52 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         let err = res.expect_err("a symlinked credential must fail verification");
         assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn verification_follows_runtime_fallback_and_credential_custody() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = crate::test_util::temp_dir::TestDir::new("verify-fallback");
+        let fallback = dir.join("fallback");
+        let credential = dir.join("credential");
+        fs::write(
+            &fallback,
+            format!("DOTENV_PRIVATE_KEY={}\n", "11".repeat(32)),
+        )
+        .unwrap();
+        fs::set_permissions(&fallback, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut cfg: ExecConfig = serde_json::from_value(serde_json::json!({
+            "mode": "env", "env_files": ["/x/.env"],
+            "keys": [{"credential": "credential"}, {"file": fallback}]
+        }))
+        .unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original = std::env::var_os("CREDENTIALS_DIRECTORY");
+        // SAFETY: environment mutations are serialized by ENV_LOCK.
+        unsafe { std::env::remove_var("CREDENTIALS_DIRECTORY") };
+        verify_key_sources(&cfg, &[]).unwrap();
+        // SAFETY: ENV_LOCK remains held.
+        unsafe { std::env::set_var("CREDENTIALS_DIRECTORY", dir.as_os_str()) };
+        verify_key_sources(&cfg, &[]).unwrap();
+        fs::write(&credential, b"private").unwrap();
+        fs::set_permissions(&credential, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            verify_key_sources(&cfg, &[])
+                .unwrap_err()
+                .contains("group/world accessible")
+        );
+        fs::set_permissions(&credential, fs::Permissions::from_mode(0o400)).unwrap();
+        cfg.keys.push(KeySourceSpec::File(dir.join("unreachable")));
+        verify_key_sources(&cfg, &[]).unwrap();
+        // SAFETY: ENV_LOCK remains held while restoring the original environment.
+        unsafe {
+            if let Some(value) = original {
+                std::env::set_var("CREDENTIALS_DIRECTORY", value);
+            } else {
+                std::env::remove_var("CREDENTIALS_DIRECTORY");
+            }
+        }
     }
 
     #[test]

@@ -30,10 +30,18 @@ pub(super) fn from_env(namings: &[KeyNaming]) -> Result<KeyRing, String> {
     // whole launcher on an arbitrary inherited variable. Key-var names match
     // [A-Za-z0-9_] and key values are hex, so nothing admissible is lost.
     KeyRing::from_pairs(
-        std::env::vars_os()
-            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .filter(|(k, _)| namings.iter().any(|n| is_key_var_name(n.key_prefix(), k)))
-            .map(|(k, v)| (k, Zeroizing::new(v))),
+        std::env::vars_os().filter_map(|(name, value)| {
+            let value = Zeroizing::new(value.into_encoded_bytes());
+            let name = name.into_string().ok()?;
+            if !namings
+                .iter()
+                .any(|n| is_key_var_name(n.key_prefix(), &name))
+            {
+                return None;
+            }
+            let value = std::str::from_utf8(&value).ok()?;
+            Some((name, Zeroizing::new(value.to_owned())))
+        }),
         namings,
     )
     .map_err(|e| format!("environment: {e}"))

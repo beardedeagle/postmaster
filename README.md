@@ -87,6 +87,10 @@ Postmaster sockets. With daemon-backed systemd delivery, the consumer gets
 `LoadCredential=<KEY>:/run/postmaster-credd/<svc>/<KEY>.sock` per key and
 the app reads `$CREDENTIALS_DIRECTORY/<KEY>` from unit-private, unswappable
 ramfs. The deployment controls credential storage and access.
+Postmaster clients can use framed local socket responses with an explicit
+expected listener UID. Framing detects incomplete transfers before projecting
+a value. Raw endpoints retain direct systemd socket support. Both transports
+stay on the same host; see the [socket contract](docs/src/reference/launcher-contract.md#local-socket-protocols).
 
 ## Key sources
 
@@ -144,6 +148,10 @@ $ just build-matrix max macos-arm  # optimized release
 
 Source builds require Rust 1.99.1 or newer. `just build-help` lists the
 optimization levels and cross-compilation targets.
+
+[Release instructions](docs/src/development/releases.md) cover attested
+checksums and archives, binary installation, and tag or manual
+publication.
 
 Cross builds use `cargo zigbuild` and require the Rust target, `cargo-zigbuild`,
 and Zig to be installed; Darwin cross builds also require a macOS SDK.

@@ -46,9 +46,13 @@ pub fn main() -> std::process::ExitCode {
             harden_process();
             run(&args)
         }
-        Ok(Invocation::Fetch(path)) => {
+        Ok(Invocation::Fetch {
+            path,
+            protocol,
+            server_uid,
+        }) => {
             harden_process();
-            fetch(&path)
+            server::fetch_with_options(&path, protocol, server_uid)
         }
         Ok(Invocation::Exec {
             config,
