@@ -436,11 +436,10 @@ process using the same account.
   `passthrough` values in `files` mode (see above); in `files` mode's
   primary write path (the pointer-file contents), NUL is not restricted
   — the exact bytes reach the file.
-- **Empty fetch response** (`credentials` mode, darwin socket path):
-  `fetch_bytes` treats a zero-byte read as the server having refused to
-  serve, and fails closed with `"<path>: server sent zero bytes (refused
-  to serve); failing closed"` rather than writing an empty credential
-  file.
+- **Empty fetch response** (`credentials` mode, local sockets on Linux or macOS):
+  The launcher rejects empty responses before writing a credential file.
+  Raw responses must contain bytes; framed responses must declare and deliver
+  a nonzero payload.
 - **16 MiB read cap.** Config JSON, bundle JSON, private-key files, setup
   input, and credential fetch payloads are capped at 16 MiB; oversized input
   fails. Dotenv
@@ -541,7 +540,7 @@ metacharacter-laden values stay inert in `env` mode,
 process-env-wins-without-overload and overload-reverses-it, rotation with
 a bogus first key, strict failure refuses to exec, `0600` pointer files
 and `passthrough`, both `credentials` branches (systemd pointer-only and
-the darwin fetch loop), first-file/last-file precedence, same-file
+local socket fetching), first-file/last-file precedence, same-file
 last-assignment-wins, NUL-in-value handling in both `env` and `files`
 modes, stale-key detection with `--verify-keys`, and non-identifier key
 rejection at the exec boundary. Any binding — Ansible, Puppet, Salt, CDK,

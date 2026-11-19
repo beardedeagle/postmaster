@@ -38,18 +38,16 @@ pub fn log(msg: &str) {
     eprintln!("postmaster: {msg}");
 }
 
-/// Serve a single credential entry on a Unix socket. Handles one peer
-/// at a time (thread-per-socket); each peer must be uid 0 (root) or the
-/// configured peer_user.
+/// Serve a single credential entry on a Unix socket, one peer at a time.
+/// Accept root or `peer_uid`; skip peer UID verification only when
+/// `allow_nonroot` is set and `peer_uid` is absent.
 ///
 /// Connection limiting (documented decision): the
 /// loop is serialized — one connection at a time, each accepted stream
-/// closed at the end of its iteration, writes bounded by IO_TIMEOUT —
+/// closed at the end of its iteration, writes use a per-operation timeout —
 /// so per-connection FDs/threads never accumulate and pending connects
-/// are bounded by the kernel backlog. A trusted peer (root or the
-/// configured peer_user) can starve the listener with slow connections;
-/// that is the authorized consumer of this socket, so no rate limiting
-/// is implemented.
+/// are bounded by the kernel backlog. An admitted peer can occupy the listener
+/// with slow connections; no rate limiting is implemented.
 pub fn serve(
     listener: UnixListener,
     path: PathBuf,
@@ -178,16 +176,18 @@ pub(crate) fn read_regular_capped(
     read_capped(fs::File::from(fd), path)
 }
 
-/// Connect, read one credential to EOF (hard-capped by `read_capped`).
-/// Zero bytes means the server refused to serve — fail closed, exactly
-/// like LoadCredential failing.
+/// Fetch raw credential bytes to EOF without checking the server UID.
+/// Reject empty responses and payloads over 16 MiB. Raw EOF cannot distinguish
+/// a truncated nonempty response from a complete credential.
 pub fn fetch_bytes(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     fetch_bytes_with_options(path, SocketProtocol::Raw, None)
 }
 
-/// Fetch a complete credential, optionally checking the listener's kernel peer uid.
-/// Framed endpoints require an explicit expected uid and reject incomplete responses.
-/// All connection and read operations share one deadline.
+/// Fetch a credential with the selected protocol and optional listener UID check.
+/// Check `expected_uid`, when supplied, before reading any credential bytes.
+/// Framed endpoints require an expected UID and reject incomplete responses.
+/// Raw EOF cannot detect nonempty truncation. Connect and reads share one
+/// five-second deadline; payloads must contain 1 byte through 16 MiB.
 pub fn fetch_bytes_with_options(
     path: &Path,
     protocol: SocketProtocol,
@@ -354,15 +354,14 @@ fn read_fetch_chunk(
     }
 }
 
-/// Connect to a local credential socket, read to EOF, and write to stdout.
-/// Available on Linux and macOS. Zero bytes means
-/// the server refused to serve — fail closed, exactly like LoadCredential
-/// failing the unit.
+/// Fetch raw bytes under [`fetch_bytes`] rules, then write and flush stdout.
+/// Available on Linux and macOS; raw EOF cannot detect nonempty truncation.
 pub fn fetch(path: &Path) -> Result<(), String> {
     fetch_with_options(path, SocketProtocol::Raw, None)
 }
 
-/// Fetch using the selected protocol and peer uid, writing only a complete response.
+/// Fetch under [`fetch_bytes_with_options`] rules, then write and flush stdout.
+/// Fetch failures produce no output; stdout failures can leave partial output.
 pub fn fetch_with_options(
     path: &Path,
     protocol: SocketProtocol,
@@ -974,8 +973,9 @@ fn preflight_credentials(
 }
 
 /// Load keys, bind sockets, and serve credential requests.
-/// The caller applies process hardening before calling. Runs until the process is
-/// terminated; returns only on startup-path failure.
+/// The caller applies process hardening. Normally runs until process termination.
+/// Startup failures and worker panics observed while joining return errors;
+/// abort-on-panic builds terminate instead of returning a panic error.
 pub fn run(args: &Args) -> Result<(), String> {
     let raw = read_regular_capped(&args.config, rustix::fs::OFlags::empty())?;
     let cfg: Config =
