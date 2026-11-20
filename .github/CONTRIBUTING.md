@@ -24,7 +24,7 @@ project's [MIT license](../LICENSE) (inbound = outbound).
 
 ## Getting set up
 
-You need Rust 1.99.1 or newer, [`just`](https://just.systems), and
+You need Rust 1.100.0 or newer, [`just`](https://just.systems), and
 [`lefthook`](https://lefthook.dev) for the git hooks.
 `rust-toolchain.toml` selects the toolchain and required components through
 `rustup`.

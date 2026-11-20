@@ -146,7 +146,7 @@ $ just ci-rust         # all of the above in one command
 $ just build-matrix max macos-arm  # optimized release
 ```
 
-Source builds require Rust 1.99.1 or newer. `just build-help` lists the
+Source builds require Rust 1.100.0 or newer. `just build-help` lists the
 optimization levels and cross-compilation targets.
 
 [Release instructions](docs/src/development/releases.md) cover attested

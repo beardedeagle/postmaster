@@ -89,12 +89,12 @@ pub fn main() -> std::process::ExitCode {
                 Some("fetch") => config::HELP_FETCH,
                 Some("setup") => config::HELP_SETUP,
                 Some("cleanup") => config::HELP_CLEANUP,
+                None | Some("help") => config::HELP_TOP,
                 Some(unknown) => {
                     eprintln!("error: unknown subcommand `{unknown}` for help");
                     eprintln!("\nAvailable subcommands: exec, fetch, setup, cleanup");
                     return std::process::ExitCode::FAILURE;
                 }
-                None => config::HELP_TOP,
             };
             print!("{text}");
             return std::process::ExitCode::SUCCESS;

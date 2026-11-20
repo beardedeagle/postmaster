@@ -33,6 +33,20 @@ fn bounded_output(mut command: Command) -> Output {
 }
 
 #[test]
+fn help_help_prints_top_level_help() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_postmaster"));
+    command.args(["help", "help"]);
+    let output = bounded_output(command);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, postmaster::config::HELP_TOP.as_bytes());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn private_key_interpolation_fails_before_launch() {
     let dir = common::tmpdir("private-substitution");
     let keys = common::write_keys_file(&dir, "", &[common::TEST_SK_HEX]);
