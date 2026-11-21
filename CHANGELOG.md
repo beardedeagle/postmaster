@@ -151,9 +151,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated processes. Adapter mapping tests live with the adapters, and
   binary conformance tests cover each launch mode.
 - Uses registry dependencies including base64 0.23.1, ecies 0.2.14,
-  serde 1.0.229, serde_json 1.0.154, zeroize 1.9.1, rustix 1.1.6, and
+  serde 1.0.229, serde_json 1.0.154, zeroize 1.9.2, rustix 1.1.6, and
   libc 0.2.191. AES-GCM 0.11.1 handles bundle authentication.
-- Requires Rust 1.99.1 or newer. Release builds use LTO, stripped symbols,
+- Requires Rust 1.100.0 or newer. Release builds use LTO, stripped symbols,
   overflow checks, and `panic = "abort"`.
 - Provides a Nix package and overlay with rust-overlay for toolchain
   selection and a committed flake lockfile for input revisions.

@@ -264,7 +264,7 @@ and per-mode injection rules are the cross-binding contract at
 
 ## Dependency policy
 
-Source builds require Rust 1.99.1 or newer. The flake exports packages and
+Source builds require Rust 1.100.0 or newer. The flake exports packages and
 an overlay, not NixOS or nix-darwin service modules. Deployment integrations
 own the service units, RAM-backed storage, and hardening described above.
 

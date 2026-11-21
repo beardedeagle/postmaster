@@ -23,10 +23,13 @@ pub use setup::setup;
 
 /// Default keys directory path: `/var/lib/postmaster` on Linux,
 /// `~/Library/Application Support/postmaster` on macOS.
+/// Empty or unset `HOME` falls back to `/var/lib/postmaster`.
 fn default_keys_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = std::env::var_os("HOME")
+            && !home.is_empty()
+        {
             return PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
@@ -415,6 +418,41 @@ mod tests {
     use super::*;
     use crate::adapter::KeyNaming;
     use crate::test_util::ENV_LOCK;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_keys_dir_uses_only_nonempty_home() {
+        const EXPECTED: &str = "POSTMASTER_TEST_DEFAULT_KEYS_DIR";
+        if let Some(expected) = std::env::var_os(EXPECTED) {
+            assert_eq!(default_keys_dir(), PathBuf::from(expected));
+            return;
+        }
+
+        let thread = std::thread::current();
+        let test_name = thread.name().unwrap();
+        for (home, expected) in [
+            (None, "/var/lib/postmaster"),
+            (Some(""), "/var/lib/postmaster"),
+            (
+                Some("/postmaster-test-home"),
+                "/postmaster-test-home/Library/Application Support/postmaster",
+            ),
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", test_name]).env(EXPECTED, expected);
+            command.env_remove("HOME");
+            if let Some(home) = home {
+                command.env("HOME", home);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "HOME={home:?}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
 
     fn env_only_cfg() -> ExecConfig {
         serde_json::from_str(r#"{"mode":"env","keys":["environment"],"env_files":["/x/.env"]}"#)

@@ -110,7 +110,7 @@ $ postmaster cleanup --config <exec.json>
   `--force` re-creates/re-seeds even if correct. `--keys-dir` overrides
   the default path (`/var/lib/postmaster` on Linux,
   `~/Library/Application Support/postmaster` on macOS — falling back to
-  `/var/lib/postmaster` when `HOME` is unset).
+  `/var/lib/postmaster` when `HOME` is empty or unset).
   `--recheck` conflicts with `--force`. Credentials mode requires no private
   keys; setup validates that mode without creating a keys directory.
   **`--check` validates config shape only, not key source accessibility:**

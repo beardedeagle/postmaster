@@ -139,7 +139,7 @@ Default keys directory:
 
 - Linux: `/var/lib/postmaster`
 - macOS: `~/Library/Application Support/postmaster` (falls back to
-  `/var/lib/postmaster` when `HOME` is unset)
+  `/var/lib/postmaster` when `HOME` is empty or unset)
 
 Secret terminal input has echo disabled until the read finishes. Postmaster
 restores terminal settings before delivering a pending termination or suspend

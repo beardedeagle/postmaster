@@ -9,7 +9,7 @@ Postmaster.
 
 ## Prerequisites
 
-- Rust 1.99.1 or newer (`rustup`, stable)
+- Rust 1.100.0 or newer (`rustup`, stable)
 - [dotenvx CLI](https://github.com/dotenvx/dotenvx) (or any tool producing
   the same ECIES format) for encrypting secrets
 - postmaster built from source (or from the Nix flake)

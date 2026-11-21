@@ -4,7 +4,7 @@ let
   cargoToml = lib.importTOML ./Cargo.toml;
   # Build a rustPlatform from the latest stable rust-overlay toolchain.
   # nixos-25.05's rustPlatform ships rustc 1.86.0, below Cargo.toml's
-  # Rust 1.99.1 minimum. rust-overlay provides newer toolchains
+  # Rust 1.100.0 minimum. rust-overlay provides newer toolchains
   # independent of the nixpkgs channel.
   rustPlatform = makeRustPlatform {
     rustc = rust-bin.stable.latest.rust;
