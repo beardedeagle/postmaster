@@ -26,6 +26,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Loads private keys from systemd credentials, local key files, macOS
   Keychain, or environment variables. Dotenv inputs use
   `DOTENV_PRIVATE_KEY*`; bundles use `POSTMASTER_KEY`.
+- Rejects duplicate admitted private-key variable names. Each variable
+  accepts ordered, comma-separated rotation candidates.
 - Reads macOS Keychain items through the Security.framework API.
 - Hides private-key terminal input and restores settings before pending
   termination or suspend signals. Failed or interrupted terminal reads discard
