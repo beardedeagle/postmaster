@@ -3,7 +3,7 @@
 //! Decrypted values are injected as bytes without shell evaluation. Plaintext
 //! dotenv inputs follow `dotenvy` parsing rules, including variable substitution.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
@@ -327,6 +327,12 @@ fn decrypt(cfg: &ExecConfig) -> Result<(Resolved, Vec<(String, String)>), String
 /// Decrypt configured secret inputs, inject them into the child
 /// context, and `execvp` the target binary. The process image is
 /// replaced — this function never returns on success.
+///
+/// # Errors
+///
+/// Return an error if validation, secret resolution or projection, or process
+/// launch fails. Files-mode pointers and passthrough variables must have
+/// distinct environment names.
 pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<(), String> {
     let cfg = parse_exec_config(config_path)?;
     cfg.validate_shape()?;
@@ -400,6 +406,16 @@ pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<
                         return Err(format!("{k}: passthrough value contains NUL"));
                     }
                     extra.push((OsString::from(k.clone()), OsString::from_vec(v.to_vec())));
+                }
+            }
+            let mut env_names = HashSet::with_capacity(extra.len());
+            for (name, _) in &extra {
+                if !env_names.insert(name) {
+                    cleanup_failed_launch(&dir_fd, dir, &written);
+                    return Err(format!(
+                        "{}: duplicate files-mode environment variable",
+                        name.to_string_lossy()
+                    ));
                 }
             }
             // resolved (Zeroizing<Vec<u8>> values) dropped here —

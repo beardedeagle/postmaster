@@ -54,6 +54,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Supports `files` mode with one file per secret, `KEY_FILE` pointers,
   and optional environment passthrough. Deployment integrations provide
   RAM-backed storage and configure swap, dump, and cleanup policies.
+- Rejects files-mode environment collisions between file pointers and
+  passthrough values, attempting to remove materialized secrets before
+  returning an error.
 - Supports `credentials` mode with pointers to systemd credentials or
   selected values fetched from local Postmaster sockets. The systemd path
   verifies that each credential exists as a regular file without reading it.
