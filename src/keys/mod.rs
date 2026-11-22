@@ -7,7 +7,7 @@
 //! The `KeyNaming` enum in `adapter/mod.rs` defines the dotenv and bundle
 //! namespaces used by loading and resolution.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry as MapEntry};
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -68,6 +68,7 @@ impl KeyRing {
     ///
     /// `namings` is the required adapter set; entries under other
     /// prefixes are dropped (and zeroized) at parse time.
+    /// Duplicate admitted key-variable names are rejected.
     pub fn load(path: &Path, namings: &[KeyNaming]) -> Result<Self, String> {
         load::load(path, namings)
     }
@@ -83,7 +84,8 @@ impl KeyRing {
     ///
     /// # Errors
     ///
-    /// Return an error for invalid key material or an empty required ring.
+    /// Return an error for duplicate admitted names, invalid key material,
+    /// or an empty required ring.
     pub fn from_pairs(
         pairs: impl IntoIterator<Item = (String, Zeroizing<String>)>,
         namings: &[KeyNaming],
@@ -118,7 +120,14 @@ impl KeyRing {
             if keys.is_empty() {
                 return Err(format!("{name}: no usable keys"));
             }
-            map.insert(name, keys);
+            match map.entry(name) {
+                MapEntry::Vacant(entry) => {
+                    entry.insert(keys);
+                }
+                MapEntry::Occupied(entry) => {
+                    return Err(format!("{}: duplicate key variable", entry.key()));
+                }
+            }
         }
         if map.is_empty() {
             return Err(empty_error(namings));
@@ -136,7 +145,7 @@ impl KeyRing {
     /// one generic-password item:
     /// service = `service`, account = the adapter's key variable name.
     /// Only the vars actually needed (derived from artifact names) are
-    /// fetched.
+    /// fetched. Repeated account requests are read once in first-request order.
     #[cfg(target_os = "macos")]
     pub fn from_keychain(
         service: &str,
@@ -558,19 +567,47 @@ pub mod tests {
 
     #[test]
     fn from_pairs_filters_and_rotates() {
-        let ring = KeyRing::from_pairs(
-            [
-                ("UNRELATED".to_string(), Zeroizing::new("x".to_string())),
-                (
-                    "DOTENV_PRIVATE_KEY_PRODUCTION".to_string(),
-                    Zeroizing::new(format!("{},{}", "22".repeat(32), "33".repeat(32))),
-                ),
-            ],
-            &[KeyNaming::Env],
-        )
-        .unwrap();
-        assert_eq!(ring.0.len(), 1);
-        assert_eq!(ring.0["DOTENV_PRIVATE_KEY_PRODUCTION"].len(), 2);
+        for ignored in ["UNRELATED", "POSTMASTER_KEY"] {
+            let ring = KeyRing::from_pairs(
+                [
+                    (ignored.to_string(), Zeroizing::new("x".to_string())),
+                    (ignored.to_string(), Zeroizing::new("y".to_string())),
+                    (
+                        "DOTENV_PRIVATE_KEY_PRODUCTION".to_string(),
+                        Zeroizing::new(format!("{},{}", "22".repeat(32), "33".repeat(32))),
+                    ),
+                ],
+                &[KeyNaming::Env],
+            )
+            .unwrap();
+            assert_eq!(ring.0.len(), 1);
+            let keys = &ring.0["DOTENV_PRIVATE_KEY_PRODUCTION"];
+            assert_eq!(keys.len(), 2);
+            assert_eq!(&*keys[0], &[0x22; 32]);
+            assert_eq!(&*keys[1], &[0x33; 32]);
+        }
+    }
+
+    #[test]
+    fn from_pairs_rejects_duplicate_key_variables() {
+        for name in [
+            "DOTENV_PRIVATE_KEY",
+            "DOTENV_PRIVATE_KEY_PRODUCTION",
+            "POSTMASTER_KEY",
+            "POSTMASTER_KEY_PRODUCTION",
+        ] {
+            for second in ["22", "33"] {
+                let error = KeyRing::from_pairs(
+                    [
+                        (name.to_string(), Zeroizing::new("22".repeat(32))),
+                        (name.to_string(), Zeroizing::new(second.repeat(32))),
+                    ],
+                    &[KeyNaming::Env, KeyNaming::Bundle],
+                )
+                .unwrap_err();
+                assert_eq!(error, format!("{name}: duplicate key variable"));
+            }
+        }
     }
 
     #[test]

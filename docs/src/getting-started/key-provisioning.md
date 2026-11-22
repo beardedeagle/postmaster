@@ -138,6 +138,10 @@ foreign, linked, or special file. Existing open handles keep the old contents.
 
 ## Rotation
 
+In key files, repeated private-key variable names in the required adapter
+namespaces are rejected. Keep each variable's rotation candidates in a
+single comma-separated value.
+
 No `rotate` subcommand exists. The flow is manual, but
 `DOTENV_PRIVATE_KEY*` accepts **comma-separated keys** for a
 zero-downtime window (the bundle adapter's `POSTMASTER_KEY` variable —

@@ -157,6 +157,23 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_duplicate_key_variables() {
+        for name in ["DOTENV_PRIVATE_KEY", "POSTMASTER_KEY"] {
+            let content = format!("{name}={}\n{name}={}\n", "11".repeat(32), "22".repeat(32));
+            with_temp_keys(&content, |path| {
+                let error = KeyRing::load(path, &[KeyNaming::Env, KeyNaming::Bundle]).unwrap_err();
+                assert_eq!(
+                    error,
+                    format!(
+                        "keys file {}: {name}: duplicate key variable",
+                        path.display()
+                    )
+                );
+            });
+        }
+    }
+
+    #[test]
     fn load_rejects_keys_files_larger_than_the_input_limit() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tdir("oversized-keys");
