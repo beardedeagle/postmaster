@@ -377,6 +377,10 @@ the launcher exports `<KEY>_FILE` pointing at that path; if the key is
 also listed in `passthrough`, it is *additionally* exported as a real
 `<KEY>=value` env var (and *that* copy is subject to the same NUL-rejection
 rule as `env` mode, since it becomes a real env var).
+If a passthrough name collides with another key's `_FILE` pointer, launch
+fails before starting the application and attempts to remove materialized
+secret files. Names ending in `_FILE` remain valid when their projections do not
+collide.
 
 **`mode: "credentials"`.** Requires non-empty `credential_keys`
 (validated as identifiers up front, see above). No decryption occurs in

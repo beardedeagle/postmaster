@@ -15,14 +15,15 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
         &[
             format!("DOTENV_PUBLIC_KEY_PRODUCTION=\"{}\"", common::test_pk_hex()),
             format!("SECRET=\"{}\"", common::enc(val)),
-            "PLAIN=passthrough-val".to_string(),
+            format!("SECRET_FILE=\"{}\"", common::enc("suffix-secret")),
+            "PLAIN_FILE=passthrough-val".to_string(),
         ],
     );
     let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
     let cfg = write_config(
         &d,
         &format!(
-            r#"{{"mode":"files","keys":[{{"file":"{}"}}],"env_files":["{}"],"secrets_dir":"{}","passthrough":["PLAIN"]}}"#,
+            r#"{{"mode":"files","keys":[{{"file":"{}"}}],"env_files":["{}"],"secrets_dir":"{}","passthrough":["PLAIN_FILE"],"overload":true}}"#,
             keys.display(),
             env.display(),
             secrets_dir.display()
@@ -31,8 +32,9 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
     let sh = format!(
         r#"printf %s "$SECRET_FILE" > '{d}'/secret_file.out && \
          cat "$SECRET_FILE" > '{d}'/secret_contents.out && \
+         cat "$SECRET_FILE_FILE" > '{d}'/suffix_contents.out && \
          printf %s "${{SECRET:-UNSET}}" > '{d}'/secret_var.out && \
-         printf %s "$PLAIN" > '{d}'/plain.out && \
+         printf %s "$PLAIN_FILE" > '{d}'/plain.out && \
          printf %s "${{POSTMASTER_SECRETS_DIR:-UNSET}}" > '{d}'/secretsdir.out && \
          find "$SECRET_FILE" -perm 600 -print | grep -q ."#,
         d = d.display()
@@ -50,6 +52,10 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
     assert_eq!(
         std::fs::read(d.join("secret_contents.out")).unwrap(),
         val.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(d.join("suffix_contents.out")).unwrap(),
+        b"suffix-secret"
     );
     assert_eq!(std::fs::read(d.join("secret_var.out")).unwrap(), b"UNSET");
     assert_eq!(
@@ -71,6 +77,53 @@ fn files_mode_writes_0600_pointers_and_passthrough() {
         !secrets_dir.join("SECRET").exists(),
         "the sibling monitor must remove plaintext files on service death"
     );
+}
+
+#[test]
+fn files_mode_rejects_pointer_passthrough_collisions_with_cleanup() {
+    for reverse in [false, true] {
+        let d = common::tmpdir("files-env-collision");
+        let secrets_dir = d.join("secrets");
+        std::fs::create_dir(&secrets_dir).unwrap();
+        let mut lines = vec![
+            format!("SECRET=\"{}\"", common::enc("pointer-secret")),
+            format!("SECRET_FILE=\"{}\"", common::enc("passthrough-secret")),
+        ];
+        if reverse {
+            lines.reverse();
+        }
+        let env = common::write_env_file(&d, ".env.production", &lines);
+        let keys = common::write_keys_file(&d, "PRODUCTION", &[common::TEST_SK_HEX]);
+        let cfg = write_config(
+            &d,
+            &serde_json::json!({
+                "mode": "files", "keys": [{"file": keys}], "env_files": [env],
+                "secrets_dir": secrets_dir, "passthrough": ["SECRET_FILE"], "overload": true
+            })
+            .to_string(),
+        );
+        let script = format!("touch '{}/child-ran'", d.display());
+        let output = run_exec(&cfg, &script, &[]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "reverse={reverse}: {stderr}");
+        assert!(
+            stderr.contains("SECRET_FILE: duplicate files-mode environment variable"),
+            "reverse={reverse}: {stderr}"
+        );
+        assert!(!stderr.contains("pointer-secret"));
+        assert!(!stderr.contains("passthrough-secret"));
+        assert!(output.stdout.is_empty());
+        assert!(!d.join("child-ran").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&secrets_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            [postmaster::secret_files::MANAGED_SENTINEL],
+            "reverse={reverse}: plaintext survived failed launch"
+        );
+    }
 }
 
 #[test]
