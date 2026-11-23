@@ -237,29 +237,45 @@ pub(crate) fn replace_file(
 }
 
 /// Write a fresh 0600 file beneath the pinned directory and return its consumer path.
-/// Refuse foreign, linked and special existing entries; refresh regular owner-held files atomically.
+/// Refuse filename aliases and foreign, linked or special entries. Refresh exact-name
+/// regular owner-held files atomically.
 pub fn write_secret_file(
     dir_fd: impl AsFd,
     dir: &Path,
     key: &str,
     value: &[u8],
 ) -> Result<PathBuf, String> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, statat};
+
     if !crate::keys::is_ident(key) {
         return Err("secret filename must be an identifier".into());
     }
     let dir_fd = dir_fd.as_fd();
     let path = dir.join(key);
+    let name = std::ffi::OsStr::new(key);
+    match statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => {
+            // Case-folding filesystems can resolve a different spelling to an existing file.
+            let names =
+                read_dir_names(dir_fd).map_err(|e| format!("{}: list: {e}", path.display()))?;
+            if !names.iter().any(|entry| entry == name) {
+                return Err(format!(
+                    "{}: filename aliases an existing entry",
+                    path.display()
+                ));
+            }
+        }
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(e) => return Err(format!("{}: stat: {e}", path.display())),
+    }
+
     let sentinel = std::ffi::OsStr::new(MANAGED_SENTINEL);
     check_file(dir_fd, sentinel).map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
-    let sentinel_fd = rustix::fs::openat(
+    let sentinel_fd = openat(
         dir_fd,
         sentinel,
-        rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::CREATE
-            | rustix::fs::OFlags::EXCL
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
     );
     match sentinel_fd {
         Ok(fd) => {
@@ -271,8 +287,7 @@ pub fn write_secret_file(
         }
         Err(e) => return Err(format!("{}: sentinel: {e}", path.display())),
     }
-    replace_file(dir_fd, std::ffi::OsStr::new(key), value)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    replace_file(dir_fd, name, value).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -452,6 +467,33 @@ mod tests {
             dir.join(MANAGED_SENTINEL).exists(),
             "the write drops the managed-dir sentinel (A19)"
         );
+    }
+
+    #[test]
+    fn write_secret_file_keeps_distinct_case_keys_separate() {
+        let dir = tdir("filename-alias");
+        let fd = open_secrets_dir(&dir).unwrap();
+        let first = write_secret_file(&fd, &dir, "Case", b"first").unwrap();
+        let second = dir.join("CASE");
+
+        match fs::metadata(&second) {
+            Ok(_) => {
+                let error = write_secret_file(&fd, &dir, "CASE", b"second").unwrap_err();
+                assert!(
+                    error.contains("filename aliases an existing entry"),
+                    "{error}"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert_eq!(
+                    write_secret_file(&fd, &dir, "CASE", b"second").unwrap(),
+                    second
+                );
+                assert_eq!(fs::read(&second).unwrap(), b"second");
+            }
+            Err(error) => panic!("could not look up the second filename: {error}"),
+        }
+        assert_eq!(fs::read(&first).unwrap(), b"first");
     }
 
     #[test]
