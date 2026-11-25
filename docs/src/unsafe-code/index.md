@@ -25,7 +25,7 @@ Every `unsafe` block requires:
 |----------|----------|---------|------|
 | `launcher.rs` (TerminationGuard: block/block_input/input_pending/restore_mask/Drop) | macOS, Linux | Defer termination across plaintext writes and no-echo input; restore terminal settings before pending signal delivery | [signal-deferral](./signal-deferral.md) |
 | `launcher.rs` (fork(2)) | macOS, Linux | Fork the sibling monitor before exec; rustix has no fork wrapper | [monitor](./monitor.md) |
-| `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup on every death path | [monitor](./monitor.md) |
+| `monitor.rs` (signal mask/wait ops, pidfd+poll / kqueue, `_exit`/`exit_group`) | macOS, Linux | Sibling monitor: synchronous stop consumption, liveness watch, cleanup attempt on observed exit | [monitor](./monitor.md) |
 | `server.rs` (`peer_euid`) | macOS | Peer credential check via `getpeereid(2)` | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `server.rs` (`harden_process`) | macOS, release only | `PT_DENY_ATTACH` anti-debug hardening | [macos-libc-boundary](./macos-libc-boundary.md) |
 | `secret_files/acl.rs` | macOS | Inspect directory and key-file ACL grants; clear new private-file ACLs | [macos-libc-boundary](./macos-libc-boundary.md#extended-acls) |

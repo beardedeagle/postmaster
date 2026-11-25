@@ -69,9 +69,8 @@ holds only standard signals no libc reserves.
 | Kernel/libc signal quirks on future OS versions | Very low | Missed deferral (fail-open to an unguarded write window) |
 | Operator sends SIGKILL mid-write | n/a | The monitor has not been forked yet. Files can remain until cleanup, RAM-disk destruction, or reboot |
 
-For the design-level stop semantics the guard feeds into (monitor
-forwarding, grace, escalation, cleanup on every death path), see the
-threat model's
+For monitor forwarding, grace, escalation, and cleanup after observed exit,
+see the threat model's
 [plaintext persistence window](../architecture/threat-model.md#plaintext-file-persistence-window-files-mode--mitigated)
 section and the [monitor page](./monitor.md).
 

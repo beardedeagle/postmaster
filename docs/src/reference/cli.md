@@ -117,9 +117,11 @@ Create the keys directory, check key sources, and optionally seed macOS
 Keychain accounts. Setup skips steps that are already satisfied. It derives
 one required-account list in first-seen input order, without duplicate prompts.
 Credentials mode needs no private-key source, so setup validates its config
-without creating a keys directory. Verification uses the same ordered source
-selection and private-file custody checks as runtime loading. An absent
-systemd credential allows the next source; a selected source's failure is final.
+without creating a keys directory. Full setup visits configured key files and
+macOS Keychain sources before checking access. The access check uses runtime
+source selection and private-file custody rules without parsing key material.
+An absent systemd credential allows the next source. A selected source's
+failure is final.
 
 ```console
 $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--keys-dir <path>]
@@ -128,9 +130,9 @@ $ postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--
 | Flag | Description |
 | --- | --- |
 | `--config <path>` | Path to `exec.json` (required) |
-| `--recheck` | Verification-only — no creation or seeding |
+| `--recheck` | Check key source access and custody without provisioning |
 | `--unattended` | Fail closed without prompting (for CI/automation). Alias: `--non-interactive` |
-| `--force` | Re-create/re-seed even if already correct |
+| `--force` | Prompt to replace existing key files or re-seed Keychain items |
 | `--keys-dir <path>` | Override default keys directory |
 
 `--recheck` conflicts with `--force`.

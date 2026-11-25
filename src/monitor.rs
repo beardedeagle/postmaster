@@ -1,5 +1,8 @@
-//! Sibling launch monitor — a per-service fork-child that owns stop
-//! semantics and plaintext cleanup on every service-death path.
+//! Sibling launch monitor — a per-service fork-child that forwards stop
+//! signals and attempts plaintext cleanup when it observes service exit.
+//! Unlink failures are logged. If the monitor exits or is killed first,
+//! any remaining cleanup depends on integration hooks, storage teardown,
+//! or pruning on a subsequent launch.
 //!
 //! The launcher forks the monitor after validation, plaintext writes, and
 //! zeroization of the key ring and resolved values, immediately before `execvp`.
@@ -112,8 +115,8 @@ const ZERO_TIMESPEC: rustix::event::Timespec = rustix::event::Timespec {
 };
 
 /// Monitor entry point with production timing. Never returns: the
-/// monitor exits the process (via `_exit`/`exit_group`) once the service
-/// is dead and the plaintext is cleaned. `dir_fd`/`names` are the pinned
+/// monitor exits the process (via `_exit`/`exit_group`) after observing
+/// service exit and attempting cleanup. `dir_fd`/`names` are the pinned
 /// secrets-dir fd and written entry names from the launcher; both are
 /// absent in env mode (cleanup is then a no-op, but the monitor still
 /// runs — uniform stop semantics).

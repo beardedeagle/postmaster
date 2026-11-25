@@ -25,13 +25,14 @@ sequenceDiagram
         M->>S: forward the signal
         Note over M,S: bounded grace (250 ms)
         alt service exits within the grace
-            M->>M: cleanup plaintext files, exit 0
+            M->>M: attempt plaintext cleanup, exit 0
         else grace expires
             M->>S: SIGKILL
-            M->>M: cleanup plaintext files, exit 0
+            M->>S: wait for exit
+            M->>M: attempt plaintext cleanup, exit 0
         end
-    else service death (exit, crash, kill -9)
-        M->>M: cleanup plaintext files, exit 0
+    else monitor observes service death (exit, crash, kill -9)
+        M->>M: attempt plaintext cleanup, exit 0
     end
 ```
 
@@ -49,10 +50,9 @@ Unsafe blocks: fork(2) (libc, both platforms); rustix `runtime`
 ## Purpose
 
 The sibling monitor forwards stop signals and attempts plaintext cleanup
-after service exit. After
-validation, plaintext writes, and zeroization of the key ring and resolved
-buffers, and before `execvp`,
-the launcher `fork()`s. The parent restores its
+when it observes service exit. The launcher `fork()`s after validation,
+plaintext writes, and zeroization of the key ring and resolved buffers,
+before `execvp`. The parent restores its
 pre-guard signal mask and execs the service (MainPID unchanged); the
 fork-child becomes the monitor: it keeps the four termination signals
 blocked for life, consumes them synchronously (sigpending/sigwait — no
@@ -60,10 +60,9 @@ handlers anywhere), forwards stops to the service, escalates to SIGKILL
 after a 250 ms grace (a single global security policy, deliberately not
 configurable), watches liveness (pidfd+poll on Linux, kqueue
 `EVFILT_PROC`/`NOTE_EXIT` on macOS, parent-relationship checks plus
-`kill(pid, 0)` as fallback), and
-runs `cleanup_written` before exiting — on stop, on natural exit, on
-`kill -9`, and crashes. The monitor consumes signals synchronously; it
-does not install signal handlers.
+`kill(pid, 0)` as fallback), and runs `cleanup_written` before exiting
+once it observes the service's exit. Unlink failures are logged and can
+leave files for integration cleanup, storage teardown, or startup pruning.
 
 The scrub does not erase the monitor's original process environment.
 Private keys supplied through environment variables can remain there for

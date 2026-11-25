@@ -42,20 +42,25 @@ fn docs_exec_schema_is_valid_json() {
 
 #[test]
 fn docs_exec_examples_parse_and_validate() {
-    for rel in [
-        "docs/examples/exec-env.json",
-        "docs/examples/exec-bundle.json",
-        "docs/examples/exec-files.json",
-        "docs/examples/exec-credentials-systemd.json",
-        "docs/examples/exec-credentials-darwin.json",
-    ] {
-        let raw = std::fs::read(fixture(rel)).unwrap();
+    let mut found = false;
+    for entry in std::fs::read_dir(fixture("docs/examples")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.as_encoded_bytes();
+        if !name.starts_with(b"exec-") || !name.ends_with(b".json") {
+            continue;
+        }
+        let path = entry.path();
+        let example = path.display();
+        let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{example}: {e}"));
         let cfg: ExecConfig = serde_json::from_slice(&raw).unwrap_or_else(|e| {
-            panic!("{rel}: failed to parse as ExecConfig: {e}");
+            panic!("{example}: failed to parse as ExecConfig: {e}");
         });
         cfg.validate_shape()
-            .unwrap_or_else(|e| panic!("{rel}: failed validate_shape: {e}"));
+            .unwrap_or_else(|e| panic!("{example}: failed validate_shape: {e}"));
+        found = true;
     }
+    assert!(found, "no docs/examples/exec-*.json fixtures found");
 }
 
 #[test]
@@ -156,32 +161,54 @@ fn exec_check_rejects_path_like_credential_source_names() {
 
 #[test]
 fn docs_exec_schema_covers_every_exec_config_field() {
+    use serde::de::{self, Deserialize, Deserializer, Visitor};
+    use std::collections::BTreeSet;
+
+    // Capture the field names provided by Serde's derived struct deserializer.
+    struct CaptureFields<'capture>(&'capture mut Option<&'static [&'static str]>);
+
+    impl<'de> Deserializer<'de> for CaptureFields<'_> {
+        type Error = de::value::Error;
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            *self.0 = Some(fields);
+            self.deserialize_any(visitor)
+        }
+
+        fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
+            Err(de::Error::custom(
+                "field capture does not deserialize values",
+            ))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf option
+            unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier ignored_any
+        }
+    }
+
+    let mut fields = None;
+    assert!(ExecConfig::deserialize(CaptureFields(&mut fields)).is_err());
+    let fields = fields.expect("ExecConfig must deserialize as a named struct");
+
     let raw = std::fs::read(fixture("docs/schema/exec.schema.json")).unwrap();
     let schema: serde_json::Value = serde_json::from_slice(&raw).unwrap();
     let properties = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
         .unwrap();
-    // Keep this list in sync with the fields on `ExecConfig` in
-    // src/exec_config.rs to catch schema/parser drift.
-    for field in [
-        "mode",
-        "keys",
-        "env_files",
-        "bundle_files",
-        "strict",
-        "overload",
-        "secrets_dir",
-        "passthrough",
-        "credential_keys",
-        "sockets",
-        "verify_ramdisk",
-    ] {
-        assert!(
-            properties.contains_key(field),
-            "schema properties missing {field}"
-        );
-    }
+    assert_eq!(
+        properties
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        fields.iter().copied().collect::<BTreeSet<_>>()
+    );
     assert_eq!(
         schema.get("additionalProperties"),
         Some(&serde_json::Value::Bool(false))

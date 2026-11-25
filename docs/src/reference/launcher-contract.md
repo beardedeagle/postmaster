@@ -103,12 +103,13 @@ $ postmaster cleanup --config <exec.json>
   launch the child with a partial or empty secret set. Bundle files need
   no such check: bundle resolution is all-or-nothing, so a stale bundle
   key already aborts the exec regardless of `strict`.
-- `setup` verifies platform prerequisites, creates keys directory with
-  0700, verifies/creates keys files with 0600, optionally seeds keychain
-  items (macOS), and validates the environment. Idempotent. `--recheck`
-  is verification-only. `--unattended` fails closed without prompting.
-  `--force` re-creates/re-seeds even if correct. `--keys-dir` overrides
-  the default path (`/var/lib/postmaster` on Linux,
+- `setup` prepares the keys directory, checks custody of configured key files
+  or creates them with 0600 permissions, and optionally seeds configured macOS
+  Keychain items before checking key source access. `--recheck` runs only the
+  access and custody checks, without provisioning or parsing key material.
+  `--unattended` fails when setup needs operator input.
+  `--force` prompts to replace key files or re-seed Keychain items.
+  `--keys-dir` overrides the default path (`/var/lib/postmaster` on Linux,
   `~/Library/Application Support/postmaster` on macOS — falling back to
   `/var/lib/postmaster` when `HOME` is empty or unset).
   `--recheck` conflicts with `--force`. Credentials mode requires no private
@@ -182,13 +183,13 @@ report the service manager's UID captured at `listen()`, rather than the UID
 of the process accepting connections. The UID belongs in trusted deployment
 configuration.
 
-**One `secrets_dir` per service.** postmaster treats `secrets_dir` as
-single-tenant: `prune_stale` at launch and cleanup on every death path
-delete files there based on one service's key set, so two services
-sharing a directory lets one service's lifecycle delete the other's live
-files (an availability failure — plaintext never crosses services). The
-integration must separate services, for example with a namespace-private
-tmpfs per Linux unit or per-service directories on a macOS RAM disk.
+**One `secrets_dir` per service.** Startup pruning and exit cleanup can
+remove another service's live files in a shared directory. If two launches
+share the directory and effective UID, a later launch can replace a file
+at a path already exported to the first service. The first service can
+then read the later launch's value when it opens that path. Use separate
+directories or mounts, such as a namespace-private tmpfs per Linux unit
+or per-service directories on a macOS RAM disk.
 
 `--check` also validates env-file basenames, rejects private-key
 `file` sources under `/nix/store`, rejects path-like `credential` source
@@ -253,8 +254,8 @@ references remain literal.
   keys file under an existing credential does not fall through.
   A set `$CREDENTIALS_DIRECTORY` must be absolute and nonempty. Existing
   credential key files receive the same opened-inode ownership, permission,
-  type, and macOS ACL checks as file sources. Setup verification follows the
-  same selection and custody rules without decrypting values.
+  type, and macOS ACL checks as file sources. Setup's access check follows the
+  same selection and custody rules without parsing key material.
 - `file`, `keychain`, and `environment` are **terminal**: the first time
   one of these is reached, its result — success or failure — is the
   result of key-ring selection. There is no fallback past a terminal
@@ -372,6 +373,8 @@ aliases remain supported. The launcher exports the verified canonical path.
 Each value is written byte-exact to a fresh exclusive 0600 inode and published
 atomically as `<secrets_dir>/<KEY>`. Existing handles keep the old contents;
 foreign, hardlinked, symlinked, and special existing entries fail closed.
+The write also rejects filenames that resolve to an existing entry with a
+different spelling, such as `Case` and `CASE` on a case-insensitive filesystem.
 Values may contain NUL. For each key
 the launcher exports `<KEY>_FILE` pointing at that path; if the key is
 also listed in `passthrough`, it is *additionally* exported as a real
@@ -401,8 +404,9 @@ this mode — it dispatches on whether `sockets` is empty:
   each key, looks up its socket descriptor in `sockets`, verifies the connected
   peer UID, and reads with the selected protocol through the same client path
   as `postmaster fetch`. Only a complete accepted response is written to
-  `<secrets_dir>/<KEY>` at `0600`. The launcher exports
-  `<KEY>_FILE`. After all keys, also exports
+  `<secrets_dir>/<KEY>` at `0600`. As in files mode, a write rejects a name
+  that resolves to an existing entry with a different spelling. The launcher
+  exports `<KEY>_FILE`. After all keys, it also exports
   `CREDENTIALS_DIRECTORY` set to `secrets_dir`
   so the application can use the same credential-directory convention.
   This path is normally used with launchd, but `sockets` selects it on

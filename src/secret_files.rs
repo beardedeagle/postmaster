@@ -6,10 +6,11 @@
 //! output creation, entry checks, and cleanup are relative to that pinned inode.
 //! Exported-path validation separately checks lexical and resolved ancestry.
 
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
@@ -182,32 +183,45 @@ pub(crate) fn read_dir_names(dir_fd: impl AsFd) -> rustix::io::Result<Vec<OsStri
 }
 
 /// Reject foreign, linked or special existing files before publication.
-pub(crate) fn check_file(dir_fd: impl AsFd, name: &std::ffi::OsStr) -> Result<(), String> {
-    use rustix::fs::{AtFlags, FileType, statat};
+pub(crate) fn check_file(dir_fd: impl AsFd, name: &OsStr) -> Result<(), String> {
+    check_file_stat(stat_entry(dir_fd, name)?)
+}
+
+fn stat_entry(dir_fd: impl AsFd, name: &OsStr) -> Result<Option<rustix::fs::Stat>, String> {
+    use rustix::fs::{AtFlags, statat};
     match statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(st)
-            if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile
-                && st.st_uid == rustix::process::geteuid().as_raw()
-                && st.st_nlink == 1 =>
-        {
-            Ok(())
-        }
-        Ok(_) => Err("refusing foreign, linked or non-regular file".into()),
-        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Ok(stat) => Ok(Some(stat)),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
         Err(e) => Err(format!("stat: {e}")),
     }
 }
 
+fn check_file_stat(stat: Option<rustix::fs::Stat>) -> Result<(), String> {
+    if let Some(stat) = stat
+        && (!rustix::fs::FileType::from_raw_mode(stat.st_mode).is_file()
+            || stat.st_uid != rustix::process::geteuid().as_raw()
+            || stat.st_nlink != 1)
+    {
+        return Err("refusing foreign, linked or non-regular file".into());
+    }
+    Ok(())
+}
+
 /// Publish a fresh owner-only inode beneath a pinned directory.
 /// Existing read handles retain the old contents. Failed writes remove only the new inode.
-pub(crate) fn replace_file(
-    dir_fd: impl AsFd,
-    name: &std::ffi::OsStr,
-    value: &[u8],
-) -> Result<(), String> {
-    use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
+pub(crate) fn replace_file(dir_fd: impl AsFd, name: &OsStr, value: &[u8]) -> Result<(), String> {
     let dir_fd = dir_fd.as_fd();
     check_file(dir_fd, name)?;
+    publish_file(dir_fd, name, value, || check_file(dir_fd, name)).map(drop)
+}
+
+fn publish_file(
+    dir_fd: BorrowedFd<'_>,
+    name: &OsStr,
+    value: &[u8],
+    check_destination: impl FnOnce() -> Result<(), String>,
+) -> Result<fs::File, String> {
+    use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
     #[cfg(target_os = "macos")]
     acl::validate(dir_fd)?;
     let mut random = [0; 16];
@@ -227,8 +241,9 @@ pub(crate) fn replace_file(
         file.write_all(value)
             .and_then(|()| file.flush())
             .map_err(|e| format!("write: {e}"))?;
-        check_file(dir_fd, name)?;
-        renameat(dir_fd, temporary.as_str(), dir_fd, name).map_err(|e| format!("publish: {e}"))
+        check_destination()?;
+        renameat(dir_fd, temporary.as_str(), dir_fd, name).map_err(|e| format!("publish: {e}"))?;
+        Ok(file)
     })();
     if result.is_err() {
         let _ = unlinkat(dir_fd, temporary.as_str(), AtFlags::empty());
@@ -245,55 +260,97 @@ pub fn write_secret_file(
     key: &str,
     value: &[u8],
 ) -> Result<PathBuf, String> {
-    use rustix::fs::{AtFlags, Mode, OFlags, openat, statat};
+    SecretFileWriter::new(&dir_fd, dir).write(key, value)
+}
 
-    if !crate::keys::is_ident(key) {
-        return Err("secret filename must be an identifier".into());
+/// Reuse observed directory entries across the file projections of one launch.
+pub(crate) struct SecretFileWriter<'directory> {
+    dir_fd: BorrowedFd<'directory>,
+    dir: &'directory Path,
+    entries: Option<HashMap<OsString, u64>>,
+}
+
+impl<'directory> SecretFileWriter<'directory> {
+    pub(crate) fn new(dir_fd: &'directory impl AsFd, dir: &'directory Path) -> Self {
+        Self {
+            dir_fd: dir_fd.as_fd(),
+            dir,
+            entries: None,
+        }
     }
-    let dir_fd = dir_fd.as_fd();
-    let path = dir.join(key);
-    let name = std::ffi::OsStr::new(key);
-    match statat(dir_fd, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(_) => {
-            // Case-folding filesystems can resolve a different spelling to an existing file.
-            let names =
-                read_dir_names(dir_fd).map_err(|e| format!("{}: list: {e}", path.display()))?;
-            if !names.iter().any(|entry| entry == name) {
-                return Err(format!(
-                    "{}: filename aliases an existing entry",
-                    path.display()
-                ));
+
+    fn check_name(&mut self, name: &OsStr) -> Result<Option<rustix::fs::Stat>, String> {
+        let Some(stat) = stat_entry(self.dir_fd, name)? else {
+            return Ok(None);
+        };
+        let inode = stat.st_ino;
+        if self.entries.as_ref().and_then(|entries| entries.get(name)) != Some(&inode) {
+            // A lookup can hit a different spelling. Index the directory's literal names.
+            let names = read_dir_names(self.dir_fd).map_err(|e| format!("list: {e}"))?;
+            let entries = self.entries.get_or_insert_with(HashMap::new);
+            entries.clear();
+            for entry in names {
+                if let Ok(Some(stat)) = stat_entry(self.dir_fd, &entry) {
+                    entries.insert(entry, stat.st_ino);
+                }
+            }
+            if entries.get(name) != Some(&inode) {
+                return Err("filename aliases an existing entry".into());
             }
         }
-        Err(rustix::io::Errno::NOENT) => {}
-        Err(e) => return Err(format!("{}: stat: {e}", path.display())),
+        Ok(Some(stat))
     }
 
-    let sentinel = std::ffi::OsStr::new(MANAGED_SENTINEL);
-    check_file(dir_fd, sentinel).map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
-    let sentinel_fd = openat(
-        dir_fd,
-        sentinel,
-        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
-    );
-    match sentinel_fd {
-        Ok(fd) => {
-            clear_file_acl(&fd)?;
+    pub(crate) fn write(&mut self, key: &str, value: &[u8]) -> Result<PathBuf, String> {
+        use rustix::fs::{Mode, OFlags, openat};
+
+        if !crate::keys::is_ident(key) {
+            return Err("secret filename must be an identifier".into());
         }
-        Err(rustix::io::Errno::EXIST) => {
-            check_file(dir_fd, sentinel)
-                .map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
+        let dir_fd = self.dir_fd;
+        let path = self.dir.join(key);
+        let name = OsStr::new(key);
+        self.check_name(name)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+
+        let sentinel = OsStr::new(MANAGED_SENTINEL);
+        check_file(dir_fd, sentinel).map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
+        let sentinel_fd = openat(
+            dir_fd,
+            sentinel,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        );
+        match sentinel_fd {
+            Ok(fd) => clear_file_acl(&fd)?,
+            Err(rustix::io::Errno::EXIST) => {
+                check_file(dir_fd, sentinel)
+                    .map_err(|e| format!("{}: sentinel: {e}", path.display()))?;
+            }
+            Err(e) => return Err(format!("{}: sentinel: {e}", path.display())),
         }
-        Err(e) => return Err(format!("{}: sentinel: {e}", path.display())),
+        check_file(dir_fd, name).map_err(|e| format!("{}: {e}", path.display()))?;
+        let file = publish_file(dir_fd, name, value, || {
+            check_file_stat(self.check_name(name)?)
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Some(entries) = &mut self.entries {
+            match rustix::fs::fstat(&file) {
+                Ok(stat) => {
+                    entries.insert(name.to_os_string(), stat.st_ino);
+                }
+                Err(_) => {
+                    entries.remove(name);
+                }
+            }
+        }
+        Ok(path)
     }
-    replace_file(dir_fd, name, value).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
 }
 
 /// Unlink the named entries beneath the pinned secrets-dir fd
-/// (best-effort) after a mid-loop failure so stale plaintext files do
-/// not persist on the ramdisk/tmpfs. Unlinking by NAME relative to the
+/// (best-effort) after a launch failure or observed service exit.
+/// Unlinking by name relative to the
 /// pinned fd (not by path) keeps the deletes on the inode the writes
 /// went to even if the directory path has been swapped since. The
 /// caller must only push names of successfully-written secret files
@@ -381,7 +438,7 @@ pub(crate) fn prune_stale_at(
             ));
         }
     }
-    check_file(dir_fd, std::ffi::OsStr::new(MANAGED_SENTINEL))
+    check_file(dir_fd, OsStr::new(MANAGED_SENTINEL))
         .map_err(|e| format!("{}: prune: sentinel: {e}", dir.display()))?;
     for name in &names {
         let Some(name_str) = name.to_str() else {
@@ -473,27 +530,30 @@ mod tests {
     fn write_secret_file_keeps_distinct_case_keys_separate() {
         let dir = tdir("filename-alias");
         let fd = open_secrets_dir(&dir).unwrap();
-        let first = write_secret_file(&fd, &dir, "Case", b"first").unwrap();
+        let first = write_secret_file(&fd, &dir, "Case", b"old").unwrap();
+        let other = write_secret_file(&fd, &dir, "OTHER", b"other-old").unwrap();
+        let mut writer = SecretFileWriter::new(&fd, &dir);
+        writer.write("Case", b"refresh").unwrap();
+        writer.write("OTHER", b"other-new").unwrap();
+        writer.write("Case", b"first").unwrap();
         let second = dir.join("CASE");
 
         match fs::metadata(&second) {
             Ok(_) => {
-                let error = write_secret_file(&fd, &dir, "CASE", b"second").unwrap_err();
+                let error = writer.write("CASE", b"second").unwrap_err();
                 assert!(
                     error.contains("filename aliases an existing entry"),
                     "{error}"
                 );
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                assert_eq!(
-                    write_secret_file(&fd, &dir, "CASE", b"second").unwrap(),
-                    second
-                );
+                assert_eq!(writer.write("CASE", b"second").unwrap(), second);
                 assert_eq!(fs::read(&second).unwrap(), b"second");
             }
             Err(error) => panic!("could not look up the second filename: {error}"),
         }
         assert_eq!(fs::read(&first).unwrap(), b"first");
+        assert_eq!(fs::read(&other).unwrap(), b"other-new");
     }
 
     #[test]

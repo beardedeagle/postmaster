@@ -40,10 +40,9 @@ fn default_keys_dir() -> PathBuf {
 }
 
 /// Create a 0700 keys directory, or check the existing directory's ownership
-/// and remove group or other access. `force` affects key files and Keychain
-/// items, not the directory.
+/// and remove group or other access.
 #[allow(clippy::print_stderr)]
-fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
+fn ensure_keys_dir(keys_dir: &Path) -> Result<(), String> {
     if keys_dir.exists() {
         // Open the directory itself and work on the fd throughout:
         // O_DIRECTORY|O_NOFOLLOW rejects symlinks and non-directories at open, and
@@ -131,12 +130,11 @@ fn ensure_keys_dir(keys_dir: &Path, _force: bool) -> Result<(), String> {
 }
 
 /// Check an owned, regular key file and remove group or other access.
-/// Prompt for missing contents in interactive mode; fail closed if unattended.
+/// Prompt to create a missing file in interactive mode or fail if unattended.
 /// New files and forced replacements use fresh 0600 inodes.
 ///
-/// `--force` re-prompts for the contents even when the file is already
-/// correct (manual key rotation). Force requires
-/// interactive mode: unattended has no operator to paste contents.
+/// `--force` prompts for replacement contents after checking the existing file's
+/// custody. The check does not parse the file.
 #[allow(clippy::print_stderr)]
 fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), String> {
     use crate::secret_files::{
@@ -179,7 +177,7 @@ fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), St
             }
             crate::secret_files::clear_file_acl(&fd)?;
             if !force {
-                log(&format!("{}: keys file verified", path.display()));
+                log(&format!("{}: keys file custody checked", path.display()));
                 return Ok(());
             }
             Some((fd, st))
@@ -204,7 +202,10 @@ fn ensure_keys_file(path: &Path, force: bool, unattended: bool) -> Result<(), St
         ));
     }
     if original.is_some() {
-        eprintln!("{}: keys file exists and is valid.", path.display());
+        eprintln!(
+            "{}: existing keys file passed custody checks.",
+            path.display()
+        );
         eprintln!("--force given: replace its contents now? [y/N] ");
     } else {
         eprintln!("{}: keys file not found.", path.display());
@@ -342,7 +343,7 @@ fn ensure_keychain_items(
     Ok(())
 }
 
-/// Verify the first usable key source using runtime selection and file custody rules.
+/// Check access to the selected key source using runtime selection and file custody rules.
 fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     let _ = wanted;
@@ -405,7 +406,7 @@ fn verify_key_sources(cfg: &ExecConfig, wanted: &[String]) -> Result<(), String>
                 }
             }
         }
-        log("setup: selected key source verified — environment ready");
+        log("setup: selected key source is accessible");
         return Ok(());
     }
 
@@ -704,14 +705,14 @@ mod tests {
         let d = crate::test_util::temp_dir::TestDir::new("mod");
 
         let created = d.join("new-keys");
-        ensure_keys_dir(&created, false).expect("create should succeed");
+        ensure_keys_dir(&created).expect("create should succeed");
         let mode = fs::metadata(&created).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "fresh keys dir must be 0700, got {mode:o}");
 
         let wide = d.join("wide-keys");
         fs::create_dir_all(&wide).unwrap();
         fs::set_permissions(&wide, fs::Permissions::from_mode(0o755)).unwrap();
-        ensure_keys_dir(&wide, false).expect("verify/correct should succeed");
+        ensure_keys_dir(&wide).expect("verify/correct should succeed");
         let mode = fs::metadata(&wide).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "a 0755 keys dir must be corrected to 0700");
 
@@ -729,7 +730,7 @@ mod tests {
         fs::create_dir_all(&real).unwrap();
         std::os::unix::fs::symlink(&real, d.join("link")).unwrap();
 
-        let err = ensure_keys_dir(&d.join("link").join("keys"), false)
+        let err = ensure_keys_dir(&d.join("link").join("keys"))
             .expect_err("a symlinked path component must be refused");
         assert!(err.contains("symlink"), "{err}");
         assert!(
@@ -808,7 +809,7 @@ mod tests {
             fs::create_dir(&foreign).unwrap();
             fs::set_permissions(&foreign, fs::Permissions::from_mode(0o755)).unwrap();
             rustix::fs::chown(&foreign, Some(rustix::fs::Uid::from_raw(65534)), None).unwrap();
-            assert!(ensure_keys_dir(&foreign, false).is_err());
+            assert!(ensure_keys_dir(&foreign).is_err());
             assert_eq!(
                 fs::metadata(&foreign).unwrap().permissions().mode() & 0o777,
                 0o755
