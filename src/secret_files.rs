@@ -212,16 +212,27 @@ fn check_file_stat(stat: Option<rustix::fs::Stat>) -> Result<(), String> {
 pub(crate) fn replace_file(dir_fd: impl AsFd, name: &OsStr, value: &[u8]) -> Result<(), String> {
     let dir_fd = dir_fd.as_fd();
     check_file(dir_fd, name)?;
-    publish_file(dir_fd, name, value, || check_file(dir_fd, name)).map(drop)
+    publish_file(dir_fd, name, value, || {
+        check_file(dir_fd, name)?;
+        Ok(Publication::Replace)
+    })
+    .map(drop)
+}
+
+enum Publication {
+    Create,
+    Replace,
 }
 
 fn publish_file(
     dir_fd: BorrowedFd<'_>,
     name: &OsStr,
     value: &[u8],
-    check_destination: impl FnOnce() -> Result<(), String>,
+    check_destination: impl FnOnce() -> Result<Publication, String>,
 ) -> Result<fs::File, String> {
-    use rustix::fs::{AtFlags, Mode, OFlags, openat, renameat, unlinkat};
+    use rustix::fs::{
+        AtFlags, Mode, OFlags, RenameFlags, openat, renameat, renameat_with, unlinkat,
+    };
     #[cfg(target_os = "macos")]
     acl::validate(dir_fd)?;
     let mut random = [0; 16];
@@ -241,8 +252,18 @@ fn publish_file(
         file.write_all(value)
             .and_then(|()| file.flush())
             .map_err(|e| format!("write: {e}"))?;
-        check_destination()?;
-        renameat(dir_fd, temporary.as_str(), dir_fd, name).map_err(|e| format!("publish: {e}"))?;
+        match check_destination()? {
+            // Let the filesystem check for entries created after the lookup, including aliases.
+            Publication::Create => renameat_with(
+                dir_fd,
+                temporary.as_str(),
+                dir_fd,
+                name,
+                RenameFlags::NOREPLACE,
+            ),
+            Publication::Replace => renameat(dir_fd, temporary.as_str(), dir_fd, name),
+        }
+        .map_err(|e| format!("publish: {e}"))?;
         Ok(file)
     })();
     if result.is_err() {
@@ -331,7 +352,14 @@ impl<'directory> SecretFileWriter<'directory> {
         }
         check_file(dir_fd, name).map_err(|e| format!("{}: {e}", path.display()))?;
         let file = publish_file(dir_fd, name, value, || {
-            check_file_stat(self.check_name(name)?)
+            let stat = self.check_name(name)?;
+            let publication = if stat.is_some() {
+                Publication::Replace
+            } else {
+                Publication::Create
+            };
+            check_file_stat(stat)?;
+            Ok(publication)
         })
         .map_err(|e| format!("{}: {e}", path.display()))?;
         if let Some(entries) = &mut self.entries {
@@ -554,6 +582,27 @@ mod tests {
         }
         assert_eq!(fs::read(&first).unwrap(), b"first");
         assert_eq!(fs::read(&other).unwrap(), b"other-new");
+    }
+
+    #[test]
+    fn create_publication_preserves_an_occupied_name() {
+        let dir = tdir("publish-new");
+        let dir_fd = open_secrets_dir(&dir).unwrap();
+        fs::write(dir.join("Case"), b"existing").unwrap();
+        let name = if dir.join("CASE").exists() {
+            "CASE"
+        } else {
+            "Case"
+        };
+
+        let error = publish_file(dir_fd.as_fd(), OsStr::new(name), b"new", || {
+            Ok(Publication::Create)
+        })
+        .unwrap_err();
+
+        assert_eq!(error, format!("publish: {}", rustix::io::Errno::EXIST));
+        assert_eq!(fs::read(dir.join("Case")).unwrap(), b"existing");
+        assert_eq!(read_dir_names(&dir_fd).unwrap(), [OsString::from("Case")]);
     }
 
     #[test]

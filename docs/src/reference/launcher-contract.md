@@ -375,6 +375,8 @@ atomically as `<secrets_dir>/<KEY>`. Existing handles keep the old contents;
 foreign, hardlinked, symlinked, and special existing entries fail closed.
 The write also rejects filenames that resolve to an existing entry with a
 different spelling, such as `Case` and `CASE` on a case-insensitive filesystem.
+A new file is published with a no-replace rename. If an entry claims the
+destination after the last lookup, publication fails.
 Values may contain NUL. For each key
 the launcher exports `<KEY>_FILE` pointing at that path; if the key is
 also listed in `passthrough`, it is *additionally* exported as a real
