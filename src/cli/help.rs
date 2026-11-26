@@ -13,7 +13,7 @@ postmaster --version\n\n\
 SUBCOMMANDS:\n  \
 exec     Decrypt secrets and exec a child process with them injected\n  \
 fetch    Fetch a single secret from a postmaster daemon socket\n  \
-setup    Verify environment, create keys directory, seed keychain (idempotent)\n  \
+setup    Provision local key sources and check access (idempotent)\n  \
 cleanup  Remove plaintext secret files from secrets_dir (ExecStopPost)\n  \
 help     Show help for a subcommand or this message\n\n\
 OPTIONS:\n  \
@@ -22,9 +22,9 @@ OPTIONS:\n  \
 --allow-nonroot  (serve) Allow any UID when peer_user is unset\n  \
 --check          (exec) Validate config shape only, no decryption or exec\n  \
 --verify-keys    (exec) Preflight key freshness check before exec\n  \
---recheck        (setup) Verification only, no creation or modification\n  \
+--recheck        (setup) Check key source access and custody only\n  \
 --unattended     (setup) Non-interactive mode for automation (fail closed)\n  \
---force          (setup) Re-create or re-seed even if already correct\n  \
+--force          (setup) Prompt to replace key files or re-seed Keychain items\n  \
 --keys-dir <p>   (setup) Override default keys directory path\n  \
 --version, -V    Print version and exit\n  \
 --help, -h       Show this help message\n";
@@ -63,23 +63,25 @@ For socket activation, the peer UID can identify the socket's creator or\n\
 service manager rather than the daemon accepting the connection.\n";
 
 /// Help text for the `setup` subcommand.
-pub const HELP_SETUP: &str = "postmaster setup — provision and verify local key sources\n\n\
+pub const HELP_SETUP: &str = "postmaster setup — provision local key sources and check access\n\n\
 USAGE:\n  \
 postmaster setup --config <exec.json> [--recheck] [--unattended] [--force] [--keys-dir <path>]\n\n\
-Verifies platform prerequisites, creates the keys directory with 0700\n\
-permissions, verifies or creates keys files with 0600, optionally seeds\n\
-keychain items (macOS, interactive), and validates the environment.\n\n\
+Creates the keys directory with 0700 permissions if missing, checks custody\n\
+of configured key files or creates them with 0600 permissions, and optionally\n\
+seeds configured Keychain items (macOS, interactive).\n\n\
 Steps already satisfied are skipped. Use --unattended for automated runs;\n\
 it fails if operator input is required. Required Keychain accounts are\n\
 deduplicated before prompting, preserving first-seen input order.\n\
-Verification follows the first usable key source, as execution does.\n\
+The access check follows runtime source selection and file custody rules.\n\
+Execution parses the key material when it loads the selected source.\n\
 Credentials mode validates configuration without provisioning private keys.\n\n\
 OPTIONS:\n  \
 --config <path>   Exec config JSON (required)\n  \
---recheck          Verification only — no creation or modification\n  \
+--recheck          Check access and custody without provisioning or parsing keys\n  \
 --unattended       Non-interactive mode for automation (fail closed, no prompts)\n  \
 --non-interactive  Alias for --unattended\n  \
---force            Re-create or re-seed; cannot be combined with --recheck\n  \
+--force            Prompt to replace key files or re-seed Keychain items\n                    \
+                   Conflicts with --recheck\n  \
 --keys-dir <path>  Override the default keys directory\n\n\
 Default keys directory: /var/lib/postmaster (Linux),\n\
 ~/Library/Application Support/postmaster (macOS).\n";

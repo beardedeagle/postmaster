@@ -160,8 +160,23 @@ pub(super) fn read_secret(prompt: &str, single_line: bool) -> Result<Zeroizing<S
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
+
+    fn input_child_command(style: &str) -> Command {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "keys::provisioning::input::tests::input_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("POSTMASTER_TEST_INPUT", style);
+        child
+    }
 
     #[test]
+    #[ignore = "subprocess fixture for input tests"]
     fn input_child() {
         let Ok(style) = std::env::var("POSTMASTER_TEST_INPUT") else {
             return;
@@ -198,7 +213,6 @@ mod tests {
     #[test]
     fn redirected_input_preserves_queued_prompts_and_split_utf8() {
         use std::io::Write as _;
-        use std::process::{Command, Stdio};
 
         for (style, contents) in [
             (
@@ -208,13 +222,7 @@ mod tests {
             ("unicode", format!("x{}", "é".repeat(3000))),
             ("oversized", "x".repeat(16 * 1024 * 1024 + 1)),
         ] {
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "keys::provisioning::input::tests::input_child",
-                    "--nocapture",
-                ])
-                .env("POSTMASTER_TEST_INPUT", style)
+            let mut child = input_child_command(style)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -243,15 +251,7 @@ mod tests {
                 let mut pty = crate::test_util::pty::TestPty::new();
                 let original = tcgetattr(&pty.slave).unwrap().local_modes;
                 let flags = rustix::fs::fcntl_getfl(&pty.slave).unwrap();
-                pty.spawn(
-                    std::process::Command::new(std::env::current_exe().unwrap())
-                        .args([
-                            "--exact",
-                            "keys::provisioning::input::tests::input_child",
-                            "--nocapture",
-                        ])
-                        .env("POSTMASTER_TEST_INPUT", style),
-                );
+                pty.spawn(&mut input_child_command(style));
                 pty.expect("secret-ready");
                 assert!(
                     !tcgetattr(&pty.slave)
@@ -291,15 +291,7 @@ mod tests {
         mode.special_codes[rustix::termios::SpecialCodeIndex::VMIN] = 1;
         mode.special_codes[rustix::termios::SpecialCodeIndex::VTIME] = 0;
         tcsetattr(&pty.slave, OptionalActions::Now, &mode).unwrap();
-        pty.spawn(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "keys::provisioning::input::tests::input_child",
-                    "--nocapture",
-                ])
-                .env("POSTMASTER_TEST_INPUT", "line"),
-        );
+        pty.spawn(&mut input_child_command("line"));
         pty.expect("secret-ready");
         pty.send(b"PRIVATE_");
         pty.wait_for_input_consumed();
@@ -317,15 +309,7 @@ mod tests {
         original.special_codes[rustix::termios::SpecialCodeIndex::VMIN] = 0;
         original.special_codes[rustix::termios::SpecialCodeIndex::VTIME] = 0;
         tcsetattr(&pty.slave, OptionalActions::Now, &original).unwrap();
-        pty.spawn(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "keys::provisioning::input::tests::input_child",
-                    "--nocapture",
-                ])
-                .env("POSTMASTER_TEST_INPUT", "line"),
-        );
+        pty.spawn(&mut input_child_command("line"));
         pty.expect("secret-ready");
         pty.expect_running_for(std::time::Duration::from_millis(100));
         pty.send(b"PRIVATE_SENTINEL\n");
@@ -350,14 +334,8 @@ mod tests {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
         pty.spawn_with_stderr(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "keys::provisioning::input::tests::input_child",
-                    "--nocapture",
-                ])
-                .env("POSTMASTER_TEST_INPUT", "prompt-error"),
-            std::process::Stdio::from(writer),
+            &mut input_child_command("prompt-error"),
+            Stdio::from(writer),
         );
         assert!(pty.wait().success());
         assert_eq!(tcgetattr(&pty.slave).unwrap().local_modes, original);
@@ -372,15 +350,7 @@ mod tests {
     #[test]
     fn successful_line_reads_preserve_the_next_queued_value() {
         let mut pty = crate::test_util::pty::TestPty::new();
-        pty.spawn(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "keys::provisioning::input::tests::input_child",
-                    "--nocapture",
-                ])
-                .env("POSTMASTER_TEST_INPUT", "two-lines"),
-        );
+        pty.spawn(&mut input_child_command("two-lines"));
         pty.expect("secret-ready");
         pty.send(b"PRIVATE_SENTINEL\nNEXT_SENTINEL\n");
         assert!(pty.wait().success());

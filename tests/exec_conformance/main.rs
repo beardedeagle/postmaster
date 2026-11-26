@@ -101,6 +101,16 @@ fn run_exec(config: &Path, sh: &str, envs: &[(&str, &str)]) -> std::process::Out
         .env_remove("SECRET_GOOD")
         .env_remove("DOTENV_PUBLIC_KEY_PRODUCTION")
         .env_remove("POSTMASTER_SECRETS_DIR");
+    // Environment key-source tests use only the keys supplied by the fixture.
+    for (name, _) in std::env::vars_os() {
+        if [KeyNaming::Env, KeyNaming::Bundle].iter().any(|naming| {
+            name.as_encoded_bytes()
+                .strip_prefix(naming.key_prefix().as_bytes())
+                .is_some_and(|suffix| suffix.is_empty() || suffix.len() > 1 && suffix[0] == b'_')
+        }) {
+            c.env_remove(name);
+        }
+    }
     for (k, v) in envs {
         c.env(k, v);
     }

@@ -528,12 +528,11 @@ provide isolation from a privileged inspector in the same kernel.
 
 ### Plaintext file persistence window (files mode) — Mitigated
 
-Secret files written to the tmpfs/ramdisk are removed by the **sibling
-launch monitor**, by `postmaster cleanup --config <exec.json>` wired to
-`ExecStopPost` in the service integration, and by ramdisk destruction
-when the `postmaster-ramdisk` launchd job stops. The `prune_stale`
-function also removes stale files from prior launches before writing
-new ones.
+The **sibling launch monitor** attempts to remove projected files when it
+observes service exit, and logs unlink failures. Integrations can wire
+`postmaster cleanup --config <exec.json>` to `ExecStopPost` or tear down the
+ramdisk through the `postmaster-ramdisk` launchd job. Startup pruning also
+attempts to remove stale files before writing new ones.
 
 A `TerminationGuard` blocks SIGTERM/SIGINT/SIGHUP/SIGQUIT across the
 write window on both platforms when masking succeeds. Masking failures
@@ -551,26 +550,26 @@ forwarded stops, natural exit, `kill -9`, and crashes. Liveness uses a
 pidfd with `poll` on Linux and kqueue `NOTE_EXIT` on macOS. Both report exit
 without waiting for reaping. The fallback also observes the monitor's parent
 relationship: the service's exit reparents the monitor before the service is
-reaped. An already-reparented monitor cleans up immediately, so an unreaped
-zombie does not delay fallback cleanup.
+reaped. An already-reparented monitor attempts cleanup immediately, so an
+unreaped zombie does not delay the fallback.
 
 On systemd the monitor receives its own copy of cgroup-wide stop signals.
 On launchd, signals go to the job's main process, so the monitor primarily
-watches for exit and cleans up. macOS forwarding uses `kill(2)` and retains
-a PID-reuse risk because Darwin has no pidfd. Ramdisk teardown at job stop
-provides a separate cleanup path. If the monitor dies first, cleanup depends
-on `ExecStopPost`, ramdisk teardown, or the next launch's `prune_stale`.
+watches for exit and attempts cleanup. macOS forwarding uses `kill(2)` and
+retains a PID-reuse risk because Darwin has no pidfd. Ramdisk teardown at job stop
+provides a separate cleanup path. If the monitor dies first or leaves files
+behind, cleanup depends on `ExecStopPost`, ramdisk teardown, or the next
+launch's `prune_stale`.
 
 ### Shared `secrets_dir` (multi-tenant misuse) — Documented contract
 
-`secrets_dir` is single-tenant per service: `prune_stale` and the
-monitor's cleanup delete files based on one service's key set, so two
-services sharing one directory lets one service's lifecycle delete the
-other's live files. The impact is availability, not confidentiality —
-no plaintext crosses services through Postmaster's resolution. Bindings must
-give each service its own directory or private mount. Postmaster does not
-enforce a service identity in the sentinel; directory separation is an
-integration requirement.
+`secrets_dir` is single-tenant per service. Startup pruning and monitor
+cleanup can delete another service's live files in a shared directory. When
+services share a directory and effective UID, a later launch can replace a
+file at the path already exported to the first service, which can then read
+the replacement value by opening that path. The sentinel identifies the
+managed directory, so bindings must give each service its own directory or
+private mount.
 
 Cleanup and pruning require the managed sentinel and removable files to be
 regular, owned by the effective user, and single-linked. Standalone cleanup

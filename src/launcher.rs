@@ -20,8 +20,8 @@ use crate::keys::{is_private_key_var_name, resolve_all};
 use crate::monitor::{self, STOP_SIGNALS};
 use crate::ramdisk::open_verified_ramdisk_dir;
 use crate::secret_files::{
-    Resolved, cleanup_failed_launch, cleanup_written, env_pairs, open_secrets_dir, prune_stale_at,
-    write_secret_file,
+    Resolved, SecretFileWriter, cleanup_failed_launch, cleanup_written, env_pairs,
+    open_secrets_dir, prune_stale_at,
 };
 use crate::server::{fetch_bytes_with_options, log, read_regular_capped};
 
@@ -389,9 +389,10 @@ pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<
             // Prune stale secret files from a prior launch before writing new ones.
             let keep_keys: Vec<String> = resolved.iter().map(|(k, _)| k.clone()).collect();
             prune_stale_at(&dir_fd, dir, &keep_keys)?;
+            let mut writer = SecretFileWriter::new(&dir_fd, dir);
             written.reserve(resolved.len());
             for (k, v) in &resolved {
-                let path = match write_secret_file(&dir_fd, dir, k, v) {
+                let path = match writer.write(k, v) {
                     Ok(p) => p,
                     Err(e) => {
                         cleanup_failed_launch(&dir_fd, dir, &written);
@@ -470,6 +471,7 @@ pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<
                 let dir = projected_dir.as_path();
                 // Prune stale credential files from a prior launch.
                 prune_stale_at(&dir_fd, dir, &cfg.credential_keys)?;
+                let mut writer = SecretFileWriter::new(&dir_fd, dir);
                 written.reserve(cfg.credential_keys.len());
                 for k in &cfg.credential_keys {
                     let source = cfg
@@ -487,7 +489,7 @@ pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<
                             return Err(e);
                         }
                     };
-                    let path = match write_secret_file(&dir_fd, dir, k, &bytes) {
+                    let path = match writer.write(k, &bytes) {
                         Ok(p) => p,
                         Err(e) => {
                             cleanup_failed_launch(&dir_fd, dir, &written);
@@ -510,8 +512,8 @@ pub fn exec(config_path: &Path, argv: &[OsString], verify_keys: bool) -> Result<
     // decrypt(); `resolved` dropped at the end of each arm above): fork
     // the sibling monitor BEFORE exec. The fork-child keeps the guard's
     // blocked mask for life and supervises this process — stop-signal
-    // forwarding, bounded grace, SIGKILL escalation, and plaintext cleanup
-    // on every service-death path (see monitor.rs). The parent execs the service, so
+    // forwarding, bounded grace, SIGKILL escalation, and a cleanup attempt
+    // when it observes service death (see monitor.rs). The parent execs the service, so
     // MainPID is unchanged. The monitor runs for ALL exec launches,
     // including env mode (uniform semantics; its cleanup is a no-op
     // there). The pid is captured pre-fork: post-fork the parent IS the

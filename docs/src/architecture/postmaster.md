@@ -57,12 +57,12 @@ plaintext in its environment or files":
    destruction handles this on macOS.
 
 5. **Validation.** Postmaster provides `exec --check` for config shape
-   validation (CI) and `setup --recheck` for runtime environment
-   verification (host). Both run without decrypting secrets.
+   validation (CI) and `setup --recheck` for key source access and custody
+   checks (host). Both run without decrypting secrets.
 
 6. **Setup.** Postmaster provides an interactive `setup` command
    that creates keys directories, verifies permissions, optionally
-   seeds keychain items (macOS), and validates the environment —
+   seeds keychain items (macOS), and checks key source access —
    idempotently.
 
 ## What Postmaster does not own
@@ -90,9 +90,9 @@ Deployment tooling owns authoring, custody, and service-manager policy:
   Linux, launchd on macOS) starts, monitors, and stops the service.
   Postmaster runs a sibling monitor alongside
   the exec'd service: it forwards stop signals, escalates to SIGKILL
-  after a bounded grace, and removes plaintext secret files on every
-  death path while the monitor survives. Integration cleanup and storage
-  teardown provide backstops if it doesn't.
+  after a bounded grace, and attempts to remove plaintext secret files
+  when it observes service exit. Integration cleanup and storage teardown
+  provide backstops for files that remain.
 
 - **Child behavior.** What the child process does with its secrets —
   reading from environment variables, files, or credentials — is the
@@ -209,21 +209,21 @@ is gone.
 
 The fork-child becomes the monitor. It scrubs its projected environment
 pairs, keeps the termination signals blocked for life, and
-supervises its parent — forwards stop signals with a 250 ms grace
-before SIGKILL escalation, and removes the plaintext secret files on
-every service-death path (natural exit, `kill -9`, crash), then exits.
-One monitor process runs for the service's lifetime. It watches liveness
-with pidfd and `poll` on Linux, or kqueue `NOTE_EXIT` on macOS.
+supervises its parent. It forwards stop signals with a 250 ms grace
+before SIGKILL escalation. When it observes service exit, including
+after a crash or `kill -9`, it attempts to remove the plaintext secret
+files and then exits. It watches liveness with pidfd and `poll` on
+Linux, or kqueue `NOTE_EXIT` on macOS.
 
 The monitor retains the original process environment, which can contain
 private keys supplied through environment variables. Use a non-environment
 key source to avoid this exposure. The credential daemon is a separate,
 long-lived process that retains its key ring for requests.
 
-The service manager (systemd/launchd) supervises the child from this
-point. `ExecStopPost` runs `postmaster cleanup` to remove plaintext
-files after the child exits (Linux) — now a backstop behind the
-monitor. The ramdisk is destroyed when the launchd job stops (macOS).
+The service manager (systemd/launchd) supervises the service from this
+point. On Linux, integrations can run `postmaster cleanup` through
+`ExecStopPost` to remove files left after the service exits. On macOS,
+stopping the ramdisk job can tear down the storage.
 
 ## Implementation
 

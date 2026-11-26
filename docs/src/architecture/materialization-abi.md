@@ -336,21 +336,19 @@ source is not provisioned. The launcher's fail-closed behavior is the
 runtime guarantee; `--check` cannot substitute for it.
 
 `postmaster setup --config <exec.json> --recheck` checks local provisioning
-without decrypting secrets. File sources receive descriptor-based ownership,
-permission, and macOS ACL checks. Credential sources receive path-presence and
-regular-file checks. Keychain checks look for the required items; environment
-checks look for required variables. These checks do not prove that the keys
-can decrypt the configured inputs. Run `--check` in CI for config shape and
-`setup --recheck` on the host for provisioning checks.
+without parsing key material. File and present credential sources receive
+descriptor-based file type, ownership, permission, and macOS ACL checks.
+Keychain checks look for the required items, and environment checks look for
+required variables. Run `--check` in CI for config shape and `setup --recheck`
+on the host for access and custody checks.
 
-The full `postmaster setup` command goes beyond verification: it
-creates the keys directory with 0700 permissions, verifies or creates
-key files with owner-only permissions, and optionally seeds macOS Keychain
-items interactively. It derives a unique required-account list in first-seen
-input order. Steps already satisfied are skipped.
-Flags: `--recheck` (verification only), `--unattended` (non-interactive,
-fail closed), `--force` (re-create/re-seed), `--keys-dir <path>` (override
-default path).
+Full `postmaster setup` prepares the keys directory, checks custody of
+configured key files or creates them with owner-only permissions, and
+optionally seeds macOS Keychain items interactively. It derives a unique
+required-account list in first-seen input order. Steps already satisfied are
+skipped. `--force` prompts to replace existing key files or re-seed Keychain
+items. `--unattended` fails if a prompt is required. `--keys-dir <path>`
+overrides the default keys directory.
 
 ## Integration responsibilities
 

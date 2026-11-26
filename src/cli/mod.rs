@@ -129,9 +129,8 @@ pub enum Invocation {
         argv: Vec<OsString>,
     },
     /// `postmaster setup --config <exec.json> [--recheck] [--unattended]
-    /// [--force] [--keys-dir <path>]`: verify platform prerequisites,
-    /// create keys directory with correct permissions, optionally seed
-    /// keychain items, and validate the environment. Idempotent — skips
+    /// [--force] [--keys-dir <path>]`: create a private keys directory,
+    /// optionally seed keychain items, and check key source access. Idempotent — skips
     /// steps that are already correct. `--recheck` re-verifies without
     /// creating or modifying anything.
     Setup {

@@ -8,7 +8,7 @@ postmaster does, where it fits, and which protections depend on the deployment.
 Postmaster is a Unix tool that decrypts a service's secrets at launch and
 delivers them through environment variables, files, or systemd credentials.
 Its launcher replaces itself with the service binary. A separate monitor
-forwards stop signals and removes secret files when the service exits.
+forwards stop signals and attempts cleanup when it observes service exit.
 
 ## The problem it solves
 
@@ -25,8 +25,9 @@ secrets for as long as it uses them.
 ## Protections and their limits
 
 - **RAM-backed secret files.** Deployments must provide private RAM-backed
-  storage for file projections. The monitor removes
-  files after service exit, a crash, or `kill -9`, provided the monitor survives.
+  storage for file projections. A surviving monitor attempts to remove files
+  after a normal exit, crash, or `kill -9`. Integration cleanup and storage
+  teardown provide backstops for files that remain.
 - **Public ciphertext.** Encrypted artifacts can live in git or a public
   artifact store. Private keys need separate protection, and write access to
   artifacts still controls which values the application receives.

@@ -60,6 +60,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Supports `credentials` mode with pointers to systemd credentials or
   selected values fetched from local Postmaster sockets. The systemd path
   verifies that each credential exists as a regular file without reading it.
+- Rejects filenames that alias an existing entry on the destination filesystem
+  when writing secrets in `files` mode or fetching socket credentials.
 - Provides raw local socket endpoints for systemd and framed endpoints for
   Postmaster clients. Framed responses use a versioned length header and reject
   partial or extra data. Socket descriptors select the path, protocol, and

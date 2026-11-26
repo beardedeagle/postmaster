@@ -131,18 +131,19 @@ fn exec_private_key_variables_are_not_inherited() {
             [ "$DOTENV_PRIVATE_KEYFOO" = keep-dotenv ] &&
             [ "$POSTMASTER_KEYFOO" = keep-bundle ] &&
             [ "$HOME" = /postmaster-test-home ] && [ "$PATH" = /usr/bin:/bin ] || exit 43
-            if [ -n "${SECRET_FILE:-}" ]; then
-                [ "$(cat "$SECRET_FILE")" = from-bundle ] || exit 44
-                if [ -n "${PLAIN_FILE:-}" ]; then
-                    [ "$(cat "$PLAIN_FILE")" = from-env ] || exit 45
-                fi
-            else
-                [ "$SECRET" = from-bundle ] && [ "$PLAIN" = from-env ] || exit 46
-            fi
         "#;
+        let projection_checks = match mode {
+            "env" => r#"[ "$SECRET" = from-bundle ] && [ "$PLAIN" = from-env ]"#,
+            "files" => {
+                r#"[ "$(cat "$SECRET_FILE")" = from-bundle ] && [ "$(cat "$PLAIN_FILE")" = from-env ]"#
+            }
+            "credentials" => r#"[ "$(cat "$SECRET_FILE")" = from-bundle ]"#,
+            _ => unreachable!(),
+        };
+        let sh = format!("{sh}{projection_checks}");
         let out = run_exec(
             &cfg,
-            sh,
+            &sh,
             &[
                 ("DOTENV_PRIVATE_KEY", common::TEST_SK_HEX),
                 ("DOTENV_PRIVATE_KEY_PRODUCTION", common::TEST_SK_HEX),
@@ -154,6 +155,8 @@ fn exec_private_key_variables_are_not_inherited() {
                 ("POSTMASTER_KEYFOO", "keep-bundle"),
                 ("HOME", "/postmaster-test-home"),
                 ("PATH", "/usr/bin:/bin"),
+                ("SECRET_FILE", "/dev/null"),
+                ("PLAIN_FILE", "/dev/null"),
                 ("CREDENTIALS_DIRECTORY", secrets.to_str().unwrap()),
             ],
         );

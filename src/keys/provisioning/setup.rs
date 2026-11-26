@@ -24,20 +24,16 @@ fn wanted_keys(cfg: &ExecConfig) -> Result<Vec<String>, String> {
     Ok(wanted)
 }
 
-/// `postmaster setup`: verify platform prerequisites, create keys
-/// directory with correct permissions, optionally seed keychain items,
-/// and validate the environment. Idempotent — skips steps that are
-/// already correct.
+/// `postmaster setup`: prepare the keys directory, provision configured
+/// key files and macOS Keychain items, and check key source access.
+/// Steps that are already satisfied are skipped.
 ///
-/// `--recheck`: re-run verification checks only, without creating or
-/// modifying anything.
+/// `--recheck`: check key source access and custody without provisioning
+/// or parsing key material.
 ///
-/// `--unattended`: non-interactive mode for automation. Uses defaults
-/// or env vars instead of prompting. Fail closed on any missing
-/// prerequisite.
+/// `--unattended`: fail if setup needs operator input.
 ///
-/// `--force`: re-seed or re-create even if the target state is already
-/// present.
+/// `--force`: prompt to replace existing key files or re-seed Keychain items.
 ///
 /// `--keys-dir <path>`: override the keys directory path.
 pub fn setup(
@@ -67,9 +63,9 @@ pub fn setup(
 
     // Step 1: Create or verify keys directory
     let keys_dir = keys_dir_override.unwrap_or_else(default_keys_dir);
-    ensure_keys_dir(&keys_dir, force)?;
+    ensure_keys_dir(&keys_dir)?;
 
-    // Step 2: Verify or create key files for file-source keys
+    // Step 2: Check custody or create key files for file-source keys
     for spec in &cfg.keys {
         if let KeySourceSpec::File(path) = spec {
             ensure_keys_file(path, force, unattended)?;
@@ -84,12 +80,12 @@ pub fn setup(
         }
     }
 
-    // Step 4: Verify the full environment (same as --recheck)
+    // Step 4: Check access to the selected key source (same as --recheck)
     verify_key_sources(&cfg, &wanted)?;
 
     log(&format!(
-        "setup: complete — keys dir {}, selected key source verified",
-        keys_dir.display(),
+        "setup: complete — keys dir {}",
+        keys_dir.display()
     ));
     Ok(())
 }

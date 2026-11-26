@@ -9,7 +9,7 @@ the launcher with the target binary through `execvp`.
 Decryption runs in Rust. Postmaster doesn't evaluate secret values as shell
 code. Deployments provide RAM-backed storage for file projections and
 configure swap and dump protection. The service manager owns the service;
-a sibling monitor handles stop-signal forwarding and file cleanup.
+a sibling monitor forwards stop signals and attempts cleanup on observed exit.
 
 ### Who this is for
 
@@ -67,7 +67,8 @@ protection. The application keeps access to the secrets it uses.
 
 3. **Launches** the target binary via `execvp` — postmaster is replaced
    by your binary. The service process remains `MainPID` from its first
-   instruction. A sibling monitor handles stop signals and file cleanup.
+   instruction. A sibling monitor forwards stop signals and attempts cleanup
+   when it observes service exit.
 
 4. **Cleans up** — `postmaster cleanup` removes plaintext secret files
    after the child exits, wired to `ExecStopPost` in systemd.
@@ -105,9 +106,8 @@ per-stage detail live in
 [postmaster — the secret pipeline](./architecture/postmaster.md#the-secret-pipeline).
 
 External tools own custody, rendering, and delivery. Postmaster doesn't fetch
-from remote stores or deploy infrastructure. Its monitor forwards stop signals
-and cleans up plaintext files; the service manager owns restarts and health
-checks.
+from remote stores or deploy infrastructure. The service manager owns restarts
+and health checks.
 
 The monitor scrubs the projected environment pairs, but retains the original
 process environment. Environment-supplied private keys can remain there.
